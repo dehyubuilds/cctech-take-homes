@@ -34,6 +34,20 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Check if ECR repository exists
+        id: check-ecr
+        run: |
+          if aws ecr describe-repositories --repository-names $ECR_REPOSITORY --region $AWS_REGION 2>/dev/null; then
+            echo "ECR_REPOSITORY_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "ECR_REPOSITORY_EXISTS=false" >> $GITHUB_ENV
+          fi
+
+      - name: Create ECR repository if it doesn't exist
+        if: steps.check-ecr.outputs.ECR_REPOSITORY_EXISTS == 'false'
+        run: |
+          aws ecr create-repository --repository-name $ECR_REPOSITORY --region $AWS_REGION
+
       - name: Build Docker image
         run: |
           docker build -t $ECR_REPOSITORY:latest ./aws-devops-ecs/app

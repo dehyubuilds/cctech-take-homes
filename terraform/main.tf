@@ -37,8 +37,10 @@ module "security_groups" {
 module "iam" {
   source = "./modules/iam"
   
-  environment = var.environment
-  tags        = var.tags
+  environment      = var.environment
+  aws_region       = var.aws_region
+  github_repository = "your-username/cctech-take-homes"  # Update this with your actual repo
+  tags             = var.tags
 }
 
 # ECR Module
