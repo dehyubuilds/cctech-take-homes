@@ -27,7 +27,7 @@ export default function Home() {
     <div>
       <main>
         <h1>
-          Welcome to CC Tech DevSecOps Challenge
+          Welcome to CC Tech DevSecOps Challenge - Demo Update
         </h1>
         <p>
           Innovating with Security and Efficiency
