@@ -2740,8 +2740,11 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
     }
   }
   
-  videoItem.isPrivateUsername = isPrivateUsername;
-  console.log(`📝 [createVideoEntryImmediately] Final isPrivateUsername value: ${isPrivateUsername} (will be saved to video entry)`);
+  // CRITICAL: ALWAYS set isPrivateUsername - never leave it undefined
+  // This ensures the field is always present in DynamoDB, even if the value is false (public)
+  // If undefined, DynamoDB DocumentClient might omit the field, causing Lambda to default to public
+  videoItem.isPrivateUsername = isPrivateUsername === true ? true : false; // Explicitly set to boolean
+  console.log(`📝 [createVideoEntryImmediately] Final isPrivateUsername value: ${videoItem.isPrivateUsername} (type: ${typeof videoItem.isPrivateUsername}, will be saved to video entry)`);
   
   // Check if this is a collaborator video by looking at streamKey mapping
   // CRITICAL: Use the isCollaboratorKey we already parsed earlier
