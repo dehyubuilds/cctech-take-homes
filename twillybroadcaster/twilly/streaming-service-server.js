@@ -2425,7 +2425,8 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
       Key: {
         PK: `STREAM_KEY#${streamName}`,
         SK: 'MAPPING'
-      }
+      },
+      ConsistentRead: true // Use strong consistency for critical privacy data
     };
     streamKeyResult = await dynamodb.get(streamKeyParams).promise();
     
@@ -2638,7 +2639,8 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
           Key: {
             PK: `STREAM_KEY#${streamName}`,
             SK: 'MAPPING'
-          }
+          },
+          ConsistentRead: true // Use strong consistency for critical privacy data
         }).promise();
         if (retryResult.Item) {
           const retryRawIsPrivate = retryResult.Item.isPrivateUsername;
@@ -2666,7 +2668,7 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   // CRITICAL: ALWAYS re-read isPrivateUsername RIGHT BEFORE saving (don't rely on earlier fetch)
   // This ensures we have the latest value even if setStreamUsernameType completed after initial fetch
   // This is a CRITICAL PRIVACY FIX - private videos must NEVER be created as public
-  // Use retry logic to handle DynamoDB eventual consistency
+  // Use STRONG CONSISTENCY READ to ensure we get the latest value (more expensive but critical for privacy)
   let finalIsPrivateRead = false;
   const maxRetries = 3;
   for (let attempt = 0; attempt < maxRetries && !finalIsPrivateRead; attempt++) {
@@ -2680,12 +2682,15 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
         console.log(`🔍 [createVideoEntryImmediately] FINAL READ - reading isPrivateUsername one last time before saving (CRITICAL for privacy)...`);
       }
       
+      // CRITICAL: Use ConsistentRead: true to ensure we get the latest value from DynamoDB
+      // This is more expensive but essential for privacy - we MUST know if this is a private stream
       const finalCheckResult = await dynamodb.get({
         TableName: 'Twilly',
         Key: {
           PK: `STREAM_KEY#${streamName}`,
           SK: 'MAPPING'
-        }
+        },
+        ConsistentRead: true // STRONG CONSISTENCY - ensures we get the latest value
       }).promise();
       
       if (finalCheckResult.Item && finalCheckResult.Item.isPrivateUsername !== undefined) {
@@ -2718,9 +2723,21 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   }
   
   if (!finalIsPrivateRead) {
-    // Should never happen, but safety fallback
-    isPrivateUsername = false;
-    console.log(`⚠️ [createVideoEntryImmediately] FINAL READ: Could not determine isPrivateUsername - defaulting to PUBLIC`);
+    // Final fallback: Check if streamUsername field contains lock icon (🔒) as backup indicator
+    if (streamKeyResult && streamKeyResult.Item && streamKeyResult.Item.streamUsername) {
+      const streamUsername = streamKeyResult.Item.streamUsername;
+      if (typeof streamUsername === 'string' && streamUsername.includes('🔒')) {
+        isPrivateUsername = true;
+        finalIsPrivateRead = true;
+        console.log(`✅ [createVideoEntryImmediately] FALLBACK: Detected private stream from lock icon in streamUsername: ${streamUsername}`);
+      }
+    }
+    
+    if (!finalIsPrivateRead) {
+      // Should never happen, but safety fallback - default to public if we can't determine
+      isPrivateUsername = false;
+      console.log(`⚠️ [createVideoEntryImmediately] FINAL READ: Could not determine isPrivateUsername - defaulting to PUBLIC`);
+    }
   }
   
   videoItem.isPrivateUsername = isPrivateUsername;
