@@ -10,6 +10,11 @@ const multer = require('multer');
 const app = express();
 const PORT = 3000;
 
+// CRITICAL PRIVACY FIX: Global map to store isPrivateUsername IMMEDIATELY when set
+// This eliminates race condition - value is available before DynamoDB write completes
+// Key: streamKey, Value: { isPrivateUsername: boolean, timestamp: Date }
+global.streamPrivacyMap = global.streamPrivacyMap || new Map();
+
 // Configure multer for file uploads
 // Note: multer automatically parses text fields from multipart/form-data into req.body
 const upload = multer({
@@ -153,6 +158,41 @@ app.post('/stream/start', (req, res) => {
   
   console.log(`✅ Stream ${name} registered successfully`);
   res.json({ success: true, message: `Stream ${name} started` });
+});
+
+// CRITICAL PRIVACY FIX: Endpoint to store isPrivateUsername IMMEDIATELY (called by set-stream-username-type API)
+// This makes the value available instantly, eliminating race conditions
+app.post('/api/streams/set-privacy-immediate', async (req, res) => {
+  try {
+    const { streamKey, isPrivateUsername } = req.body;
+    
+    if (!streamKey || typeof isPrivateUsername !== 'boolean') {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required fields: streamKey (string), isPrivateUsername (boolean)' 
+      });
+    }
+    
+    // Store IMMEDIATELY in global map (available instantly, no DynamoDB delay)
+    global.streamPrivacyMap.set(streamKey, {
+      isPrivateUsername: isPrivateUsername,
+      timestamp: new Date()
+    });
+    
+    console.log(`✅ [IMMEDIATE] Stored isPrivateUsername=${isPrivateUsername} for streamKey=${streamKey} in global map`);
+    
+    res.json({ 
+      success: true, 
+      message: `Privacy setting stored immediately for ${streamKey}`,
+      isPrivateUsername: isPrivateUsername
+    });
+  } catch (error) {
+    console.error(`❌ [IMMEDIATE] Error storing privacy:`, error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
 });
 
 // Start stream handler (for nginx exec hooks)
@@ -308,9 +348,13 @@ app.post('/api/channels/upload-video', upload.single('video'), logMultipartField
     const title = req.body?.title;
     const description = req.body?.description;
     const price = req.body?.price;
+    // CRITICAL PRIVACY FIX: Get isPrivateUsername directly from request body
+    // This eliminates race condition - value is available immediately, no need to read from DynamoDB
+    const isPrivateUsernameFromRequest = req.body?.isPrivateUsername === 'true' || req.body?.isPrivateUsername === true || req.body?.isPrivateUsername === '1';
     
     console.log(`📤 Request body: channelName=${channelName}, userEmail=${userEmail}, streamKey=${streamKey}, uploadId=${uploadId || 'none'}`);
     console.log(`📤 Video details - Title: ${title || 'none'}, Description: ${description || 'none'}, Price: ${price !== undefined && price !== null ? price : 'none'}`);
+    console.log(`📤 Privacy: isPrivateUsername=${isPrivateUsernameFromRequest} (from request body)`);
     console.log(`📤 File: ${req.file ? `${req.file.originalname} (${req.file.size} bytes)` : 'none'}`);
     
     if (!channelName || !userEmail || !streamKey) {
@@ -652,7 +696,7 @@ app.post('/api/channels/upload-video', upload.single('video'), logMultipartField
           try {
             const dbStartTime = Date.now();
             console.log(`📝 [TIMING] EARLY: Creating DynamoDB entry immediately with verified thumbnail URL...`);
-            await createVideoEntryImmediately(streamName, uniqueUploadId, uniquePrefix, userEmail, channelName);
+            await createVideoEntryImmediately(streamName, uniqueUploadId, uniquePrefix, userEmail, channelName, isPrivateUsernameFromRequest);
             const dbDuration = ((Date.now() - dbStartTime) / 1000).toFixed(2);
             const totalTime = ((Date.now() - thumbnailStartTime) / 1000).toFixed(2);
             console.log(`✅ [TIMING] EARLY: DynamoDB entry created in ${dbDuration}s! Total thumbnail process: ${totalTime}s`);
@@ -1216,7 +1260,7 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
       try {
         console.log(`📝 Creating DynamoDB entry immediately for instant video appearance...`);
         console.log(`   Thumbnail URL: ${global.currentUploadContext.thumbnailUrl}`);
-        await createVideoEntryImmediately(streamName, uploadId, uniquePrefix, userEmail, channelName);
+        await createVideoEntryImmediately(streamName, uploadId, uniquePrefix, userEmail, channelName, isPrivateUsernameFromRequest);
         console.log(`✅ DynamoDB entry created! Video should now appear in channel.`);
       } catch (error) {
         console.error(`⚠️ Failed to create immediate DynamoDB entry (Lambda will create it later):`, error);
@@ -2313,7 +2357,9 @@ function cleanupTempFiles(dir) {
 }
 
 // Create DynamoDB entry immediately after 1080p upload for instant video appearance
-async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, userEmail, channelName) {
+// CRITICAL PRIVACY FIX: Accept isPrivateUsernameFromRequest to eliminate race condition
+// This value comes directly from the upload request, so it's available immediately
+async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, userEmail, channelName, isPrivateUsernameFromRequest = null) {
   
   const cloudFrontBaseUrl = 'https://d4idc5cmwxlpy.cloudfront.net';
   const basePath = `clips/${streamName}/${uploadId}`;
@@ -2617,17 +2663,27 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   // Same username is used for both - private streams just have isPrivateUsername = true
   // Private streams (username 🔒) require approval to view
   // Public streams (username) can be added by anyone
+  
+  // CRITICAL PRIVACY FIX: Use isPrivateUsernameFromRequest as PRIMARY source (eliminates race condition)
+  // This value comes directly from the upload request, so it's available immediately
+  // Fallback to streamKey mapping only if request value is not provided
   let isPrivateUsername = false; // Default to public
-  if (streamKeyResult && streamKeyResult.Item) {
+  
+  if (isPrivateUsernameFromRequest !== null && isPrivateUsernameFromRequest !== undefined) {
+    // PRIMARY SOURCE: Use value from request (no race condition!)
+    isPrivateUsername = isPrivateUsernameFromRequest === true || isPrivateUsernameFromRequest === 'true' || isPrivateUsernameFromRequest === '1';
+    console.log(`✅ [createVideoEntryImmediately] Using isPrivateUsername from REQUEST: ${isPrivateUsername} (PRIMARY SOURCE - eliminates race condition)`);
+  } else if (streamKeyResult && streamKeyResult.Item) {
+    // FALLBACK: Read from streamKey mapping (if request value not provided)
     // Handle multiple formats: boolean, string, number, or DynamoDB format
     const rawIsPrivate = streamKeyResult.Item.isPrivateUsername;
-    console.log(`🔍 [createVideoEntryImmediately] Reading isPrivateUsername from streamKey mapping: ${JSON.stringify(rawIsPrivate)} (type: ${typeof rawIsPrivate})`);
+    console.log(`🔍 [createVideoEntryImmediately] Reading isPrivateUsername from streamKey mapping (FALLBACK): ${JSON.stringify(rawIsPrivate)} (type: ${typeof rawIsPrivate})`);
     if (rawIsPrivate !== undefined && rawIsPrivate !== null) {
       isPrivateUsername = rawIsPrivate === true || 
                          rawIsPrivate === 'true' || 
                          rawIsPrivate === 1 ||
                          (rawIsPrivate && typeof rawIsPrivate === 'object' && rawIsPrivate.BOOL === true);
-      console.log(`✅ [createVideoEntryImmediately] Parsed isPrivateUsername: ${isPrivateUsername}`);
+      console.log(`✅ [createVideoEntryImmediately] Parsed isPrivateUsername from mapping (FALLBACK): ${isPrivateUsername}`);
     }
     // If isPrivateUsername is not set in mapping, retry reading it once (in case of eventual consistency)
     if (rawIsPrivate === undefined || rawIsPrivate === null) {
