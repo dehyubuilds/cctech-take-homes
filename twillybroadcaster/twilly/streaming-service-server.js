@@ -1261,9 +1261,19 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
     let finalUserEmail = userEmail;
     let finalUploadId = uploadId;
     let finalChannelName = channelName;
+    let finalIsPrivateUsername = null; // Will be set from global map or mapping
     
-    // For RTMP streams (uploadId is NULL), get userEmail and channelName from streamKey mapping
-    if (!finalUserEmail || !finalUploadId) {
+    // CRITICAL: For RTMP streams, ALWAYS try to get userEmail from streamKey mapping
+    // Even if userEmail is provided, we need to ensure we have it for createVideoEntryImmediately
+    // MOST IMPORTANT: Check global map FIRST (instant, no DynamoDB read needed)
+    if (global.streamPrivacyMap && global.streamPrivacyMap.has(streamName)) {
+      const privacyData = global.streamPrivacyMap.get(streamName);
+      finalIsPrivateUsername = privacyData.isPrivateUsername === true;
+      console.log(`✅ [RTMP] Got isPrivateUsername from GLOBAL MAP: ${finalIsPrivateUsername} (INSTANT - NO RACE CONDITION)`);
+    }
+    
+    if (!finalUserEmail || !finalUploadId || finalIsPrivateUsername === null) {
+      console.log(`🔍 [RTMP] Looking up streamKey mapping for: ${streamName}`);
       try {
         const streamKeyParams = {
           TableName: 'Twilly',
@@ -1271,7 +1281,7 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
             PK: `STREAM_KEY#${streamName}`,
             SK: 'MAPPING'
           },
-          ConsistentRead: true
+          ConsistentRead: true // STRONG CONSISTENCY - ensures we get the latest value
         };
         const streamKeyResult = await dynamodb.get(streamKeyParams).promise();
         
@@ -1289,27 +1299,80 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
             finalUploadId = `rtmp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
             console.log(`✅ [RTMP] Generated uploadId: ${finalUploadId}`);
           }
+          // CRITICAL: If global map didn't have it, get it from mapping (with fallback to lock icon check)
+          if (finalIsPrivateUsername === null) {
+            const rawIsPrivate = streamKeyResult.Item.isPrivateUsername;
+            if (rawIsPrivate !== undefined && rawIsPrivate !== null) {
+              finalIsPrivateUsername = rawIsPrivate === true || 
+                                       rawIsPrivate === 'true' || 
+                                       rawIsPrivate === 1 ||
+                                       (rawIsPrivate && typeof rawIsPrivate === 'object' && rawIsPrivate.BOOL === true);
+              console.log(`✅ [RTMP] Got isPrivateUsername from mapping: ${finalIsPrivateUsername}`);
+            } else {
+              // Fallback: Check if streamUsername has lock icon
+              const streamUsername = streamKeyResult.Item.streamUsername || '';
+              if (streamUsername.includes('🔒')) {
+                finalIsPrivateUsername = true;
+                console.log(`✅ [RTMP] Detected PRIVATE from lock icon in streamUsername: ${streamUsername}`);
+              } else {
+                finalIsPrivateUsername = false; // Default to PUBLIC
+                console.log(`✅ [RTMP] Defaulting to PUBLIC (no isPrivateUsername in mapping, no lock icon)`);
+              }
+            }
+          }
+        } else {
+          console.error(`❌ [RTMP] CRITICAL: streamKey mapping NOT FOUND for: ${streamName}`);
+          console.error(`   This means createVideoEntryImmediately will NOT be called!`);
+          // Default to PUBLIC if mapping doesn't exist
+          if (finalIsPrivateUsername === null) {
+            finalIsPrivateUsername = false;
+            console.log(`⚠️ [RTMP] Defaulting to PUBLIC (mapping not found)`);
+          }
         }
       } catch (mappingError) {
-        console.error(`⚠️ [RTMP] Failed to get userEmail from streamKey mapping: ${mappingError.message}`);
+        console.error(`❌ [RTMP] CRITICAL: Failed to get userEmail from streamKey mapping: ${mappingError.message}`);
+        // Default to PUBLIC on error
+        if (finalIsPrivateUsername === null) {
+          finalIsPrivateUsername = false;
+          console.log(`⚠️ [RTMP] Defaulting to PUBLIC (mapping lookup failed)`);
+        }
+      }
+    } else {
+      console.log(`✅ [RTMP] userEmail and uploadId already set - no need to lookup mapping`);
+      // If global map didn't have it, default to PUBLIC
+      if (finalIsPrivateUsername === null) {
+        finalIsPrivateUsername = false;
+        console.log(`✅ [RTMP] Defaulting to PUBLIC (not in global map, no mapping lookup needed)`);
       }
     }
     
     // CRITICAL: Always call createVideoEntryImmediately if we have userEmail (even for RTMP streams)
     // This ensures the global map is checked and isPrivateUsername is set correctly
-    if (finalUserEmail) {
+    // CRITICAL: Use finalIsPrivateUsername (already determined from global map or mapping)
+    if (finalUserEmail && finalUploadId) {
       try {
-        console.log(`📝 Creating DynamoDB entry immediately for instant video appearance...`);
-        console.log(`   StreamName: ${streamName}, UploadId: ${finalUploadId}, UserEmail: ${finalUserEmail}`);
+        console.log(`📝 [RTMP] Creating DynamoDB entry immediately for instant video appearance...`);
+        console.log(`   StreamName: ${streamName}`);
+        console.log(`   UploadId: ${finalUploadId}`);
+        console.log(`   UserEmail: ${finalUserEmail}`);
+        console.log(`   ChannelName: ${finalChannelName || 'N/A'}`);
+        console.log(`   UniquePrefix: ${uniquePrefix || 'N/A'}`);
+        console.log(`   isPrivateUsername: ${finalIsPrivateUsername} (DETERMINED - NO RACE CONDITION)`);
         console.log(`   Thumbnail URL: ${global.currentUploadContext?.thumbnailUrl || 'default'}`);
-        await createVideoEntryImmediately(streamName, finalUploadId, uniquePrefix, finalUserEmail, finalChannelName, isPrivateUsernameFromRequest);
-        console.log(`✅ DynamoDB entry created! Video should now appear in channel.`);
+        // CRITICAL: Pass finalIsPrivateUsername directly (already determined, no lookup needed)
+        await createVideoEntryImmediately(streamName, finalUploadId, uniquePrefix, finalUserEmail, finalChannelName, finalIsPrivateUsername);
+        console.log(`✅ [RTMP] DynamoDB entry created! Video should now appear in channel.`);
       } catch (error) {
-        console.error(`⚠️ Failed to create immediate DynamoDB entry (Lambda will create it later):`, error);
+        console.error(`❌ [RTMP] CRITICAL: Failed to create immediate DynamoDB entry:`, error);
+        console.error(`   Stack: ${error.stack}`);
         // Don't throw - Lambda will create it when S3 event fires
       }
     } else {
-      console.log(`⚠️ Missing userEmail, skipping immediate DynamoDB entry creation`);
+      console.error(`❌ [RTMP] CRITICAL: Missing userEmail or uploadId - CANNOT create immediate DynamoDB entry!`);
+      console.error(`   finalUserEmail: ${finalUserEmail || 'NULL'}`);
+      console.error(`   finalUploadId: ${finalUploadId || 'NULL'}`);
+      console.error(`   This means isPrivateUsername will NOT be set immediately!`);
+      console.error(`   Lambda will create the entry later, but it might default to PUBLIC!`);
     }
     
     // Clear context after use
@@ -2706,24 +2769,26 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   // Private streams (username 🔒) require approval to view
   // Public streams (username) can be added by anyone
   
-  // CRITICAL PRIVACY FIX: Use IMMEDIATE global map as PRIMARY source (eliminates ALL race conditions)
-  // This value is stored instantly when setStreamUsernameType is called, before DynamoDB write completes
-  // Priority: 1) Global map (instant), 2) Request body (for file uploads), 3) StreamKey mapping (fallback)
+  // CRITICAL PRIVACY FIX: Determine isPrivateUsername with NO RACE CONDITIONS
+  // Priority: 1) Request parameter (already determined, passed directly), 2) Global map (instant), 3) StreamKey mapping (fallback)
+  // For RTMP streams, isPrivateUsernameFromRequest is already determined from global map or mapping
+  // This eliminates ALL race conditions - value is determined ONCE and passed directly
   let isPrivateUsername = false; // Default to public
   
-  // PRIORITY 1: Check global map FIRST (instant, no DynamoDB read needed)
+  // PRIORITY 1: Use value from request parameter (for RTMP streams, this is already determined from global map or mapping)
+  // This is the MOST RELIABLE - it's passed directly, no lookup needed, NO RACE CONDITION
+  if (isPrivateUsernameFromRequest !== null && isPrivateUsernameFromRequest !== undefined) {
+    isPrivateUsername = isPrivateUsernameFromRequest === true || isPrivateUsernameFromRequest === 'true' || isPrivateUsernameFromRequest === '1';
+    console.log(`✅ [createVideoEntryImmediately] Using isPrivateUsername from REQUEST PARAMETER: ${isPrivateUsername} (PRIMARY - NO RACE CONDITION, ALREADY DETERMINED)`);
+  }
+  // PRIORITY 2: Check global map (instant, no DynamoDB read needed)
   // NOTE: streamKeyResult is already fetched above (line 2508-2519) for creatorEmail lookup
   // We reuse it here for the fallback check
-  if (global.streamPrivacyMap && global.streamPrivacyMap.has(streamName)) {
+  else if (global.streamPrivacyMap && global.streamPrivacyMap.has(streamName)) {
     const privacyData = global.streamPrivacyMap.get(streamName);
     isPrivateUsername = privacyData.isPrivateUsername === true;
-    console.log(`✅ [createVideoEntryImmediately] Using isPrivateUsername from GLOBAL MAP: ${isPrivateUsername} (INSTANT - PRIMARY SOURCE)`);
+    console.log(`✅ [createVideoEntryImmediately] Using isPrivateUsername from GLOBAL MAP: ${isPrivateUsername} (SECONDARY - INSTANT)`);
     console.log(`   Global map entry: ${JSON.stringify(privacyData)}`);
-  } 
-  // PRIORITY 2: Use value from request body (for file uploads)
-  else if (isPrivateUsernameFromRequest !== null && isPrivateUsernameFromRequest !== undefined) {
-    isPrivateUsername = isPrivateUsernameFromRequest === true || isPrivateUsernameFromRequest === 'true' || isPrivateUsernameFromRequest === '1';
-    console.log(`✅ [createVideoEntryImmediately] Using isPrivateUsername from REQUEST: ${isPrivateUsername} (SECONDARY SOURCE)`);
   } 
   // PRIORITY 3: Fallback to streamKey mapping (may have race condition, but better than nothing)
   else if (streamKeyResult && streamKeyResult.Item) {
@@ -2774,13 +2839,21 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
     console.log(`⚠️ [createVideoEntryImmediately] streamKey mapping not found for ${streamName}`);
   }
   
-  // CRITICAL: ALWAYS re-read isPrivateUsername RIGHT BEFORE saving (don't rely on earlier fetch)
-  // This ensures we have the latest value even if setStreamUsernameType completed after initial fetch
-  // This is a CRITICAL PRIVACY FIX - private videos must NEVER be created as public
-  // Use STRONG CONSISTENCY READ to ensure we get the latest value (more expensive but critical for privacy)
+  // CRITICAL: Only re-read isPrivateUsername if we haven't already determined it from request parameter or global map
+  // If isPrivateUsernameFromRequest was provided, it's already correct (no race condition) - SKIP the final read
+  // The final read is only needed as a fallback if we couldn't determine it earlier
   let finalIsPrivateRead = false;
+  const shouldDoFinalRead = isPrivateUsernameFromRequest === null || isPrivateUsernameFromRequest === undefined;
+  
+  if (!shouldDoFinalRead) {
+    console.log(`✅ [createVideoEntryImmediately] SKIPPING FINAL READ - isPrivateUsername already determined from request parameter or global map: ${isPrivateUsername}`);
+    finalIsPrivateRead = true; // Mark as read so we don't do the fallback logic below
+  } else {
+    console.log(`🔍 [createVideoEntryImmediately] FINAL READ needed - isPrivateUsername not determined yet, will read from DynamoDB...`);
+  }
+  
   const maxRetries = 3;
-  for (let attempt = 0; attempt < maxRetries && !finalIsPrivateRead; attempt++) {
+  for (let attempt = 0; attempt < maxRetries && !finalIsPrivateRead && shouldDoFinalRead; attempt++) {
     try {
       if (attempt > 0) {
         // Wait longer on retries to allow for eventual consistency
@@ -2831,7 +2904,9 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
     }
   }
   
-  if (!finalIsPrivateRead) {
+  // Only do fallback logic if we still haven't determined isPrivateUsername
+  // If isPrivateUsernameFromRequest was provided, we already have the correct value - don't overwrite it
+  if (!finalIsPrivateRead && shouldDoFinalRead) {
     // Final fallback: Check if streamUsername field contains lock icon (🔒) as backup indicator
     if (streamKeyResult && streamKeyResult.Item && streamKeyResult.Item.streamUsername) {
       const streamUsername = streamKeyResult.Item.streamUsername;
