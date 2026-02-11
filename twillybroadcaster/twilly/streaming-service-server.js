@@ -2712,10 +2712,13 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   let isPrivateUsername = false; // Default to public
   
   // PRIORITY 1: Check global map FIRST (instant, no DynamoDB read needed)
+  // NOTE: streamKeyResult is already fetched above (line 2508-2519) for creatorEmail lookup
+  // We reuse it here for the fallback check
   if (global.streamPrivacyMap && global.streamPrivacyMap.has(streamName)) {
     const privacyData = global.streamPrivacyMap.get(streamName);
     isPrivateUsername = privacyData.isPrivateUsername === true;
     console.log(`✅ [createVideoEntryImmediately] Using isPrivateUsername from GLOBAL MAP: ${isPrivateUsername} (INSTANT - PRIMARY SOURCE)`);
+    console.log(`   Global map entry: ${JSON.stringify(privacyData)}`);
   } 
   // PRIORITY 2: Use value from request body (for file uploads)
   else if (isPrivateUsernameFromRequest !== null && isPrivateUsernameFromRequest !== undefined) {
