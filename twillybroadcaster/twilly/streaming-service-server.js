@@ -2586,10 +2586,11 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
     console.log(`⚠️ Could not read metadata: ${error.message}`);
   }
   
-  // Check if "post automatically" is enabled for this user
-  // The postAutomatically setting is stored under SK: 'POST_AUTOMATICALLY'
-  let postAutomatically = false;
+  // CRITICAL: All videos post automatically by default
+  // This is the default behavior - all videos should be visible immediately after streaming
+  let postAutomatically = true; // Default to true - all videos post automatically
   try {
+    // Check if user has explicitly disabled post automatically (optional override)
     const postAutoParams = {
       TableName: 'Twilly',
       Key: {
@@ -2598,15 +2599,16 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
       }
     };
     const postAutoResult = await dynamodb.get(postAutoParams).promise();
-    if (postAutoResult.Item && postAutoResult.Item.postAutomatically === true) {
-      postAutomatically = true;
-      console.log(`✅ [createVideoEntryImmediately] Post automatically is ENABLED - video will be visible immediately`);
+    if (postAutoResult.Item && postAutoResult.Item.postAutomatically === false) {
+      postAutomatically = false;
+      console.log(`📅 [createVideoEntryImmediately] Post automatically is DISABLED by user setting - video visibility will follow schedule`);
     } else {
-      console.log(`📅 [createVideoEntryImmediately] Post automatically is DISABLED - video visibility will follow schedule`);
+      console.log(`✅ [createVideoEntryImmediately] Post automatically is ENABLED (default) - video will be visible immediately`);
     }
   } catch (error) {
     console.log(`⚠️ Could not check post automatically setting: ${error.message}`);
-    // Default to false if we can't check
+    // Default to true if we can't check - all videos post automatically by default
+    postAutomatically = true;
   }
   
   // Create video item with consistent fileId based on uploadId (makes function idempotent)
@@ -2663,6 +2665,17 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
     console.log(`   Username will be looked up from: USER#${creatorId}/PROFILE (collaborator's profile)`);
   } else {
     console.log(`⚠️ [createVideoEntryImmediately] No creatorId found in streamKey mapping - username lookup may fail`);
+  }
+  
+  // CRITICAL: Add streamerEmail to track who actually streamed the video
+  // This is essential for get-content.post.js to identify viewer's own videos
+  // streamerEmail should be the email of the person who streamed (from streamKey mapping)
+  if (creatorEmail) {
+    videoItem.streamerEmail = creatorEmail;
+    console.log(`✅ [createVideoEntryImmediately] Added streamerEmail to video entry: ${creatorEmail}`);
+    console.log(`   This ensures the video is visible to the streamer in Twilly TV by default`);
+  } else {
+    console.log(`⚠️ [createVideoEntryImmediately] No creatorEmail available - streamerEmail not set`);
   }
   
   // Check if this is a collaborator video by looking at streamKey mapping
