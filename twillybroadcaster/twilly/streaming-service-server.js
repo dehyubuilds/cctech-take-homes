@@ -2314,12 +2314,6 @@ function cleanupTempFiles(dir) {
 
 // Create DynamoDB entry immediately after 1080p upload for instant video appearance
 async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, userEmail, channelName) {
-  console.log(`📝 [createVideoEntryImmediately] ===== START =====`);
-  console.log(`   streamName: ${streamName}`);
-  console.log(`   uploadId: ${uploadId}`);
-  console.log(`   uniquePrefix: ${uniquePrefix}`);
-  console.log(`   userEmail: ${userEmail}`);
-  console.log(`   channelName: ${channelName}`);
   
   const cloudFrontBaseUrl = 'https://d4idc5cmwxlpy.cloudfront.net';
   const basePath = `clips/${streamName}/${uploadId}`;
@@ -2335,14 +2329,11 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   if (global.currentUploadContext && global.currentUploadContext.thumbnailUrl) {
     thumbnailUrl = global.currentUploadContext.thumbnailUrl;
     hasEarlyThumbnail = true;
-    console.log(`📋 [createVideoEntryImmediately] Using early thumbnail URL from context: ${thumbnailUrl}`);
   } else {
     // Construct thumbnail URL from path (fallback)
     // NOTE: This constructed URL may not exist in S3 - it will be verified below
     thumbnailUrl = `${cloudFrontBaseUrl}/${thumbnailKey}`;
     hasEarlyThumbnail = false;
-    console.log(`📋 [createVideoEntryImmediately] No early thumbnail in context - using constructed URL: ${thumbnailUrl}`);
-    console.log(`   ⚠️ This URL may not exist in S3 - will verify before using`);
   }
   
   // DEFAULT THUMBNAIL: Use default image if thumbnail generation failed
@@ -2383,16 +2374,12 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
         const s3KeyMatch = finalThumbnailUrl.match(/https:\/\/[^\/]+\/(.+)/);
         if (s3KeyMatch) {
           const s3Key = s3KeyMatch[1];
-          console.log(`🔍 [createVideoEntryImmediately] Verifying thumbnail exists in S3: ${s3Key}`);
-          console.log(`   Has early thumbnail: ${hasEarlyThumbnail}`);
           
           try {
-            const headResult = await s3.headObject({
+            await s3.headObject({
               Bucket: BUCKET_NAME,
               Key: s3Key
             }).promise();
-            console.log(`✅ [createVideoEntryImmediately] Thumbnail verified in S3 - safe to create DynamoDB entry`);
-            console.log(`   ContentLength: ${headResult.ContentLength} bytes`);
           } catch (s3VerifyError) {
             if (s3VerifyError.code === 'NotFound' || s3VerifyError.code === 'NoSuchKey') {
               console.warn(`⚠️ [createVideoEntryImmediately] Thumbnail NOT FOUND in S3: ${s3Key}`);
@@ -2425,18 +2412,12 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
     }
   }
   
-  if (usingDefaultThumbnail) {
-    console.log(`📋 [createVideoEntryImmediately] Using default thumbnail: ${finalThumbnailUrl}`);
-  }
-  
   // CRITICAL FIX: ALWAYS look up from streamKey mapping FIRST - IGNORE userEmail from request
   // The streamKey mapping is the SINGLE SOURCE OF TRUTH for who actually owns/created the stream
   // For collaborator streams, userEmail from request might be wrong (could be channel owner's email)
   // We MUST use the collaboratorEmail from the streamKey mapping to ensure files are stored correctly
   let creatorEmail = null;
   let streamKeyResult = null; // Store for later use (channelName lookup)
-  console.log(`🔍 [createVideoEntryImmediately] Looking up streamKey mapping for streamKey: ${streamName}`);
-  console.log(`   ⚠️ IGNORING userEmail from request (${userEmail || 'N/A'}) - streamKey mapping is source of truth`);
   
   try {
     const streamKeyParams = {
@@ -2454,30 +2435,15 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
                                 streamKeyResult.Item.isCollaboratorKey === 'true' ||
                                 streamKeyResult.Item.isCollaboratorKey === 1;
       
-      console.log(`✅ [createVideoEntryImmediately] StreamKey mapping found:`);
-      console.log(`   isCollaboratorKey (raw): ${JSON.stringify(streamKeyResult.Item.isCollaboratorKey)} (type: ${typeof streamKeyResult.Item.isCollaboratorKey})`);
-      console.log(`   isCollaboratorKey (parsed): ${isCollaboratorKey}`);
-      console.log(`   collaboratorEmail: ${streamKeyResult.Item.collaboratorEmail || 'N/A'}`);
-      console.log(`   ownerEmail: ${streamKeyResult.Item.ownerEmail || 'N/A'}`);
-      console.log(`   channelName: ${streamKeyResult.Item.channelName || streamKeyResult.Item.seriesName || 'N/A'}`);
-      
       // PRIORITY 1: For collaborator keys, ALWAYS use collaboratorEmail from mapping
       // This is critical - the streamKey mapping knows who the actual streamer is
       if (isCollaboratorKey && streamKeyResult.Item.collaboratorEmail) {
         creatorEmail = streamKeyResult.Item.collaboratorEmail;
-        console.log(`✅ [createVideoEntryImmediately] Using collaboratorEmail from streamKey mapping: ${creatorEmail}`);
-        console.log(`   ✅ IGNORED userEmail from request (${userEmail || 'N/A'}) - using collaboratorEmail instead`);
       } 
       // PRIORITY 2: For owner keys, use ownerEmail from mapping
       else if (streamKeyResult.Item.ownerEmail) {
         creatorEmail = streamKeyResult.Item.ownerEmail;
-        console.log(`✅ [createVideoEntryImmediately] Using ownerEmail from streamKey mapping: ${creatorEmail}`);
-      } else {
-        console.log(`⚠️ [createVideoEntryImmediately] StreamKey mapping found but no collaboratorEmail or ownerEmail`);
       }
-    } else {
-      console.log(`❌ [createVideoEntryImmediately] StreamKey mapping NOT FOUND for ${streamName}`);
-      console.log(`   This should NEVER happen - streamKey should be registered before streaming`);
     }
   } catch (error) {
     console.error(`❌ [createVideoEntryImmediately] Error looking up streamKey mapping: ${error.message}`);
@@ -2487,14 +2453,10 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   // FALLBACK: Only use userEmail if streamKey mapping is completely missing (shouldn't happen)
   if (!creatorEmail && userEmail) {
     creatorEmail = userEmail;
-    console.log(`⚠️ [createVideoEntryImmediately] FALLBACK: Using userEmail from request: ${creatorEmail}`);
-    console.log(`   ⚠️ WARNING: StreamKey mapping was missing - this should not happen in normal flow!`);
-    console.log(`   ⚠️ This means the streamKey was not properly registered before streaming`);
   }
   
   // Final fallback: If still not found, try to get it from channel metadata
   if (!creatorEmail && channelName) {
-    console.log(`⚠️ [createVideoEntryImmediately] Final fallback: Attempting channel metadata lookup for channelName: ${channelName}`);
     try {
       const channelScan = await dynamodb.scan({
         TableName: 'Twilly',
@@ -2509,9 +2471,6 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
       
       if (channelScan.Items && channelScan.Items.length > 0) {
         creatorEmail = channelScan.Items[0].creatorEmail;
-        if (creatorEmail) {
-          console.log(`✅ [createVideoEntryImmediately] Found creatorEmail from channel metadata: ${creatorEmail}`);
-        }
       }
     } catch (error) {
       console.error(`❌ [createVideoEntryImmediately] Error looking up channel metadata: ${error.message}`);
@@ -2531,7 +2490,6 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   // Store under master account, use creatorId from streamKey mapping for username
   // This works for both admin and collaborator accounts - they all stream to the same channel
   const masterEmail = 'dehyu.sinyan@gmail.com'; // Twilly TV channel owner
-  console.log(`✅ [createVideoEntryImmediately] ALL Twilly TV streams stored under master account: ${masterEmail}`);
   console.log(`   creatorEmail from streamKey: ${creatorEmail || 'N/A'} (used for creatorId lookup)`);
   
   // Check if this is a collaborator video (for metadata purposes only)
@@ -2550,21 +2508,11 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
       const mappingChannelName = streamKeyResult.Item.channelName || streamKeyResult.Item.seriesName;
       if (mappingChannelName) {
         finalChannelName = mappingChannelName;
-        console.log(`✅ [createVideoEntryImmediately] Using channelName from streamKey mapping: ${finalChannelName}`);
-        if (channelName && channelName !== finalChannelName) {
-          console.log(`   ⚠️ Request channelName (${channelName}) differs from mapping channelName (${finalChannelName}) - using mapping`);
-        }
-      } else {
-        console.log(`⚠️ [createVideoEntryImmediately] StreamKey mapping has no channelName/seriesName, using request channelName: ${channelName || 'N/A'}`);
       }
     }
   } catch (error) {
-    console.log(`⚠️ [createVideoEntryImmediately] Error getting channelName from mapping: ${error.message}`);
+    // Silent fail - use channelName from request
   }
-  
-  console.log(`✅ [createVideoEntryImmediately] FINAL: Using masterEmail: ${masterEmail}`);
-  console.log(`   File will be stored under: USER#${masterEmail}`);
-  console.log(`   folderName will be: ${finalChannelName || streamName}`);
   console.log(`   All Twilly TV streams (admin or collaborator) use same storage location`);
   
   // Read metadata from DynamoDB
@@ -2601,9 +2549,6 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
     const postAutoResult = await dynamodb.get(postAutoParams).promise();
     if (postAutoResult.Item && postAutoResult.Item.postAutomatically === false) {
       postAutomatically = false;
-      console.log(`📅 [createVideoEntryImmediately] Post automatically is DISABLED by user setting - video visibility will follow schedule`);
-    } else {
-      console.log(`✅ [createVideoEntryImmediately] Post automatically is ENABLED (default) - video will be visible immediately`);
     }
   } catch (error) {
     console.log(`⚠️ Could not check post automatically setting: ${error.message}`);
@@ -2624,8 +2569,6 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   let creatorId = null;
   if (streamKeyResult && streamKeyResult.Item && streamKeyResult.Item.creatorId) {
     creatorId = streamKeyResult.Item.creatorId;
-    console.log(`📋 [createVideoEntryImmediately] Found creatorId from streamKey mapping: ${creatorId}`);
-    console.log(`   This is the collaborator's userId - username will be looked up from this`);
   }
   
   // Use masterEmail (which is now the channel owner for collaborator videos)
@@ -2660,11 +2603,6 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   // This ensures username lookup shows the collaborator's username, not the admin's
   if (creatorId) {
     videoItem.creatorId = creatorId;
-    console.log(`✅ [createVideoEntryImmediately] Added creatorId (collaborator userId) to video entry: ${creatorId}`);
-    console.log(`   Video stored under: USER#${masterEmail} (master account)`);
-    console.log(`   Username will be looked up from: USER#${creatorId}/PROFILE (collaborator's profile)`);
-  } else {
-    console.log(`⚠️ [createVideoEntryImmediately] No creatorId found in streamKey mapping - username lookup may fail`);
   }
   
   // CRITICAL: Add streamerEmail to track who actually streamed the video
@@ -2672,21 +2610,129 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   // streamerEmail should be the email of the person who streamed (from streamKey mapping)
   if (creatorEmail) {
     videoItem.streamerEmail = creatorEmail;
-    console.log(`✅ [createVideoEntryImmediately] Added streamerEmail to video entry: ${creatorEmail}`);
-    console.log(`   This ensures the video is visible to the streamer in Twilly TV by default`);
-  } else {
-    console.log(`⚠️ [createVideoEntryImmediately] No creatorEmail available - streamerEmail not set`);
   }
+  
+  // CRITICAL: Add username type (public or private) to track which mode was used for streaming
+  // Same username is used for both - private streams just have isPrivateUsername = true
+  // Private streams (username 🔒) require approval to view
+  // Public streams (username) can be added by anyone
+  let isPrivateUsername = false; // Default to public
+  if (streamKeyResult && streamKeyResult.Item) {
+    // Handle multiple formats: boolean, string, number, or DynamoDB format
+    const rawIsPrivate = streamKeyResult.Item.isPrivateUsername;
+    console.log(`🔍 [createVideoEntryImmediately] Reading isPrivateUsername from streamKey mapping: ${JSON.stringify(rawIsPrivate)} (type: ${typeof rawIsPrivate})`);
+    if (rawIsPrivate !== undefined && rawIsPrivate !== null) {
+      isPrivateUsername = rawIsPrivate === true || 
+                         rawIsPrivate === 'true' || 
+                         rawIsPrivate === 1 ||
+                         (rawIsPrivate && typeof rawIsPrivate === 'object' && rawIsPrivate.BOOL === true);
+      console.log(`✅ [createVideoEntryImmediately] Parsed isPrivateUsername: ${isPrivateUsername}`);
+    }
+    // If isPrivateUsername is not set in mapping, retry reading it once (in case of eventual consistency)
+    if (rawIsPrivate === undefined || rawIsPrivate === null) {
+      try {
+        console.log(`⚠️ [createVideoEntryImmediately] isPrivateUsername not found in streamKey mapping, retrying after 500ms...`);
+        await new Promise(resolve => setTimeout(resolve, 500)); // Wait 500ms for eventual consistency
+        const retryResult = await dynamodb.get({
+          TableName: 'Twilly',
+          Key: {
+            PK: `STREAM_KEY#${streamName}`,
+            SK: 'MAPPING'
+          }
+        }).promise();
+        if (retryResult.Item) {
+          const retryRawIsPrivate = retryResult.Item.isPrivateUsername;
+          console.log(`🔍 [createVideoEntryImmediately] Retry - isPrivateUsername: ${JSON.stringify(retryRawIsPrivate)} (type: ${typeof retryRawIsPrivate})`);
+          if (retryRawIsPrivate !== undefined && retryRawIsPrivate !== null) {
+            isPrivateUsername = retryRawIsPrivate === true || 
+                              retryRawIsPrivate === 'true' || 
+                              retryRawIsPrivate === 1 ||
+                              (retryRawIsPrivate && typeof retryRawIsPrivate === 'object' && retryRawIsPrivate.BOOL === true);
+            console.log(`✅ [createVideoEntryImmediately] Retry successful - isPrivateUsername: ${isPrivateUsername}`);
+          } else {
+            console.log(`⚠️ [createVideoEntryImmediately] Retry found mapping but isPrivateUsername still undefined/null`);
+          }
+        } else {
+          console.log(`⚠️ [createVideoEntryImmediately] Retry - streamKey mapping not found`);
+        }
+      } catch (retryError) {
+        console.log(`⚠️ [createVideoEntryImmediately] Retry failed: ${retryError.message}`);
+      }
+    }
+  } else {
+    console.log(`⚠️ [createVideoEntryImmediately] streamKey mapping not found for ${streamName}`);
+  }
+  
+  // CRITICAL: ALWAYS re-read isPrivateUsername RIGHT BEFORE saving (don't rely on earlier fetch)
+  // This ensures we have the latest value even if setStreamUsernameType completed after initial fetch
+  // This is a CRITICAL PRIVACY FIX - private videos must NEVER be created as public
+  // Use retry logic to handle DynamoDB eventual consistency
+  let finalIsPrivateRead = false;
+  const maxRetries = 3;
+  for (let attempt = 0; attempt < maxRetries && !finalIsPrivateRead; attempt++) {
+    try {
+      if (attempt > 0) {
+        // Wait longer on retries to allow for eventual consistency
+        const waitTime = attempt * 500; // 500ms, 1000ms, 1500ms
+        console.log(`🔍 [createVideoEntryImmediately] FINAL READ attempt ${attempt + 1}/${maxRetries} - waiting ${waitTime}ms for eventual consistency...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      } else {
+        console.log(`🔍 [createVideoEntryImmediately] FINAL READ - reading isPrivateUsername one last time before saving (CRITICAL for privacy)...`);
+      }
+      
+      const finalCheckResult = await dynamodb.get({
+        TableName: 'Twilly',
+        Key: {
+          PK: `STREAM_KEY#${streamName}`,
+          SK: 'MAPPING'
+        }
+      }).promise();
+      
+      if (finalCheckResult.Item && finalCheckResult.Item.isPrivateUsername !== undefined) {
+        const finalRawIsPrivate = finalCheckResult.Item.isPrivateUsername;
+        const finalIsPrivate = finalRawIsPrivate === true || 
+                               finalRawIsPrivate === 'true' || 
+                               finalRawIsPrivate === 1 ||
+                               (finalRawIsPrivate && typeof finalRawIsPrivate === 'object' && finalRawIsPrivate.BOOL === true);
+        isPrivateUsername = finalIsPrivate;
+        finalIsPrivateRead = true;
+        console.log(`✅ [createVideoEntryImmediately] FINAL READ: Found isPrivateUsername=${isPrivateUsername} - video will be marked ${isPrivateUsername ? 'PRIVATE' : 'PUBLIC'}`);
+      } else if (finalCheckResult.Item) {
+        // Mapping exists but isPrivateUsername is not set - default to public
+        isPrivateUsername = false;
+        finalIsPrivateRead = true;
+        console.log(`⚠️ [createVideoEntryImmediately] FINAL READ: Mapping exists but isPrivateUsername not set - defaulting to PUBLIC`);
+      } else {
+        // Mapping doesn't exist yet - retry
+        console.log(`⚠️ [createVideoEntryImmediately] FINAL READ attempt ${attempt + 1}: Mapping not found yet, will retry...`);
+      }
+    } catch (finalCheckError) {
+      console.log(`⚠️ [createVideoEntryImmediately] FINAL READ attempt ${attempt + 1} failed: ${finalCheckError.message}`);
+      if (attempt === maxRetries - 1) {
+        // Last attempt failed - default to public
+        isPrivateUsername = false;
+        finalIsPrivateRead = true;
+        console.log(`⚠️ [createVideoEntryImmediately] FINAL READ: All retries failed - defaulting to PUBLIC`);
+      }
+    }
+  }
+  
+  if (!finalIsPrivateRead) {
+    // Should never happen, but safety fallback
+    isPrivateUsername = false;
+    console.log(`⚠️ [createVideoEntryImmediately] FINAL READ: Could not determine isPrivateUsername - defaulting to PUBLIC`);
+  }
+  
+  videoItem.isPrivateUsername = isPrivateUsername;
+  console.log(`📝 [createVideoEntryImmediately] Final isPrivateUsername value: ${isPrivateUsername} (will be saved to video entry)`);
   
   // Check if this is a collaborator video by looking at streamKey mapping
   // CRITICAL: Use the isCollaboratorKey we already parsed earlier
   if (isCollaboratorKey) {
     videoItem.isCollaboratorVideo = true;
-    console.log(`📋 [createVideoEntryImmediately] Marked as collaborator video (from streamKey mapping)`);
   } else {
     // Not a collaborator key, so it's the owner's video
     videoItem.isCollaboratorVideo = false;
-    console.log(`📋 [createVideoEntryImmediately] Marked as owner video (not collaborator)`);
   }
   
   // Add metadata fields if present
@@ -2705,19 +2751,16 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   
   // CRITICAL: Final safety check - ensure thumbnailUrl is NEVER null or empty
   if (!finalThumbnailUrl || finalThumbnailUrl.trim() === '' || finalThumbnailUrl === 'null' || finalThumbnailUrl === 'undefined') {
-    console.error(`❌ [createVideoEntryImmediately] CRITICAL: finalThumbnailUrl is invalid after all checks!`);
-    console.error(`   finalThumbnailUrl value: ${JSON.stringify(finalThumbnailUrl)}`);
-    console.error(`   → Using default thumbnail as last resort`);
     finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
     usingDefaultThumbnail = true;
     videoItem.thumbnailUrl = finalThumbnailUrl; // Update videoItem before saving
   }
   
   await dynamodb.put(putParams).promise();
-  console.log(`✅ [createVideoEntryImmediately] Created DynamoDB entry for video: ${fileId}`);
-  console.log(`📋 [createVideoEntryImmediately] Video URL: ${masterPlaylistUrl}`);
-  console.log(`📋 [createVideoEntryImmediately] Thumbnail URL: ${finalThumbnailUrl}${usingDefaultThumbnail ? ' (DEFAULT - thumbnail generation failed)' : ''}`);
-  console.log(`📝 [createVideoEntryImmediately] ===== END =====`);
+  
+  // Log new video stream with essential info only
+  const streamMode = videoItem.isPrivateUsername ? 'PRIVATE' : 'PUBLIC';
+  console.log(`📹 NEW STREAM: ${streamName} | Mode: ${streamMode} | FileId: ${fileId} | Creator: ${creatorEmail || 'N/A'}`);
 }
 
 // Get channel owner from DynamoDB
