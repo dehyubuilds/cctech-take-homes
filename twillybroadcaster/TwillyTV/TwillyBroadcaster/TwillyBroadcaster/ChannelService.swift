@@ -3189,22 +3189,17 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
     // MARK: - Stream Username Type
     
     func setStreamUsernameType(streamKey: String, isPrivateUsername: Bool) async throws -> StreamUsernameTypeResponse {
-        // CRITICAL PRIVACY FIX: Also call EC2 immediate endpoint directly from mobile app
-        // This ensures the global map is set even if Netlify API fails to call EC2
-        // This is a backup to ensure privacy settings are stored instantly
+        // CRITICAL PRIVACY FIX: Call EC2 immediate endpoint FIRST (BLOCKING) before Netlify API
+        // This ensures the global map is set BEFORE the stream starts - NO RACE CONDITION
+        // This MUST complete before the stream starts, so we await it
         let ec2ServerURL = "http://100.24.103.57:3000"
         let immediateURL = "\(ec2ServerURL)/api/streams/set-privacy-immediate"
         
-        // CRITICAL PRIVACY FIX: Also call EC2 immediate endpoint directly from mobile app
-        // This ensures the global map is set even if Netlify API fails to call EC2
-        // This is a backup to ensure privacy settings are stored instantly
-        Task.detached(priority: .utility) {
-            do {
-                guard let ec2URL = URL(string: immediateURL) else {
-                    print("⚠️ [ChannelService] Invalid EC2 URL: \(immediateURL)")
-                    return
-                }
-                
+        // CRITICAL: This MUST be blocking (await) so it completes BEFORE stream starts
+        do {
+            guard let ec2URL = URL(string: immediateURL) else {
+                print("⚠️ [ChannelService] Invalid EC2 URL: \(immediateURL)")
+            } else {
                 var request = URLRequest(url: ec2URL)
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -3216,17 +3211,18 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 request.httpBody = try JSONSerialization.data(withJSONObject: ec2Body)
                 request.timeoutInterval = 5.0
                 
+                print("🔍 [ChannelService] Calling EC2 immediate endpoint (BLOCKING) for streamKey: \(streamKey), isPrivate: \(isPrivateUsername)")
                 let (_, response) = try await URLSession.shared.data(for: request)
                 if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
-                    print("✅ [ChannelService] Successfully stored in EC2 global map (backup)")
+                    print("✅ [ChannelService] CRITICAL: Successfully stored in EC2 global map (BLOCKING - COMPLETED BEFORE STREAM STARTS)")
                 } else {
                     let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
                     print("⚠️ [ChannelService] EC2 immediate endpoint returned status: \(statusCode)")
                 }
-            } catch {
-                // Non-critical - Netlify API will also try to call it
-                print("⚠️ [ChannelService] Could not call EC2 immediate endpoint (backup): \(error.localizedDescription)")
             }
+        } catch {
+            // Log error but continue - Netlify API will also try to call it
+            print("⚠️ [ChannelService] Could not call EC2 immediate endpoint (BLOCKING): \(error.localizedDescription)")
         }
         guard let url = URL(string: "\(baseURL)/streams/set-stream-username-type") else {
             throw ChannelServiceError.invalidURL
