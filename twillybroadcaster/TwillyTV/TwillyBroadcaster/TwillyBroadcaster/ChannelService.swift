@@ -3197,9 +3197,7 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         
         // CRITICAL: This MUST be blocking (await) so it completes BEFORE stream starts
         do {
-            guard let ec2URL = URL(string: immediateURL) else {
-                print("⚠️ [ChannelService] Invalid EC2 URL: \(immediateURL)")
-            } else {
+            if let ec2URL = URL(string: immediateURL) {
                 var request = URLRequest(url: ec2URL)
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
