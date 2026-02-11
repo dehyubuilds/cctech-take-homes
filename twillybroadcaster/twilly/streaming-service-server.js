@@ -1256,18 +1256,60 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
       global.currentUploadContext.thumbnailUrl = 'https://d4idc5cmwxlpy.cloudfront.net/No_Image_Available.jpg';
     }
     
-    if (userEmail && uploadId) {
+    // CRITICAL PRIVACY FIX: For RTMP streams, get userEmail from streamKey mapping and generate uploadId
+    // This ensures createVideoEntryImmediately is called and can check the global map
+    let finalUserEmail = userEmail;
+    let finalUploadId = uploadId;
+    let finalChannelName = channelName;
+    
+    // For RTMP streams (uploadId is NULL), get userEmail and channelName from streamKey mapping
+    if (!finalUserEmail || !finalUploadId) {
+      try {
+        const streamKeyParams = {
+          TableName: 'Twilly',
+          Key: {
+            PK: `STREAM_KEY#${streamName}`,
+            SK: 'MAPPING'
+          },
+          ConsistentRead: true
+        };
+        const streamKeyResult = await dynamodb.get(streamKeyParams).promise();
+        
+        if (streamKeyResult.Item) {
+          if (!finalUserEmail) {
+            finalUserEmail = streamKeyResult.Item.collaboratorEmail || streamKeyResult.Item.ownerEmail;
+            console.log(`✅ [RTMP] Got userEmail from streamKey mapping: ${finalUserEmail}`);
+          }
+          if (!finalChannelName) {
+            finalChannelName = streamKeyResult.Item.channelName || streamKeyResult.Item.seriesName;
+            console.log(`✅ [RTMP] Got channelName from streamKey mapping: ${finalChannelName}`);
+          }
+          if (!finalUploadId) {
+            // Generate uploadId for RTMP streams (needed for createVideoEntryImmediately)
+            finalUploadId = `rtmp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            console.log(`✅ [RTMP] Generated uploadId: ${finalUploadId}`);
+          }
+        }
+      } catch (mappingError) {
+        console.error(`⚠️ [RTMP] Failed to get userEmail from streamKey mapping: ${mappingError.message}`);
+      }
+    }
+    
+    // CRITICAL: Always call createVideoEntryImmediately if we have userEmail (even for RTMP streams)
+    // This ensures the global map is checked and isPrivateUsername is set correctly
+    if (finalUserEmail) {
       try {
         console.log(`📝 Creating DynamoDB entry immediately for instant video appearance...`);
-        console.log(`   Thumbnail URL: ${global.currentUploadContext.thumbnailUrl}`);
-        await createVideoEntryImmediately(streamName, uploadId, uniquePrefix, userEmail, channelName, isPrivateUsernameFromRequest);
+        console.log(`   StreamName: ${streamName}, UploadId: ${finalUploadId}, UserEmail: ${finalUserEmail}`);
+        console.log(`   Thumbnail URL: ${global.currentUploadContext?.thumbnailUrl || 'default'}`);
+        await createVideoEntryImmediately(streamName, finalUploadId, uniquePrefix, finalUserEmail, finalChannelName, isPrivateUsernameFromRequest);
         console.log(`✅ DynamoDB entry created! Video should now appear in channel.`);
       } catch (error) {
         console.error(`⚠️ Failed to create immediate DynamoDB entry (Lambda will create it later):`, error);
         // Don't throw - Lambda will create it when S3 event fires
       }
     } else {
-      console.log(`⚠️ Missing userEmail or uploadId, skipping immediate DynamoDB entry creation`);
+      console.log(`⚠️ Missing userEmail, skipping immediate DynamoDB entry creation`);
     }
     
     // Clear context after use
