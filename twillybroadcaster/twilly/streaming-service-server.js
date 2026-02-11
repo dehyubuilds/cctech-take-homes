@@ -2664,16 +2664,24 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   // Private streams (username 🔒) require approval to view
   // Public streams (username) can be added by anyone
   
-  // CRITICAL PRIVACY FIX: Use isPrivateUsernameFromRequest as PRIMARY source (eliminates race condition)
-  // This value comes directly from the upload request, so it's available immediately
-  // Fallback to streamKey mapping only if request value is not provided
+  // CRITICAL PRIVACY FIX: Use IMMEDIATE global map as PRIMARY source (eliminates ALL race conditions)
+  // This value is stored instantly when setStreamUsernameType is called, before DynamoDB write completes
+  // Priority: 1) Global map (instant), 2) Request body (for file uploads), 3) StreamKey mapping (fallback)
   let isPrivateUsername = false; // Default to public
   
-  if (isPrivateUsernameFromRequest !== null && isPrivateUsernameFromRequest !== undefined) {
-    // PRIMARY SOURCE: Use value from request (no race condition!)
+  // PRIORITY 1: Check global map FIRST (instant, no DynamoDB read needed)
+  if (global.streamPrivacyMap && global.streamPrivacyMap.has(streamName)) {
+    const privacyData = global.streamPrivacyMap.get(streamName);
+    isPrivateUsername = privacyData.isPrivateUsername === true;
+    console.log(`✅ [createVideoEntryImmediately] Using isPrivateUsername from GLOBAL MAP: ${isPrivateUsername} (INSTANT - PRIMARY SOURCE)`);
+  } 
+  // PRIORITY 2: Use value from request body (for file uploads)
+  else if (isPrivateUsernameFromRequest !== null && isPrivateUsernameFromRequest !== undefined) {
     isPrivateUsername = isPrivateUsernameFromRequest === true || isPrivateUsernameFromRequest === 'true' || isPrivateUsernameFromRequest === '1';
-    console.log(`✅ [createVideoEntryImmediately] Using isPrivateUsername from REQUEST: ${isPrivateUsername} (PRIMARY SOURCE - eliminates race condition)`);
-  } else if (streamKeyResult && streamKeyResult.Item) {
+    console.log(`✅ [createVideoEntryImmediately] Using isPrivateUsername from REQUEST: ${isPrivateUsername} (SECONDARY SOURCE)`);
+  } 
+  // PRIORITY 3: Fallback to streamKey mapping (may have race condition, but better than nothing)
+  else if (streamKeyResult && streamKeyResult.Item) {
     // FALLBACK: Read from streamKey mapping (if request value not provided)
     // Handle multiple formats: boolean, string, number, or DynamoDB format
     const rawIsPrivate = streamKeyResult.Item.isPrivateUsername;
