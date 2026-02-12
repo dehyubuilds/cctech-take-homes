@@ -2697,12 +2697,14 @@ struct ChannelDetailView: View {
             VStack(spacing: 0) {
                 // Header with close button
                 HStack {
-                    // Show title if it exists, otherwise show "Video Title"
-                    Text((managingContent?.title ?? "").isEmpty ? "Video Title" : (managingContent?.title ?? ""))
-                        .font(.headline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
-                        .lineLimit(1)
+                    // Show title if it exists, otherwise show nothing
+                    if let title = managingContent?.title, !title.isEmpty {
+                        Text(title)
+                            .font(.headline)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                    }
                     
                     Spacer()
                     
@@ -2758,7 +2760,7 @@ struct ChannelDetailView: View {
                                     showingTitleField = true
                                 }
                             }) {
-                                Text("Add Title")
+                                Text((managingContent?.title ?? "").isEmpty ? "Add Title" : "Edit Title")
                                     .fontWeight(.semibold)
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 14)
