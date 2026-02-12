@@ -1440,97 +1440,16 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
       console.error(`❌ Error during thumbnail generation:`, error);
     }
     
-    // CRITICAL PRIVACY FIX: Call createVideoEntryImmediately for RTMP streams (OLD FLOW)
-    // Even though uploadId is NULL, we still need to create the entry with privacy info
-    // Generate a temporary uploadId for RTMP streams to ensure consistency
-    let finalUserEmail = null;
-    let finalChannelName = null;
-    let finalIsPrivateUsername = null;
-    let rtmpUploadId = null;
-    
-    // Get user info from streamKey mapping
-    try {
-      console.log(`🔍 [RTMP OLD FLOW] Looking up streamKey mapping for: ${streamName}`);
-      const streamKeyParams = {
-        TableName: 'Twilly',
-        Key: {
-          PK: `STREAM_KEY#${streamName}`,
-          SK: 'MAPPING'
-        },
-        ConsistentRead: true
-      };
-      const streamKeyResult = await dynamodb.get(streamKeyParams).promise();
-      
-      if (streamKeyResult.Item) {
-        finalUserEmail = streamKeyResult.Item.collaboratorEmail || streamKeyResult.Item.ownerEmail;
-        finalChannelName = streamKeyResult.Item.channelName || streamKeyResult.Item.seriesName;
-        
-        // Check global map first (instant)
-        if (global.streamPrivacyMap && global.streamPrivacyMap.has(streamName)) {
-          const privacyData = global.streamPrivacyMap.get(streamName);
-          finalIsPrivateUsername = privacyData.isPrivateUsername === true;
-          console.log(`✅ [RTMP OLD FLOW] Got isPrivateUsername from GLOBAL MAP: ${finalIsPrivateUsername}`);
-        } else {
-          // Fallback to streamKey mapping
-          const rawIsPrivate = streamKeyResult.Item.isPrivateUsername;
-          if (rawIsPrivate !== undefined && rawIsPrivate !== null) {
-            finalIsPrivateUsername = rawIsPrivate === true || 
-                                   rawIsPrivate === 'true' || 
-                                   rawIsPrivate === 1 ||
-                                   (rawIsPrivate && typeof rawIsPrivate === 'object' && rawIsPrivate.BOOL === true);
-            console.log(`✅ [RTMP OLD FLOW] Got isPrivateUsername from mapping: ${finalIsPrivateUsername}`);
-          } else {
-            // Fallback: Check lock icon
-            const streamUsername = streamKeyResult.Item.streamUsername || '';
-            if (streamUsername.includes('🔒')) {
-              finalIsPrivateUsername = true;
-              console.log(`✅ [RTMP OLD FLOW] Detected PRIVATE from lock icon`);
-            } else {
-              finalIsPrivateUsername = false;
-              console.log(`✅ [RTMP OLD FLOW] Defaulting to PUBLIC`);
-            }
-          }
-        }
-        
-        // Generate uploadId for RTMP streams (needed for createVideoEntryImmediately)
-        rtmpUploadId = `rtmp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        console.log(`✅ [RTMP OLD FLOW] Generated uploadId: ${rtmpUploadId}`);
-      } else {
-        console.error(`❌ [RTMP OLD FLOW] StreamKey mapping NOT FOUND for: ${streamName}`);
-        finalIsPrivateUsername = false; // Default to public
-      }
-    } catch (mappingError) {
-      console.error(`❌ [RTMP OLD FLOW] Failed to get streamKey mapping: ${mappingError.message}`);
-      finalIsPrivateUsername = false; // Default to public
-    }
-    
-    // Upload master playlist to S3 FIRST (so thumbnail is available when we check)
+    // REVERTED: Removed createVideoEntryImmediately call for RTMP streams
+    // Lambda will handle DynamoDB entry creation when S3 event fires (original working behavior)
+    // This ensures thumbnail and HLS are ready before entry is created
+    // Upload master playlist to S3
     // Pass uploadId so it can be included in S3 key for Lambda to read metadata
     await uploadToS3(outputDir, streamName, schedulerId, uploadId);
     
-    // CRITICAL: Call createVideoEntryImmediately AFTER uploadToS3 so thumbnail is in S3
-    // This ensures the thumbnail path check will find the uploaded thumbnail
-    if (finalUserEmail && rtmpUploadId && uniquePrefix) {
-      try {
-        console.log(`📝 [RTMP OLD FLOW] Creating DynamoDB entry immediately (AFTER S3 upload)...`);
-        console.log(`   StreamName: ${streamName}`);
-        console.log(`   UploadId: ${rtmpUploadId}`);
-        console.log(`   UserEmail: ${finalUserEmail}`);
-        console.log(`   ChannelName: ${finalChannelName || 'N/A'}`);
-        console.log(`   UniquePrefix: ${uniquePrefix}`);
-        console.log(`   isPrivateUsername: ${finalIsPrivateUsername}`);
-        await createVideoEntryImmediately(streamName, rtmpUploadId, uniquePrefix, finalUserEmail, finalChannelName, finalIsPrivateUsername);
-        console.log(`✅ [RTMP OLD FLOW] DynamoDB entry created!`);
-      } catch (error) {
-        console.error(`❌ [RTMP OLD FLOW] Failed to create immediate DynamoDB entry:`, error);
-        // Don't throw - Lambda will create it when S3 event fires
-      }
-    } else {
-      console.error(`❌ [RTMP OLD FLOW] Missing required info for createVideoEntryImmediately:`);
-      console.error(`   finalUserEmail: ${finalUserEmail || 'NULL'}`);
-      console.error(`   rtmpUploadId: ${rtmpUploadId || 'NULL'}`);
-      console.error(`   uniquePrefix: ${uniquePrefix || 'NULL'}`);
-    }
+    // REVERTED: Let Lambda handle DynamoDB entry creation (original working behavior)
+    // Lambda will create the entry when S3 event fires, ensuring thumbnail and HLS are ready
+    // This was the original working behavior before privacy changes
     
     // Clean up temporary files
     cleanupTempFiles(outputDir);
@@ -2639,26 +2558,41 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
               
               // CRITICAL FIX FOR RTMP STREAMS: Try old format path (without uploadId)
               // RTMP streams upload thumbnails to old path but createVideoEntryImmediately uses new uploadId
-              try {
-                await s3.headObject({
-                  Bucket: BUCKET_NAME,
-                  Key: thumbnailKeyOldFormat
-                }).promise();
-                // Found in old format! Use that URL instead
-                finalThumbnailUrl = `${cloudFrontBaseUrl}/${thumbnailKeyOldFormat}`;
-                console.log(`✅ [createVideoEntryImmediately] Thumbnail found in OLD FORMAT: ${thumbnailKeyOldFormat}`);
-                console.log(`   → Using old format URL: ${finalThumbnailUrl}`);
-                usingDefaultThumbnail = false; // We found it, don't use default
-              } catch (oldFormatError) {
-                if (oldFormatError.code === 'NotFound' || oldFormatError.code === 'NoSuchKey') {
-                  console.warn(`⚠️ [createVideoEntryImmediately] Thumbnail NOT FOUND in old format either: ${thumbnailKeyOldFormat}`);
-                  console.warn(`   → Using default thumbnail instead`);
-                  finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
-                  usingDefaultThumbnail = true;
-                } else {
-                  console.error(`⚠️ [createVideoEntryImmediately] Error checking old format: ${oldFormatError.message}`);
-                  finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
-                  usingDefaultThumbnail = true;
+              // Also add retry logic in case S3 upload just completed (eventual consistency)
+              let foundInOldFormat = false;
+              for (let retry = 0; retry < 3; retry++) {
+                if (retry > 0) {
+                  console.log(`   → Retry ${retry}/3: Waiting 500ms for S3 eventual consistency...`);
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                }
+                try {
+                  await s3.headObject({
+                    Bucket: BUCKET_NAME,
+                    Key: thumbnailKeyOldFormat
+                  }).promise();
+                  // Found in old format! Use that URL instead
+                  finalThumbnailUrl = `${cloudFrontBaseUrl}/${thumbnailKeyOldFormat}`;
+                  console.log(`✅ [createVideoEntryImmediately] Thumbnail found in OLD FORMAT (retry ${retry}): ${thumbnailKeyOldFormat}`);
+                  console.log(`   → Using old format URL: ${finalThumbnailUrl}`);
+                  usingDefaultThumbnail = false; // We found it, don't use default
+                  foundInOldFormat = true;
+                  break; // Exit retry loop
+                } catch (oldFormatError) {
+                  if (oldFormatError.code === 'NotFound' || oldFormatError.code === 'NoSuchKey') {
+                    if (retry === 2) {
+                      // Last retry failed
+                      console.warn(`⚠️ [createVideoEntryImmediately] Thumbnail NOT FOUND in old format after 3 retries: ${thumbnailKeyOldFormat}`);
+                      console.warn(`   → Using default thumbnail instead`);
+                      finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
+                      usingDefaultThumbnail = true;
+                    }
+                    // Continue to next retry
+                  } else {
+                    console.error(`⚠️ [createVideoEntryImmediately] Error checking old format: ${oldFormatError.message}`);
+                    finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
+                    usingDefaultThumbnail = true;
+                    break; // Exit on non-404 error
+                  }
                 }
               }
             } else {
