@@ -3188,7 +3188,7 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
     
     // MARK: - Stream Username Type
     
-    func setStreamUsernameType(streamKey: String, isPrivateUsername: Bool) async throws -> StreamUsernameTypeResponse {
+    func setStreamUsernameType(streamKey: String, isPrivateUsername: Bool, streamUsername: String) async throws -> StreamUsernameTypeResponse {
         // CRITICAL PRIVACY FIX: Call EC2 immediate endpoint FIRST (BLOCKING) before Netlify API
         // This ensures the global map is set BEFORE the stream starts - NO RACE CONDITION
         // This MUST complete before the stream starts, so we await it
@@ -3232,7 +3232,8 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         
         let body: [String: Any] = [
             "streamKey": streamKey,
-            "isPrivateUsername": isPrivateUsername
+            "isPrivateUsername": isPrivateUsername,
+            "streamUsername": streamUsername
         ]
         
         request.httpBody = try JSONSerialization.data(withJSONObject: body)

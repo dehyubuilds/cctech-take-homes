@@ -793,18 +793,24 @@ struct ContentView: View {
             let streamIsPublic = selectedStreamVisibility ?? isUsernamePublic
             let isPrivate = !streamIsPublic
             
+            // Get the actual username (e.g., "myusername" or "myusername🔒")
+            let baseUsername = await authService.getUsername() ?? userEmail.split("@")[0]
+            let streamUsername = isPrivate ? "\(baseUsername)🔒" : baseUsername
+            
             print("🔍 [ContentView] Setting stream privacy DURING COUNTDOWN (BEFORE stream starts)")
             print("   StreamKey: \(streamKey)")
             print("   isPrivateUsername: \(isPrivate)")
+            print("   StreamUsername: \(streamUsername)") // Log the actual username being used
             print("   This MUST complete before stream starts!")
             
             do {
                 // CRITICAL: This is BLOCKING - it will complete BEFORE the countdown continues
                 // The EC2 immediate endpoint call inside is also blocking, so global map is set instantly
-                try await ChannelService.shared.setStreamUsernameType(streamKey: streamKey, isPrivateUsername: isPrivate)
+                try await ChannelService.shared.setStreamUsernameType(streamKey: streamKey, isPrivateUsername: isPrivate, streamUsername: streamUsername)
                 print("✅ [ContentView] CRITICAL: Stream privacy set DURING COUNTDOWN - global map is ready!")
                 print("   StreamKey: \(streamKey)")
                 print("   isPrivateUsername: \(isPrivate)")
+                print("   StreamUsername: \(streamUsername)")
                 print("   Stream will start with correct privacy setting ✅")
             } catch {
                 print("❌ [ContentView] CRITICAL: Failed to set stream username type DURING COUNTDOWN: \(error.localizedDescription)")

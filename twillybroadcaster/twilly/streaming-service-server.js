@@ -2567,6 +2567,10 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   const masterPlaylistUrl = `${cloudFrontBaseUrl}/${masterPlaylistKey}`;
   const thumbnailKey = `${basePath}/${uniquePrefix}_thumb.jpg`;
   
+  // CRITICAL FIX FOR RTMP STREAMS: Check BOTH paths (new format with uploadId, old format without)
+  // RTMP streams upload thumbnails to old path (without uploadId) but createVideoEntryImmediately uses new uploadId
+  const thumbnailKeyOldFormat = `clips/${streamName}/${uniquePrefix}_thumb.jpg`; // Old format (when uploadId was NULL)
+  
   // Use early thumbnail URL if available from context AND successfully uploaded to S3
   // CRITICAL: Only use thumbnail URL if it was successfully uploaded to S3
   // If thumbnail upload failed, don't create video entry with invalid thumbnail URL
@@ -2626,13 +2630,36 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
               Bucket: BUCKET_NAME,
               Key: s3Key
             }).promise();
+            console.log(`✅ [createVideoEntryImmediately] Thumbnail verified in S3: ${s3Key}`);
           } catch (s3VerifyError) {
             if (s3VerifyError.code === 'NotFound' || s3VerifyError.code === 'NoSuchKey') {
-              console.warn(`⚠️ [createVideoEntryImmediately] Thumbnail NOT FOUND in S3: ${s3Key}`);
-              console.warn(`   Error code: ${s3VerifyError.code}`);
-              console.warn(`   → Using default thumbnail instead`);
-              finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
-              usingDefaultThumbnail = true;
+              console.warn(`⚠️ [createVideoEntryImmediately] Thumbnail NOT FOUND in S3 (new format): ${s3Key}`);
+              console.warn(`   → Checking old format path (for RTMP streams)...`);
+              
+              // CRITICAL FIX FOR RTMP STREAMS: Try old format path (without uploadId)
+              // RTMP streams upload thumbnails to old path but createVideoEntryImmediately uses new uploadId
+              try {
+                await s3.headObject({
+                  Bucket: BUCKET_NAME,
+                  Key: thumbnailKeyOldFormat
+                }).promise();
+                // Found in old format! Use that URL instead
+                finalThumbnailUrl = `${cloudFrontBaseUrl}/${thumbnailKeyOldFormat}`;
+                console.log(`✅ [createVideoEntryImmediately] Thumbnail found in OLD FORMAT: ${thumbnailKeyOldFormat}`);
+                console.log(`   → Using old format URL: ${finalThumbnailUrl}`);
+                usingDefaultThumbnail = false; // We found it, don't use default
+              } catch (oldFormatError) {
+                if (oldFormatError.code === 'NotFound' || oldFormatError.code === 'NoSuchKey') {
+                  console.warn(`⚠️ [createVideoEntryImmediately] Thumbnail NOT FOUND in old format either: ${thumbnailKeyOldFormat}`);
+                  console.warn(`   → Using default thumbnail instead`);
+                  finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
+                  usingDefaultThumbnail = true;
+                } else {
+                  console.error(`⚠️ [createVideoEntryImmediately] Error checking old format: ${oldFormatError.message}`);
+                  finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
+                  usingDefaultThumbnail = true;
+                }
+              }
             } else {
               console.error(`⚠️ [createVideoEntryImmediately] Error verifying thumbnail in S3: ${s3VerifyError.message}`);
               console.error(`   Error code: ${s3VerifyError.code || 'N/A'}`);
