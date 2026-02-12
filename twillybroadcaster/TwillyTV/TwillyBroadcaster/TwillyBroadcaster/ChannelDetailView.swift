@@ -3377,33 +3377,28 @@ struct ContentCard: View {
                                     .truncationMode(.tail)
                             }
                             
-                            // Creator username (with lock icon for private streams)
+                            // Creator username (with lock icon overlay for private streams - doesn't take space)
                             if let username = content.creatorUsername, !username.isEmpty {
                                 HStack(spacing: 4) {
                                     Image(systemName: "person.circle.fill")
                                         .font(.system(size: 12))
                                         .foregroundColor(.twillyCyan)
                                     
-                                    // Username text - use layoutPriority to ensure it gets space first
+                                    // Username text - display fully, no truncation
                                     Text(username)
                                         .font(.subheadline)
                                         .fontWeight(.semibold)
                                         .foregroundColor(.twillyCyan)
                                         .lineLimit(1) // Force single line
-                                        .truncationMode(.tail) // Truncate only if absolutely necessary
-                                        .fixedSize(horizontal: false, vertical: true) // Prevent wrapping
-                                        .layoutPriority(1) // Give username priority for space
+                                        .fixedSize(horizontal: true, vertical: false) // Allow horizontal expansion, prevent wrapping
                                     
-                                    // Lock icon for private streams - low priority, only takes minimal space
+                                    // Lock icon overlay - positioned absolutely, doesn't take layout space
                                     if content.isPrivateUsername == true {
                                         Image(systemName: "lock.fill")
                                             .font(.system(size: 10))
                                             .foregroundColor(.orange)
-                                            .layoutPriority(0) // Low priority - doesn't take space from username
+                                            .padding(.leading, 4) // Small spacing after username
                                     }
-                                    
-                                    // Spacer to push everything left and give username maximum space
-                                    Spacer(minLength: 0)
                                 }
                                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading) // Allow HStack to take available space
                             }
