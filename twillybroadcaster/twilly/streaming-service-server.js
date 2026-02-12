@@ -1399,11 +1399,11 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
       }
     }
     
-    // CRITICAL: Use finalUploadId for RTMP streams (generated from mapping) to ensure consistent paths
-    const uploadIdToUse = finalUploadId || uploadId;
-    console.log(`📝 [RTMP OLD FLOW] Using uploadId: ${uploadIdToUse || 'NULL'} (finalUploadId: ${finalUploadId || 'NULL'}, uploadId: ${uploadId || 'NULL'})`);
-    
-    await generateAdaptiveHLS(recordingPath, outputDir, streamName, uploadIdToUse);
+    // CRITICAL: For RTMP streams, use NULL uploadId to match the working pattern (old format)
+    // Files are uploaded to: clips/{streamName}/{file} (NOT clips/{streamName}/{uploadId}/{file})
+    // This matches existing working entries in S3 - reverse engineered from actual S3 structure
+    // finalUploadId is still generated for createVideoEntryImmediately to identify RTMP streams
+    await generateAdaptiveHLS(recordingPath, outputDir, streamName, null);
     
     // Generate thumbnail from the recording (after HLS files are created)
     console.log(`🔄 About to generate thumbnail for stream: ${streamName}`);
