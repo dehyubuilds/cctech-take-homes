@@ -1071,6 +1071,14 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
   // This allows us to return success to mobile app much faster (~20-30s vs ~40-50s)
   const isUpload = uploadId !== null; // Check if this is an HTTP upload (has uploadId)
   
+  // CRITICAL: Declare these variables outside the if/else blocks so they're available in both flows
+  // For RTMP streams, these will be determined from streamKey mapping
+  // For HTTP uploads, these come from the request context
+  let finalUserEmail = userEmail;
+  let finalUploadId = uploadId;
+  let finalChannelName = channelName;
+  let finalIsPrivateUsername = null; // Will be set from global map or mapping
+  
   if (isUpload) {
     // NEW FLOW: HTTP uploads - generate 1080p first, return success, then process remaining variants
     console.log(`🚀 Using Snapchat-style approach: Generate 1080p first, then background processing`);
@@ -1256,15 +1264,60 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
       global.currentUploadContext.thumbnailUrl = 'https://d4idc5cmwxlpy.cloudfront.net/No_Image_Available.jpg';
     }
     
-    // CRITICAL PRIVACY FIX: For RTMP streams, get userEmail from streamKey mapping and generate uploadId
-    // This ensures createVideoEntryImmediately is called and can check the global map
-    let finalUserEmail = userEmail;
-    let finalUploadId = uploadId;
-    let finalChannelName = channelName;
-    let finalIsPrivateUsername = null; // Will be set from global map or mapping
+    // CRITICAL PRIVACY FIX: For HTTP uploads, get userEmail from request context
+    // These variables are already declared above, just update them here
+    // For HTTP uploads, isPrivateUsername comes from req.body?.isPrivateUsername (passed to createVideoEntryImmediately)
+    finalUserEmail = userEmail;
+    finalUploadId = uploadId;
+    finalChannelName = channelName;
+    // For HTTP uploads, isPrivateUsername is passed directly to createVideoEntryImmediately from request body
+    // So we don't need to look it up here - it's handled in the upload endpoint
     
-    // CRITICAL: For RTMP streams, ALWAYS try to get userEmail from streamKey mapping
-    // Even if userEmail is provided, we need to ensure we have it for createVideoEntryImmediately
+    // Clear context after use
+    global.currentUploadContext = null;
+    
+    console.log(`🔄 Starting background processing for remaining variants (720p, 480p, 360p)...`);
+    
+    // Step 5: Process remaining variants in background (non-blocking)
+    // This runs asynchronously and doesn't block the response
+    generateRemainingVariants(recordingPath, outputDir, streamName, uploadId, uniquePrefix, isPortrait)
+      .then(async () => {
+        console.log(`✅ Background processing complete: All variants generated`);
+        
+        // Update master playlist with all variants
+        await updateMasterPlaylist(outputDir, streamName, uniquePrefix, isPortrait, uploadId);
+        
+        // Upload remaining variants and updated master playlist
+        console.log(`☁️ Uploading remaining variants (720p, 480p, 360p) and updated master playlist...`);
+        await uploadFilesToS3(outputDir, streamName, uploadId, [
+          `${uniquePrefix}_720p.m3u8`,
+          `${uniquePrefix}_720p_*.ts`,
+          `${uniquePrefix}_480p.m3u8`,
+          `${uniquePrefix}_480p_*.ts`,
+          `${uniquePrefix}_360p.m3u8`,
+          `${uniquePrefix}_360p_*.ts`,
+          `${uniquePrefix}_master.m3u8`
+        ]);
+        
+        console.log(`🎉 All variants uploaded successfully! Adaptive streaming is now fully available.`);
+        
+        // Clean up temporary files after background processing
+        cleanupTempFiles(outputDir);
+      })
+      .catch((error) => {
+        console.error(`❌ Error in background processing:`, error);
+        // Don't throw - this is background processing, errors shouldn't affect the initial upload
+      });
+    
+    // Return early - don't wait for background processing
+    // The mobile app will get success response immediately
+    return;
+  } else {
+    // OLD FLOW: RTMP streams - generate all variants at once (backward compatibility)
+    console.log(`📡 Using traditional approach for RTMP stream: Generate all variants at once`);
+    
+    // CRITICAL: For RTMP streams, get userEmail from streamKey mapping and generate uploadId
+    // This ensures createVideoEntryImmediately is called and can check the global map
     // MOST IMPORTANT: Check global map FIRST (instant, no DynamoDB read needed)
     if (global.streamPrivacyMap && global.streamPrivacyMap.has(streamName)) {
       const privacyData = global.streamPrivacyMap.get(streamName);
@@ -1272,6 +1325,7 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
       console.log(`✅ [RTMP] Got isPrivateUsername from GLOBAL MAP: ${finalIsPrivateUsername} (INSTANT - NO RACE CONDITION)`);
     }
     
+    // Look up streamKey mapping if we don't have userEmail or uploadId
     if (!finalUserEmail || !finalUploadId || finalIsPrivateUsername === null) {
       console.log(`🔍 [RTMP] Looking up streamKey mapping for: ${streamName}`);
       try {
@@ -1322,7 +1376,6 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
           }
         } else {
           console.error(`❌ [RTMP] CRITICAL: streamKey mapping NOT FOUND for: ${streamName}`);
-          console.error(`   This means createVideoEntryImmediately will NOT be called!`);
           // Default to PUBLIC if mapping doesn't exist
           if (finalIsPrivateUsername === null) {
             finalIsPrivateUsername = false;
@@ -1346,78 +1399,6 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
       }
     }
     
-    // CRITICAL: Always call createVideoEntryImmediately if we have userEmail (even for RTMP streams)
-    // This ensures the global map is checked and isPrivateUsername is set correctly
-    // CRITICAL: Use finalIsPrivateUsername (already determined from global map or mapping)
-    if (finalUserEmail && finalUploadId) {
-      try {
-        console.log(`📝 [RTMP] Creating DynamoDB entry immediately for instant video appearance...`);
-        console.log(`   StreamName: ${streamName}`);
-        console.log(`   UploadId: ${finalUploadId}`);
-        console.log(`   UserEmail: ${finalUserEmail}`);
-        console.log(`   ChannelName: ${finalChannelName || 'N/A'}`);
-        console.log(`   UniquePrefix: ${uniquePrefix || 'N/A'}`);
-        console.log(`   isPrivateUsername: ${finalIsPrivateUsername} (DETERMINED - NO RACE CONDITION)`);
-        console.log(`   Thumbnail URL: ${global.currentUploadContext?.thumbnailUrl || 'default'}`);
-        // CRITICAL: Pass finalIsPrivateUsername directly (already determined, no lookup needed)
-        await createVideoEntryImmediately(streamName, finalUploadId, uniquePrefix, finalUserEmail, finalChannelName, finalIsPrivateUsername);
-        console.log(`✅ [RTMP] DynamoDB entry created! Video should now appear in channel.`);
-      } catch (error) {
-        console.error(`❌ [RTMP] CRITICAL: Failed to create immediate DynamoDB entry:`, error);
-        console.error(`   Stack: ${error.stack}`);
-        // Don't throw - Lambda will create it when S3 event fires
-      }
-    } else {
-      console.error(`❌ [RTMP] CRITICAL: Missing userEmail or uploadId - CANNOT create immediate DynamoDB entry!`);
-      console.error(`   finalUserEmail: ${finalUserEmail || 'NULL'}`);
-      console.error(`   finalUploadId: ${finalUploadId || 'NULL'}`);
-      console.error(`   This means isPrivateUsername will NOT be set immediately!`);
-      console.error(`   Lambda will create the entry later, but it might default to PUBLIC!`);
-    }
-    
-    // Clear context after use
-    global.currentUploadContext = null;
-    
-    console.log(`🔄 Starting background processing for remaining variants (720p, 480p, 360p)...`);
-    
-    // Step 5: Process remaining variants in background (non-blocking)
-    // This runs asynchronously and doesn't block the response
-    generateRemainingVariants(recordingPath, outputDir, streamName, uploadId, uniquePrefix, isPortrait)
-      .then(async () => {
-        console.log(`✅ Background processing complete: All variants generated`);
-        
-        // Update master playlist with all variants
-        await updateMasterPlaylist(outputDir, streamName, uniquePrefix, isPortrait, uploadId);
-        
-        // Upload remaining variants and updated master playlist
-        console.log(`☁️ Uploading remaining variants (720p, 480p, 360p) and updated master playlist...`);
-        await uploadFilesToS3(outputDir, streamName, uploadId, [
-          `${uniquePrefix}_720p.m3u8`,
-          `${uniquePrefix}_720p_*.ts`,
-          `${uniquePrefix}_480p.m3u8`,
-          `${uniquePrefix}_480p_*.ts`,
-          `${uniquePrefix}_360p.m3u8`,
-          `${uniquePrefix}_360p_*.ts`,
-          `${uniquePrefix}_master.m3u8`
-        ]);
-        
-        console.log(`🎉 All variants uploaded successfully! Adaptive streaming is now fully available.`);
-        
-        // Clean up temporary files after background processing
-        cleanupTempFiles(outputDir);
-      })
-      .catch((error) => {
-        console.error(`❌ Error in background processing:`, error);
-        // Don't throw - this is background processing, errors shouldn't affect the initial upload
-      });
-    
-    // Return early - don't wait for background processing
-    // The mobile app will get success response immediately
-    return;
-  } else {
-    // OLD FLOW: RTMP streams - generate all variants at once (backward compatibility)
-    console.log(`📡 Using traditional approach for RTMP stream: Generate all variants at once`);
-    
     await generateAdaptiveHLS(recordingPath, outputDir, streamName, uploadId);
     
     // Generate thumbnail from the recording (after HLS files are created)
@@ -1440,16 +1421,37 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
       console.error(`❌ Error during thumbnail generation:`, error);
     }
     
-    // REVERTED: Removed createVideoEntryImmediately call for RTMP streams
-    // Lambda will handle DynamoDB entry creation when S3 event fires (original working behavior)
-    // This ensures thumbnail and HLS are ready before entry is created
     // Upload master playlist to S3
     // Pass uploadId so it can be included in S3 key for Lambda to read metadata
     await uploadToS3(outputDir, streamName, schedulerId, uploadId);
     
-    // REVERTED: Let Lambda handle DynamoDB entry creation (original working behavior)
-    // Lambda will create the entry when S3 event fires, ensuring thumbnail and HLS are ready
-    // This was the original working behavior before privacy changes
+    // RESTORED: Call createVideoEntryImmediately AFTER uploadToS3 (working state)
+    // This ensures thumbnail and HLS are in S3 before creating DynamoDB entry
+    // Use finalUserEmail, finalUploadId, and finalIsPrivateUsername determined earlier
+    if (finalUserEmail && finalUploadId && uniquePrefix) {
+      try {
+        console.log(`📝 [RTMP OLD FLOW] Creating DynamoDB entry immediately AFTER uploadToS3...`);
+        console.log(`   StreamName: ${streamName}`);
+        console.log(`   UploadId: ${finalUploadId}`);
+        console.log(`   UserEmail: ${finalUserEmail}`);
+        console.log(`   ChannelName: ${finalChannelName || 'N/A'}`);
+        console.log(`   UniquePrefix: ${uniquePrefix}`);
+        console.log(`   isPrivateUsername: ${finalIsPrivateUsername} (DETERMINED - NO RACE CONDITION)`);
+        // CRITICAL: Pass finalIsPrivateUsername directly (already determined, no lookup needed)
+        await createVideoEntryImmediately(streamName, finalUploadId, uniquePrefix, finalUserEmail, finalChannelName, finalIsPrivateUsername);
+        console.log(`✅ [RTMP OLD FLOW] DynamoDB entry created! Video should now appear in channel.`);
+      } catch (error) {
+        console.error(`❌ [RTMP OLD FLOW] Failed to create immediate DynamoDB entry:`, error);
+        console.error(`   Stack: ${error.stack}`);
+        // Don't throw - Lambda will create it when S3 event fires as fallback
+      }
+    } else {
+      console.warn(`⚠️ [RTMP OLD FLOW] Missing required data for createVideoEntryImmediately:`);
+      console.warn(`   finalUserEmail: ${finalUserEmail || 'NULL'}`);
+      console.warn(`   finalUploadId: ${finalUploadId || 'NULL'}`);
+      console.warn(`   uniquePrefix: ${uniquePrefix || 'NULL'}`);
+      console.warn(`   Lambda will create the entry when S3 event fires`);
+    }
     
     // Clean up temporary files
     cleanupTempFiles(outputDir);
