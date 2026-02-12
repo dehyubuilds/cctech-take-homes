@@ -794,7 +794,7 @@ struct ContentView: View {
             let isPrivate = !streamIsPublic
             
             // Get the actual username (e.g., "myusername" or "myusername🔒")
-            let baseUsername = await authService.getUsername() ?? userEmail.split("@")[0]
+            let baseUsername = authService.username ?? userEmail.split(separator: "@")[0]
             let streamUsername = isPrivate ? "\(baseUsername)🔒" : baseUsername
             
             print("🔍 [ContentView] Setting stream privacy DURING COUNTDOWN (BEFORE stream starts)")
