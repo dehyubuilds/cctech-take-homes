@@ -794,7 +794,7 @@ struct ContentView: View {
             let isPrivate = !streamIsPublic
             
             // Get the actual username (e.g., "myusername" or "myusername🔒")
-            let baseUsername = authService.username ?? userEmail.split(separator: "@")[0]
+            let baseUsername = authService.username ?? String(userEmail.split(separator: "@")[0])
             let streamUsername = isPrivate ? "\(baseUsername)🔒" : baseUsername
             
             print("🔍 [ContentView] Setting stream privacy DURING COUNTDOWN (BEFORE stream starts)")
@@ -963,22 +963,29 @@ struct ContentView: View {
         HStack {
             Spacer()
             if showSwipeIndicator {
-                HStack(spacing: 6) {
-                    Text("Swipe for Twilly TV")
-                        .font(.caption)
-                        .fontWeight(.medium)
+                HStack(spacing: 8) {
                     Image(systemName: "arrow.left")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 14, weight: .semibold))
+                    Text("Swipe for Twilly TV")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
                 }
-                .foregroundColor(.white.opacity(0.5))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.black.opacity(0.3))
-                .cornerRadius(20)
+                .foregroundColor(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(
+                    LinearGradient(
+                        colors: [Color.twillyTeal.opacity(0.9), Color.twillyCyan.opacity(0.9)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .cornerRadius(25)
+                .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 4)
                 .transition(.opacity.combined(with: .scale))
                 .onAppear {
-                    // Auto-hide after 3 seconds
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    // Auto-hide after 8 seconds (longer visibility)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) {
                         withAnimation(.easeOut(duration: 0.5)) {
                             showSwipeIndicator = false
                         }
