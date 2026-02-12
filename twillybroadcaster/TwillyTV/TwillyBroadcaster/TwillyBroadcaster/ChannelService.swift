@@ -3302,16 +3302,16 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             print("✅ [ChannelService] requestFollow response: \(responseString)")
         }
         
-        let response = try JSONDecoder().decode(FollowRequestResponse.self, from: data)
+        let followResponse = try JSONDecoder().decode(FollowRequestResponse.self, from: data)
         
         // Check if the API returned success: false
-        if !response.success {
-            let errorMsg = response.message ?? "Failed to add username"
+        if !followResponse.success {
+            let errorMsg = followResponse.message ?? "Failed to add username"
             print("❌ [ChannelService] requestFollow: API returned success=false - \(errorMsg)")
             throw ChannelServiceError.serverError(errorMsg)
         }
         
-        return response
+        return followResponse
     }
     
     func acceptFollowRequest(userEmail: String, requesterEmail: String) async throws -> FollowRequestResponse {
