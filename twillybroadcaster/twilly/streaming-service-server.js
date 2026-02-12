@@ -1399,7 +1399,11 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
       }
     }
     
-    await generateAdaptiveHLS(recordingPath, outputDir, streamName, uploadId);
+    // CRITICAL: Use finalUploadId for RTMP streams (generated from mapping) to ensure consistent paths
+    const uploadIdToUse = finalUploadId || uploadId;
+    console.log(`📝 [RTMP OLD FLOW] Using uploadId: ${uploadIdToUse || 'NULL'} (finalUploadId: ${finalUploadId || 'NULL'}, uploadId: ${uploadId || 'NULL'})`);
+    
+    await generateAdaptiveHLS(recordingPath, outputDir, streamName, uploadIdToUse);
     
     // Generate thumbnail from the recording (after HLS files are created)
     console.log(`🔄 About to generate thumbnail for stream: ${streamName}`);
@@ -1422,8 +1426,9 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
     }
     
     // Upload master playlist to S3
-    // Pass uploadId so it can be included in S3 key for Lambda to read metadata
-    await uploadToS3(outputDir, streamName, schedulerId, uploadId);
+    // CRITICAL: Use finalUploadId (generated for RTMP streams) instead of uploadId (which is null for RTMP)
+    // This ensures thumbnail and HLS files are uploaded with the correct path format
+    await uploadToS3(outputDir, streamName, schedulerId, uploadIdToUse);
     
     // RESTORED: Call createVideoEntryImmediately AFTER uploadToS3 (working state)
     // This ensures thumbnail and HLS are in S3 before creating DynamoDB entry
