@@ -1426,9 +1426,10 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
     }
     
     // Upload master playlist to S3
-    // CRITICAL: Use finalUploadId (generated for RTMP streams) instead of uploadId (which is null for RTMP)
-    // This ensures thumbnail and HLS files are uploaded with the correct path format
-    await uploadToS3(outputDir, streamName, schedulerId, uploadIdToUse);
+    // CRITICAL: For RTMP streams, use NULL uploadId to match the working pattern (old format)
+    // Files are uploaded to: clips/{streamName}/{file} (NOT clips/{streamName}/{uploadId}/{file})
+    // This matches existing working entries in S3 - reverse engineered from actual S3 structure
+    await uploadToS3(outputDir, streamName, schedulerId, null);
     
     // RESTORED: Call createVideoEntryImmediately AFTER uploadToS3 (working state)
     // This ensures thumbnail and HLS are in S3 before creating DynamoDB entry
