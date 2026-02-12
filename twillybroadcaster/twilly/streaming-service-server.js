@@ -1074,9 +1074,10 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
   // CRITICAL: Declare these variables outside the if/else blocks so they're available in both flows
   // For RTMP streams, these will be determined from streamKey mapping
   // For HTTP uploads, these come from the request context
-  let finalUserEmail = userEmail;
+  // NOTE: userEmail and channelName are NOT parameters for RTMP streams - they come from streamKey mapping
+  let finalUserEmail = null; // Will be set from streamKey mapping for RTMP, or request context for HTTP uploads
   let finalUploadId = uploadId;
-  let finalChannelName = channelName;
+  let finalChannelName = null; // Will be set from streamKey mapping for RTMP, or request context for HTTP uploads
   let finalIsPrivateUsername = null; // Will be set from global map or mapping
   
   if (isUpload) {
