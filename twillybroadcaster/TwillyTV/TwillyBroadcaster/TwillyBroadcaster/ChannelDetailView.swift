@@ -2697,10 +2697,12 @@ struct ChannelDetailView: View {
             VStack(spacing: 0) {
                 // Header with close button
                 HStack {
-                    Text("Video Title")
+                    // Show title if it exists, otherwise show "Video Title"
+                    Text((managingContent?.title ?? "").isEmpty ? "Video Title" : (managingContent?.title ?? ""))
                         .font(.headline)
                         .fontWeight(.semibold)
                         .foregroundColor(.white)
+                        .lineLimit(1)
                     
                     Spacer()
                     
@@ -2728,11 +2730,6 @@ struct ChannelDetailView: View {
                     if showingTitleField {
                         // Title field
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Video Title")
-                                .font(.subheadline)
-                                .foregroundColor(.white.opacity(0.8))
-                                .padding(.horizontal, 20)
-                            
                             TextField("Enter title...", text: $editingTitle)
                                 .foregroundColor(.white)
                                 .padding(.vertical, 12)
@@ -2761,7 +2758,7 @@ struct ChannelDetailView: View {
                                     showingTitleField = true
                                 }
                             }) {
-                                Text((managingContent?.title ?? "").isEmpty ? "Add Title" : "Edit Title")
+                                Text("Add Title")
                                     .fontWeight(.semibold)
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 14)
