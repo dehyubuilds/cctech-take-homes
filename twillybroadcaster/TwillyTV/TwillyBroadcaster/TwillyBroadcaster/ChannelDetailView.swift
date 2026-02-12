@@ -1466,16 +1466,18 @@ struct ChannelDetailView: View {
         guard currentChannel.channelName.lowercased() == "twilly tv" else { return }
         
         // First, filter existing content immediately for instant feedback
-        // Filter by visibility: public videos when showPrivateContent=false, private videos when showPrivateContent=true
+        // REVERTED: Public videos show all videos where isPrivateUsername != true
+        // Private videos show only videos where isPrivateUsername == true
         await MainActor.run {
             let filtered = content.filter { item in
                 let isPrivate = item.isPrivateUsername == true
-                // If showPrivateContent is true, show only private; if false, show only public
-                let shouldShow = showPrivateContent ? isPrivate : !isPrivate
-                if !shouldShow {
-                    print("🔍 [ChannelDetailView] Filtering out \(isPrivate ? "private" : "public") video: \(item.fileName) (viewing \(showPrivateContent ? "private" : "public"))")
+                if showPrivateContent {
+                    // PRIVATE VIEW: Show only private videos
+                    return isPrivate
+                } else {
+                    // PUBLIC VIEW: Show all videos where isPrivateUsername != true (revert to working state)
+                    return !isPrivate
                 }
-                return shouldShow
             }
             content = filtered
             print("🔍 [ChannelDetailView] Filtered existing content by visibility: \(showPrivateContent ? "private" : "public") - \(filtered.count) items")
