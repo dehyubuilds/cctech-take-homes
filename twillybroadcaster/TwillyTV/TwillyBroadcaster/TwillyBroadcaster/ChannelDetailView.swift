@@ -3384,7 +3384,7 @@ struct ContentCard: View {
                                         .font(.system(size: 12))
                                         .foregroundColor(.twillyCyan)
                                     
-                                    // Username text - allow it to expand fully
+                                    // Username text - use layoutPriority to ensure it gets space first
                                     Text(username)
                                         .font(.subheadline)
                                         .fontWeight(.semibold)
@@ -3392,15 +3392,18 @@ struct ContentCard: View {
                                         .lineLimit(1) // Force single line
                                         .truncationMode(.tail) // Truncate only if absolutely necessary
                                         .fixedSize(horizontal: false, vertical: true) // Prevent wrapping
-                                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading) // Take all available space
+                                        .layoutPriority(1) // Give username priority for space
                                     
-                                    // Lock icon for private streams - fixed width, doesn't take space from username
+                                    // Lock icon for private streams - low priority, only takes minimal space
                                     if content.isPrivateUsername == true {
                                         Image(systemName: "lock.fill")
                                             .font(.system(size: 10))
                                             .foregroundColor(.orange)
-                                            .fixedSize() // Fixed size, doesn't expand
+                                            .layoutPriority(0) // Low priority - doesn't take space from username
                                     }
+                                    
+                                    // Spacer to push everything left and give username maximum space
+                                    Spacer(minLength: 0)
                                 }
                                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading) // Allow HStack to take available space
                             }
