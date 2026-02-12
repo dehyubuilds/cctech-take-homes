@@ -2489,7 +2489,12 @@ function cleanupTempFiles(dir) {
 async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, userEmail, channelName, isPrivateUsernameFromRequest = null) {
   
   const cloudFrontBaseUrl = 'https://d4idc5cmwxlpy.cloudfront.net';
-  const basePath = `clips/${streamName}/${uploadId}`;
+  
+  // CRITICAL FIX: For RTMP streams (uploadId starts with "rtmp-"), use OLD FORMAT (no uploadId in path)
+  // This matches the actual S3 structure where files are at clips/{streamName}/{file}
+  // NOT clips/{streamName}/{uploadId}/{file}
+  const isRTMPStream = uploadId && uploadId.startsWith('rtmp-');
+  const basePath = isRTMPStream ? `clips/${streamName}` : `clips/${streamName}/${uploadId}`;
   const masterPlaylistKey = `${basePath}/${uniquePrefix}_master.m3u8`;
   const masterPlaylistUrl = `${cloudFrontBaseUrl}/${masterPlaylistKey}`;
   const thumbnailKey = `${basePath}/${uniquePrefix}_thumb.jpg`;
