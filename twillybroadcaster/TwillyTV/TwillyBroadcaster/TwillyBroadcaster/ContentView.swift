@@ -986,10 +986,9 @@ struct ContentView: View {
                 .transition(.opacity.combined(with: .scale))
                 .onAppear {
                     // Auto-hide after 8 seconds (longer visibility)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) { [weak self] in
-                        guard let self = self else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) {
                         withAnimation(.easeOut(duration: 0.5)) {
-                            self.showSwipeIndicator = false
+                            showSwipeIndicator = false
                         }
                     }
                 }
@@ -1119,29 +1118,33 @@ extension ContentView {
         return String(format: "%d:%02d", minutes, seconds)
     }
     
-    // Monitor stream time limit (15 minutes)
+        // Monitor stream time limit (15 minutes)
     private func startStreamTimeLimitMonitoring() {
         // Stop any existing timer first
         stopStreamTimeLimitMonitoring()
         
+        // Capture streamTimeLimit by value (it's a constant)
+        let limit = streamTimeLimit
+        
         // Create and store timer
-        streamTimeLimitTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
-            guard let self = self else {
+        // Note: Using [weak streamManager] since StreamManager is a class
+        // streamTimeLimit is captured by value, so no retain cycle
+        streamTimeLimitTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak streamManager] timer in
+            guard let streamManager = streamManager else {
                 timer.invalidate()
                 return
             }
             
             // Stop monitoring if stream is not active
-            if !self.streamManager.isStreaming {
-                self.stopStreamTimeLimitMonitoring()
+            if !streamManager.isStreaming {
+                // Timer will be invalidated when stream stops
                 return
             }
             
             // Check if 15 minutes have elapsed
-            if self.streamManager.duration >= self.streamTimeLimit {
+            if streamManager.duration >= limit {
                 print("⏰ [ContentView] 15-minute limit reached - stopping stream automatically")
-                self.streamManager.stopStreaming()
-                self.stopStreamTimeLimitMonitoring()
+                streamManager.stopStreaming()
             }
         }
     }
@@ -1712,12 +1715,10 @@ extension ContentView {
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RecordingStarted"))) { _ in
             print("🔍 ContentView: Received RecordingStarted notification")
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RecordingFinished"))) { [weak self] _ in
-            guard let self = self else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                guard let self = self else { return }
-                if self.streamManager.recordedVideoURL != nil {
-                    self.showingRecordingPreview = true
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RecordingFinished"))) { _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                if streamManager.recordedVideoURL != nil {
+                    showingRecordingPreview = true
                 }
             }
         }
