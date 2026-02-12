@@ -2796,6 +2796,8 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   
   // Use masterEmail (which is now the channel owner for collaborator videos)
   // Videos stored here so web app managefiles can see them
+  // CRITICAL: channelId format is email-channelName (e.g., "dehyu.sinyan@gmail.com-Twilly TV")
+  const channelId = `${masterEmail}-${finalChannelName || streamName}`;
   const videoItem = {
     PK: `USER#${masterEmail}`, // Store under master account for web app visibility
     SK: `FILE#${fileId}`,
@@ -2805,6 +2807,7 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
     fileExtension: 'm3u8',
     folderPath: streamName,
     folderName: finalChannelName || streamName,
+    channelId: channelId, // CRITICAL: Mobile app needs channelId to match videos to channels
     streamKey: streamName,
     category: 'Videos',
     timestamp: timestamp,
