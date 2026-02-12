@@ -3262,6 +3262,8 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             throw ChannelServiceError.invalidURL
         }
         
+        print("📤 [ChannelService] requestFollow: requesterEmail=\(requesterEmail), requestedUsername=\(requestedUsername)")
+        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -3275,9 +3277,29 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         
         let (data, response) = try await urlSession.data(for: request)
         
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            print("❌ [ChannelService] requestFollow: Invalid response type")
             throw ChannelServiceError.invalidResponse
+        }
+        
+        print("📥 [ChannelService] requestFollow response status: \(httpResponse.statusCode)")
+        
+        guard httpResponse.statusCode == 200 else {
+            let responseBody = String(data: data, encoding: .utf8) ?? "Unable to decode response"
+            print("❌ [ChannelService] requestFollow: HTTP \(httpResponse.statusCode)")
+            print("   Response body: \(responseBody)")
+            
+            // Try to parse error message from response
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let message = json["message"] as? String {
+                throw ChannelServiceError.serverError(message)
+            }
+            
+            throw ChannelServiceError.serverError("Server error: HTTP \(httpResponse.statusCode)")
+        }
+        
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("✅ [ChannelService] requestFollow response: \(responseString)")
         }
         
         return try JSONDecoder().decode(FollowRequestResponse.self, from: data)

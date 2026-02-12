@@ -785,9 +785,16 @@ struct ChannelDetailView: View {
                     }
                 }
             } catch {
-                print("❌ [ChannelDetailView] Error adding username: \(error.localizedDescription)")
+                print("❌ [ChannelDetailView] Error adding username: \(error)")
+                print("   Error type: \(type(of: error))")
+                print("   Error description: \(error.localizedDescription)")
+                if let channelError = error as? ChannelServiceError {
+                    print("   ChannelServiceError: \(channelError)")
+                }
                 await MainActor.run {
                     isAddingUsername = false
+                    // Show error to user
+                    errorMessage = "Failed to add username: \(error.localizedDescription)"
                 }
             }
         }
