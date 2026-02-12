@@ -3383,22 +3383,26 @@ struct ContentCard: View {
                                     Image(systemName: "person.circle.fill")
                                         .font(.system(size: 12))
                                         .foregroundColor(.twillyCyan)
+                                    
+                                    // Username text - allow it to expand fully
                                     Text(username)
                                         .font(.subheadline)
                                         .fontWeight(.semibold)
                                         .foregroundColor(.twillyCyan)
                                         .lineLimit(1) // Force single line
-                                        .truncationMode(.tail) // Truncate if too long
+                                        .truncationMode(.tail) // Truncate only if absolutely necessary
                                         .fixedSize(horizontal: false, vertical: true) // Prevent wrapping
+                                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading) // Take all available space
                                     
-                                    // Lock icon for private streams
+                                    // Lock icon for private streams - fixed width, doesn't take space from username
                                     if content.isPrivateUsername == true {
                                         Image(systemName: "lock.fill")
                                             .font(.system(size: 10))
                                             .foregroundColor(.orange)
+                                            .fixedSize() // Fixed size, doesn't expand
                                     }
                                 }
-                                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading) // Allow username to take available space
+                                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading) // Allow HStack to take available space
                             }
                             
                             // Video duration
