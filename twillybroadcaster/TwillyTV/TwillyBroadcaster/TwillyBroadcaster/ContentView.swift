@@ -964,11 +964,11 @@ struct ContentView: View {
             Spacer()
             if showSwipeIndicator {
                 HStack(spacing: 8) {
-                    Image(systemName: "arrow.left")
-                        .font(.system(size: 14, weight: .semibold))
                     Text("Swipe for Twilly TV")
                         .font(.subheadline)
                         .fontWeight(.semibold)
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 14, weight: .semibold))
                 }
                 .foregroundColor(.white)
                 .padding(.horizontal, 16)
