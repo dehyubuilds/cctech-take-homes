@@ -1094,7 +1094,7 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
       
       // Verify it was uploaded to S3 (check context)
       if (global.currentUploadContext && global.currentUploadContext.thumbnailUrl) {
-        thumbnailGenerated = true;
+      thumbnailGenerated = true;
         thumbnailUploaded = true;
         console.log(`✅ Early thumbnail was uploaded to S3: ${global.currentUploadContext.thumbnailUrl}`);
       } else {
@@ -1423,13 +1423,108 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
     // Generate thumbnail from the recording (after HLS files are created)
     console.log(`🔄 About to generate thumbnail for stream: ${streamName}`);
     console.log(`📁 Output directory: ${outputDir}`);
+    let uniquePrefix = null;
     try {
       const files = fs.readdirSync(outputDir);
       console.log(`📁 Files in output directory:`, files);
       await generateThumbnail(recordingPath, outputDir, streamName);
       console.log(`✅ Thumbnail generation completed for stream: ${streamName}`);
+      
+      // Extract uniquePrefix from generated files for createVideoEntryImmediately
+      const m3u8Files = files.filter(file => file.endsWith('_master.m3u8'));
+      if (m3u8Files.length > 0) {
+        uniquePrefix = m3u8Files[0].replace('_master.m3u8', '');
+        console.log(`✅ Extracted uniquePrefix for RTMP stream: ${uniquePrefix}`);
+      }
     } catch (error) {
       console.error(`❌ Error during thumbnail generation:`, error);
+    }
+    
+    // CRITICAL PRIVACY FIX: Call createVideoEntryImmediately for RTMP streams (OLD FLOW)
+    // Even though uploadId is NULL, we still need to create the entry with privacy info
+    // Generate a temporary uploadId for RTMP streams to ensure consistency
+    let finalUserEmail = null;
+    let finalChannelName = null;
+    let finalIsPrivateUsername = null;
+    let rtmpUploadId = null;
+    
+    // Get user info from streamKey mapping
+    try {
+      console.log(`🔍 [RTMP OLD FLOW] Looking up streamKey mapping for: ${streamName}`);
+      const streamKeyParams = {
+        TableName: 'Twilly',
+        Key: {
+          PK: `STREAM_KEY#${streamName}`,
+          SK: 'MAPPING'
+        },
+        ConsistentRead: true
+      };
+      const streamKeyResult = await dynamodb.get(streamKeyParams).promise();
+      
+      if (streamKeyResult.Item) {
+        finalUserEmail = streamKeyResult.Item.collaboratorEmail || streamKeyResult.Item.ownerEmail;
+        finalChannelName = streamKeyResult.Item.channelName || streamKeyResult.Item.seriesName;
+        
+        // Check global map first (instant)
+        if (global.streamPrivacyMap && global.streamPrivacyMap.has(streamName)) {
+          const privacyData = global.streamPrivacyMap.get(streamName);
+          finalIsPrivateUsername = privacyData.isPrivateUsername === true;
+          console.log(`✅ [RTMP OLD FLOW] Got isPrivateUsername from GLOBAL MAP: ${finalIsPrivateUsername}`);
+        } else {
+          // Fallback to streamKey mapping
+          const rawIsPrivate = streamKeyResult.Item.isPrivateUsername;
+          if (rawIsPrivate !== undefined && rawIsPrivate !== null) {
+            finalIsPrivateUsername = rawIsPrivate === true || 
+                                   rawIsPrivate === 'true' || 
+                                   rawIsPrivate === 1 ||
+                                   (rawIsPrivate && typeof rawIsPrivate === 'object' && rawIsPrivate.BOOL === true);
+            console.log(`✅ [RTMP OLD FLOW] Got isPrivateUsername from mapping: ${finalIsPrivateUsername}`);
+          } else {
+            // Fallback: Check lock icon
+            const streamUsername = streamKeyResult.Item.streamUsername || '';
+            if (streamUsername.includes('🔒')) {
+              finalIsPrivateUsername = true;
+              console.log(`✅ [RTMP OLD FLOW] Detected PRIVATE from lock icon`);
+            } else {
+              finalIsPrivateUsername = false;
+              console.log(`✅ [RTMP OLD FLOW] Defaulting to PUBLIC`);
+            }
+          }
+        }
+        
+        // Generate uploadId for RTMP streams (needed for createVideoEntryImmediately)
+        rtmpUploadId = `rtmp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        console.log(`✅ [RTMP OLD FLOW] Generated uploadId: ${rtmpUploadId}`);
+      } else {
+        console.error(`❌ [RTMP OLD FLOW] StreamKey mapping NOT FOUND for: ${streamName}`);
+        finalIsPrivateUsername = false; // Default to public
+      }
+    } catch (mappingError) {
+      console.error(`❌ [RTMP OLD FLOW] Failed to get streamKey mapping: ${mappingError.message}`);
+      finalIsPrivateUsername = false; // Default to public
+    }
+    
+    // Call createVideoEntryImmediately if we have the required info
+    if (finalUserEmail && rtmpUploadId && uniquePrefix) {
+      try {
+        console.log(`📝 [RTMP OLD FLOW] Creating DynamoDB entry immediately...`);
+        console.log(`   StreamName: ${streamName}`);
+        console.log(`   UploadId: ${rtmpUploadId}`);
+        console.log(`   UserEmail: ${finalUserEmail}`);
+        console.log(`   ChannelName: ${finalChannelName || 'N/A'}`);
+        console.log(`   UniquePrefix: ${uniquePrefix}`);
+        console.log(`   isPrivateUsername: ${finalIsPrivateUsername}`);
+        await createVideoEntryImmediately(streamName, rtmpUploadId, uniquePrefix, finalUserEmail, finalChannelName, finalIsPrivateUsername);
+        console.log(`✅ [RTMP OLD FLOW] DynamoDB entry created!`);
+      } catch (error) {
+        console.error(`❌ [RTMP OLD FLOW] Failed to create immediate DynamoDB entry:`, error);
+        // Don't throw - Lambda will create it when S3 event fires
+      }
+    } else {
+      console.error(`❌ [RTMP OLD FLOW] Missing required info for createVideoEntryImmediately:`);
+      console.error(`   finalUserEmail: ${finalUserEmail || 'NULL'}`);
+      console.error(`   rtmpUploadId: ${rtmpUploadId || 'NULL'}`);
+      console.error(`   uniquePrefix: ${uniquePrefix || 'NULL'}`);
     }
     
     // Upload master playlist to S3
@@ -1465,26 +1560,26 @@ async function generateThumbnail(inputPath, outputDir, streamName, uniquePrefixP
         console.log(`✅ Using provided uniquePrefix: ${uniquePrefix}`);
       } else {
         // Fallback: Extract the unique prefix from the output directory files (for RTMP streams)
-        const files = fs.readdirSync(outputDir);
-        console.log(`📁 Files found in output directory:`, files);
-        
-        // Look for any m3u8 file to get the unique prefix
-        const m3u8Files = files.filter(file => file.endsWith('.m3u8'));
-        console.log(`📄 Found m3u8 files:`, m3u8Files);
-        
-        if (m3u8Files.length === 0) {
+      const files = fs.readdirSync(outputDir);
+      console.log(`📁 Files found in output directory:`, files);
+      
+      // Look for any m3u8 file to get the unique prefix
+      const m3u8Files = files.filter(file => file.endsWith('.m3u8'));
+      console.log(`📄 Found m3u8 files:`, m3u8Files);
+      
+      if (m3u8Files.length === 0) {
           console.error(`❌ No m3u8 files found for thumbnail generation and no uniquePrefix provided`);
           console.error(`   This indicates a race condition or missing files. Cannot generate thumbnail.`);
-          resolve();
-          return;
-        }
-        
-        // Use the first m3u8 file to extract the unique prefix
-        const m3u8File = m3u8Files[0];
-        
-        // Extract the unique prefix from the m3u8 filename
-        // m3u8File format: "deh1_2025-07-16T20-34-59-561Z_gqx58f42_1080p.m3u8" or "deh1_2025-07-16T20-34-59-561Z_gqx58f42_master.m3u8"
-        // We want to extract: "deh1_2025-07-16T20-34-59-561Z_gqx58f42"
+        resolve();
+        return;
+      }
+      
+      // Use the first m3u8 file to extract the unique prefix
+      const m3u8File = m3u8Files[0];
+      
+      // Extract the unique prefix from the m3u8 filename
+      // m3u8File format: "deh1_2025-07-16T20-34-59-561Z_gqx58f42_1080p.m3u8" or "deh1_2025-07-16T20-34-59-561Z_gqx58f42_master.m3u8"
+      // We want to extract: "deh1_2025-07-16T20-34-59-561Z_gqx58f42"
         uniquePrefix = m3u8File.replace(/_(1080p|720p|480p|360p|master)\.m3u8$/, '');
         console.log(`✅ Extracted uniquePrefix from m3u8 file: ${uniquePrefix}`);
       }
@@ -2774,11 +2869,13 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   // For RTMP streams, isPrivateUsernameFromRequest is already determined from global map or mapping
   // This eliminates ALL race conditions - value is determined ONCE and passed directly
   let isPrivateUsername = false; // Default to public
+  let isPrivateDetermined = false; // Flag to track if privacy is already determined
   
   // PRIORITY 1: Use value from request parameter (for RTMP streams, this is already determined from global map or mapping)
   // This is the MOST RELIABLE - it's passed directly, no lookup needed, NO RACE CONDITION
   if (isPrivateUsernameFromRequest !== null && isPrivateUsernameFromRequest !== undefined) {
     isPrivateUsername = isPrivateUsernameFromRequest === true || isPrivateUsernameFromRequest === 'true' || isPrivateUsernameFromRequest === '1';
+    isPrivateDetermined = true;
     console.log(`✅ [createVideoEntryImmediately] Using isPrivateUsername from REQUEST PARAMETER: ${isPrivateUsername} (PRIMARY - NO RACE CONDITION, ALREADY DETERMINED)`);
   }
   // PRIORITY 2: Check global map (instant, no DynamoDB read needed)
@@ -2787,6 +2884,7 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   else if (global.streamPrivacyMap && global.streamPrivacyMap.has(streamName)) {
     const privacyData = global.streamPrivacyMap.get(streamName);
     isPrivateUsername = privacyData.isPrivateUsername === true;
+    isPrivateDetermined = true;
     console.log(`✅ [createVideoEntryImmediately] Using isPrivateUsername from GLOBAL MAP: ${isPrivateUsername} (SECONDARY - INSTANT)`);
     console.log(`   Global map entry: ${JSON.stringify(privacyData)}`);
   } 
@@ -2801,6 +2899,7 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
                          rawIsPrivate === 'true' || 
                          rawIsPrivate === 1 ||
                          (rawIsPrivate && typeof rawIsPrivate === 'object' && rawIsPrivate.BOOL === true);
+      isPrivateDetermined = true;
       console.log(`✅ [createVideoEntryImmediately] Parsed isPrivateUsername from mapping (FALLBACK): ${isPrivateUsername}`);
     }
     // If isPrivateUsername is not set in mapping, retry reading it once (in case of eventual consistency)
@@ -2824,8 +2923,9 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
                               retryRawIsPrivate === 'true' || 
                               retryRawIsPrivate === 1 ||
                               (retryRawIsPrivate && typeof retryRawIsPrivate === 'object' && retryRawIsPrivate.BOOL === true);
+            isPrivateDetermined = true;
             console.log(`✅ [createVideoEntryImmediately] Retry successful - isPrivateUsername: ${isPrivateUsername}`);
-          } else {
+  } else {
             console.log(`⚠️ [createVideoEntryImmediately] Retry found mapping but isPrivateUsername still undefined/null`);
           }
         } else {
@@ -2840,20 +2940,18 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   }
   
   // CRITICAL: Only re-read isPrivateUsername if we haven't already determined it from request parameter or global map
-  // If isPrivateUsernameFromRequest was provided, it's already correct (no race condition) - SKIP the final read
+  // If isPrivateUsernameFromRequest was provided OR global map had it, it's already correct (no race condition) - SKIP the final read
   // The final read is only needed as a fallback if we couldn't determine it earlier
-  let finalIsPrivateRead = false;
-  const shouldDoFinalRead = isPrivateUsernameFromRequest === null || isPrivateUsernameFromRequest === undefined;
+  let finalIsPrivateRead = isPrivateDetermined; // If already determined, skip final read
   
-  if (!shouldDoFinalRead) {
+  if (isPrivateDetermined) {
     console.log(`✅ [createVideoEntryImmediately] SKIPPING FINAL READ - isPrivateUsername already determined from request parameter or global map: ${isPrivateUsername}`);
-    finalIsPrivateRead = true; // Mark as read so we don't do the fallback logic below
   } else {
     console.log(`🔍 [createVideoEntryImmediately] FINAL READ needed - isPrivateUsername not determined yet, will read from DynamoDB...`);
   }
   
   const maxRetries = 3;
-  for (let attempt = 0; attempt < maxRetries && !finalIsPrivateRead && shouldDoFinalRead; attempt++) {
+  for (let attempt = 0; attempt < maxRetries && !finalIsPrivateRead; attempt++) {
     try {
       if (attempt > 0) {
         // Wait longer on retries to allow for eventual consistency
@@ -2882,6 +2980,7 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
                                finalRawIsPrivate === 1 ||
                                (finalRawIsPrivate && typeof finalRawIsPrivate === 'object' && finalRawIsPrivate.BOOL === true);
         isPrivateUsername = finalIsPrivate;
+        isPrivateDetermined = true;
         finalIsPrivateRead = true;
         console.log(`✅ [createVideoEntryImmediately] FINAL READ: Found isPrivateUsername=${isPrivateUsername} - video will be marked ${isPrivateUsername ? 'PRIVATE' : 'PUBLIC'}`);
       } else if (finalCheckResult.Item) {
@@ -2905,21 +3004,23 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   }
   
   // Only do fallback logic if we still haven't determined isPrivateUsername
-  // If isPrivateUsernameFromRequest was provided, we already have the correct value - don't overwrite it
-  if (!finalIsPrivateRead && shouldDoFinalRead) {
+  // If isPrivateUsernameFromRequest was provided OR global map had it, we already have the correct value - don't overwrite it
+  if (!isPrivateDetermined) {
     // Final fallback: Check if streamUsername field contains lock icon (🔒) as backup indicator
     if (streamKeyResult && streamKeyResult.Item && streamKeyResult.Item.streamUsername) {
       const streamUsername = streamKeyResult.Item.streamUsername;
       if (typeof streamUsername === 'string' && streamUsername.includes('🔒')) {
         isPrivateUsername = true;
+        isPrivateDetermined = true;
         finalIsPrivateRead = true;
         console.log(`✅ [createVideoEntryImmediately] FALLBACK: Detected private stream from lock icon in streamUsername: ${streamUsername}`);
       }
     }
     
-    if (!finalIsPrivateRead) {
+    if (!isPrivateDetermined) {
       // Should never happen, but safety fallback - default to public if we can't determine
       isPrivateUsername = false;
+      isPrivateDetermined = true;
       console.log(`⚠️ [createVideoEntryImmediately] FINAL READ: Could not determine isPrivateUsername - defaulting to PUBLIC`);
     }
   }
@@ -2929,6 +3030,17 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   // If undefined, DynamoDB DocumentClient might omit the field, causing Lambda to default to public
   videoItem.isPrivateUsername = isPrivateUsername === true ? true : false; // Explicitly set to boolean
   console.log(`📝 [createVideoEntryImmediately] Final isPrivateUsername value: ${videoItem.isPrivateUsername} (type: ${typeof videoItem.isPrivateUsername}, will be saved to video entry)`);
+  
+  // CRITICAL SIMPLIFICATION: Use streamUsername from mapping as creatorUsername
+  // streamUsername will be "username🔒" if private, or just "username" if public
+  // This is the SIMPLEST approach - no flags needed, just check for 🔒 in creatorUsername
+  if (streamKeyResult && streamKeyResult.Item && streamKeyResult.Item.streamUsername) {
+    videoItem.creatorUsername = streamKeyResult.Item.streamUsername;
+    console.log(`✅ [createVideoEntryImmediately] Set creatorUsername from streamUsername: ${videoItem.creatorUsername}`);
+    console.log(`   This username ${videoItem.creatorUsername.includes('🔒') ? 'IS PRIVATE' : 'IS PUBLIC'} (has 🔒: ${videoItem.creatorUsername.includes('🔒')})`);
+  } else {
+    console.log(`⚠️ [createVideoEntryImmediately] streamUsername not found in mapping - creatorUsername will be set later by get-content API`);
+  }
   
   // Check if this is a collaborator video by looking at streamKey mapping
   // CRITICAL: Use the isCollaboratorKey we already parsed earlier
