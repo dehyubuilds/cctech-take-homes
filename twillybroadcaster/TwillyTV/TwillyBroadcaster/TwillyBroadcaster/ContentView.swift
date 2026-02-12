@@ -98,6 +98,7 @@ struct ContentView: View {
     
     // 15-minute stream limit
     private let streamTimeLimit: TimeInterval = 15 * 60 // 15 minutes in seconds
+    @State private var streamTimeLimitTimer: Timer? = nil // Timer for monitoring stream time limit
     
     var body: some View {
         Group {
@@ -985,9 +986,10 @@ struct ContentView: View {
                 .transition(.opacity.combined(with: .scale))
                 .onAppear {
                     // Auto-hide after 8 seconds (longer visibility)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) { [weak self] in
+                        guard let self = self else { return }
                         withAnimation(.easeOut(duration: 0.5)) {
-                            showSwipeIndicator = false
+                            self.showSwipeIndicator = false
                         }
                     }
                 }
@@ -1093,6 +1095,11 @@ struct StreamCountdownTimerView: View {
                     onTimeExpired()
                 }
             }
+            .onDisappear {
+                // CRITICAL: Clean up timer when view disappears
+                timer?.invalidate()
+                timer = nil
+            }
     }
     
     private var countdownText: String {
@@ -1114,11 +1121,19 @@ extension ContentView {
     
     // Monitor stream time limit (15 minutes)
     private func startStreamTimeLimitMonitoring() {
-        // Check every second if stream has reached 15 minutes
-        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
+        // Stop any existing timer first
+        stopStreamTimeLimitMonitoring()
+        
+        // Create and store timer
+        streamTimeLimitTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
+            guard let self = self else {
+                timer.invalidate()
+                return
+            }
+            
             // Stop monitoring if stream is not active
             if !self.streamManager.isStreaming {
-                timer.invalidate()
+                self.stopStreamTimeLimitMonitoring()
                 return
             }
             
@@ -1126,9 +1141,15 @@ extension ContentView {
             if self.streamManager.duration >= self.streamTimeLimit {
                 print("⏰ [ContentView] 15-minute limit reached - stopping stream automatically")
                 self.streamManager.stopStreaming()
-                timer.invalidate()
+                self.stopStreamTimeLimitMonitoring()
             }
         }
+    }
+    
+    // Stop stream time limit monitoring
+    private func stopStreamTimeLimitMonitoring() {
+        streamTimeLimitTimer?.invalidate()
+        streamTimeLimitTimer = nil
     }
     
     private var liveStatusIndicator: some View {
@@ -1668,6 +1689,20 @@ extension ContentView {
                 connectionManager.selectedKeyId = nil
             }
         }
+        .onDisappear {
+            // CRITICAL: Clean up resources when view disappears to prevent crashes
+            // Stop stream time limit monitoring
+            stopStreamTimeLimitMonitoring()
+            
+            // Cancel countdown task if still running
+            countdownTask?.cancel()
+            countdownTask = nil
+            
+            // Stop camera preview if not streaming (cleanup camera resources)
+            if !streamManager.isStreaming {
+                streamManager.stopCameraPreview()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             connectionManager.selectedKeyId = nil
         }
@@ -1677,10 +1712,12 @@ extension ContentView {
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RecordingStarted"))) { _ in
             print("🔍 ContentView: Received RecordingStarted notification")
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RecordingFinished"))) { _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                if streamManager.recordedVideoURL != nil {
-                    showingRecordingPreview = true
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RecordingFinished"))) { [weak self] _ in
+            guard let self = self else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self = self else { return }
+                if self.streamManager.recordedVideoURL != nil {
+                    self.showingRecordingPreview = true
                 }
             }
         }

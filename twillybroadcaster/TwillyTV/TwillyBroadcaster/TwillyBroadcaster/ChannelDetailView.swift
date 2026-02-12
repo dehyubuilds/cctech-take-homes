@@ -190,8 +190,15 @@ struct ChannelDetailView: View {
             )
         }
         .onDisappear {
+            // CRITICAL: Clean up all background tasks when view disappears
             // Stop polling when view disappears
             stopThumbnailPolling()
+            
+            // Stop auto-refresh task
+            stopAutoRefresh()
+            
+            // Cancel any pending content loading tasks
+            // (Tasks are automatically cancelled when view disappears, but explicit cancellation is safer)
         }
         .alert("Delete Video", isPresented: $showingDeleteConfirmation, presenting: contentToDelete) { item in
             Button("Cancel", role: .cancel) {
