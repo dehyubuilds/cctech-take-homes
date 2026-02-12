@@ -3377,7 +3377,7 @@ struct ContentCard: View {
                                     .truncationMode(.tail)
                             }
                             
-                            // Creator username (display same for public and private)
+                            // Creator username (with lock icon for private streams)
                             if let username = content.creatorUsername, !username.isEmpty {
                                 HStack(spacing: 4) {
                                     Image(systemName: "person.circle.fill")
@@ -3390,8 +3390,15 @@ struct ContentCard: View {
                                         .lineLimit(1) // Force single line
                                         .truncationMode(.tail) // Truncate if too long
                                         .fixedSize(horizontal: false, vertical: true) // Prevent wrapping
+                                    
+                                    // Lock icon for private streams
+                                    if content.isPrivateUsername == true {
+                                        Image(systemName: "lock.fill")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.orange)
+                                    }
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading) // Ensure consistent width
+                                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading) // Allow username to take available space
                             }
                             
                             // Video duration
