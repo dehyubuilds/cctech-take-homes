@@ -2618,11 +2618,12 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
               }
             }
           } else {
-          // If we can't extract S3 key from URL, it's likely malformed - use default
-          console.warn(`⚠️ [createVideoEntryImmediately] Could not extract S3 key from thumbnail URL: ${finalThumbnailUrl}`);
-          console.warn(`   → Using default thumbnail instead`);
-          finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
-          usingDefaultThumbnail = true;
+            // If we can't extract S3 key from URL, it's likely malformed - use default
+            console.warn(`⚠️ [createVideoEntryImmediately] Could not extract S3 key from thumbnail URL: ${finalThumbnailUrl}`);
+            console.warn(`   → Using default thumbnail instead`);
+            finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
+            usingDefaultThumbnail = true;
+          }
         }
       }
     } catch (urlError) {
