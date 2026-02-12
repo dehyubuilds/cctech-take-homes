@@ -1265,12 +1265,12 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
       global.currentUploadContext.thumbnailUrl = 'https://d4idc5cmwxlpy.cloudfront.net/No_Image_Available.jpg';
     }
     
-    // CRITICAL PRIVACY FIX: For HTTP uploads, get userEmail from request context
+    // CRITICAL PRIVACY FIX: For HTTP uploads, get userEmail from global context (set by upload endpoint)
     // These variables are already declared above, just update them here
     // For HTTP uploads, isPrivateUsername comes from req.body?.isPrivateUsername (passed to createVideoEntryImmediately)
-    finalUserEmail = userEmail;
+    finalUserEmail = global.currentUploadContext?.userEmail || null;
     finalUploadId = uploadId;
-    finalChannelName = channelName;
+    finalChannelName = global.currentUploadContext?.channelName || null;
     // For HTTP uploads, isPrivateUsername is passed directly to createVideoEntryImmediately from request body
     // So we don't need to look it up here - it's handled in the upload endpoint
     
