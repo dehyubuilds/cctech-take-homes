@@ -1499,11 +1499,17 @@ struct ChannelDetailView: View {
             )
             
             await MainActor.run {
-                // Filter by visibility: public videos when showPrivateContent=false, private videos when showPrivateContent=true
+                // REVERTED: Public videos show all videos where isPrivateUsername != true
+                // Private videos show only videos where isPrivateUsername == true
                 let filtered = result.content.filter { item in
                     let isPrivate = item.isPrivateUsername == true
-                    // If showPrivateContent is true, show only private; if false, show only public
-                    return showPrivateContent ? isPrivate : !isPrivate
+                    if showPrivateContent {
+                        // PRIVATE VIEW: Show only private videos
+                        return isPrivate
+                    } else {
+                        // PUBLIC VIEW: Show all videos where isPrivateUsername != true (revert to working state)
+                        return !isPrivate
+                    }
                 }
                 
                 content = filtered
@@ -1998,20 +2004,31 @@ struct ChannelDetailView: View {
         }
         
         // Filter by public/private visibility (default: show public)
-        // Private videos should only show when showPrivateContent is true
-        // Public videos should only show when showPrivateContent is false
-        // This applies to ALL videos, including own videos
+        // REVERTED: Public videos show all videos where isPrivateUsername != true (including nil/false)
+        // Private videos show only videos where isPrivateUsername == true
         if currentChannel.channelName.lowercased() == "twilly tv" {
-            filteredSortedContent = filteredSortedContent.filter { item in
-                let isPrivate = item.isPrivateUsername == true
-                // If showPrivateContent is true, show only private; if false, show only public
-                let shouldShow = showPrivateContent ? isPrivate : !isPrivate
-                if !shouldShow {
-                    print("🔍 [ChannelDetailView] Filtering out \(isPrivate ? "private" : "public") video: \(item.fileName) (viewing \(showPrivateContent ? "private" : "public"))")
+            if showPrivateContent {
+                // PRIVATE VIEW: Show only videos where isPrivateUsername == true
+                filteredSortedContent = filteredSortedContent.filter { item in
+                    let isPrivate = item.isPrivateUsername == true
+                    if !isPrivate {
+                        print("🔍 [ChannelDetailView] Filtering out public video in private view: \(item.fileName)")
+                    }
+                    return isPrivate
                 }
-                return shouldShow
+                print("🔍 [ChannelDetailView] Filtering by visibility: private - \(filteredSortedContent.count) items")
+            } else {
+                // PUBLIC VIEW: Show all videos where isPrivateUsername != true (revert to working state)
+                // This includes videos where isPrivateUsername is false, nil, or not set
+                filteredSortedContent = filteredSortedContent.filter { item in
+                    let isPrivate = item.isPrivateUsername == true
+                    if isPrivate {
+                        print("🔍 [ChannelDetailView] Filtering out private video in public view: \(item.fileName)")
+                    }
+                    return !isPrivate
+                }
+                print("🔍 [ChannelDetailView] Filtering by visibility: public - \(filteredSortedContent.count) items")
             }
-            print("🔍 [ChannelDetailView] Filtering by visibility: \(showPrivateContent ? "private" : "public") - \(filteredSortedContent.count) items")
         }
         
         // CRITICAL: Preserve titles from existing content when server version is nil/empty
