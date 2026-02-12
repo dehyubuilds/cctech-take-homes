@@ -1225,10 +1225,10 @@ struct ChannelDetailView: View {
             } : nil,
             showEditButton: showOnlyOwnContent && isOwnContent, // Show edit button only when filter is active
             onEdit: showOnlyOwnContent && isOwnContent ? {
-                // Open title page when edit button is clicked
+                // Open title page when edit button is clicked - show text field immediately
                 managingContent = item
                 editingTitle = item.title ?? ""
-                showingTitleField = false // Start with title field hidden
+                showingTitleField = true // Show title field immediately
                 showingContentManagementPopup = true
             } : nil,
             isOwnContent: isOwnContent
@@ -2749,85 +2749,53 @@ struct ChannelDetailView: View {
                 
                 // Content
                 VStack(spacing: 20) {
-                    // Show title field only if showingTitleField is true
-                    if showingTitleField {
-                        // Title field
-                        VStack(alignment: .leading, spacing: 8) {
-                            TextField("Enter title...", text: $editingTitle)
-                                .foregroundColor(.white)
-                                .padding(.vertical, 12)
-                                .padding(.horizontal, 16)
-                                .background(Color.white.opacity(0.1))
-                                .cornerRadius(10)
-                                .padding(.horizontal, 20)
-                                .onChange(of: editingTitle) { newValue in
-                                    // Limit to 50 characters
-                                    if newValue.count > 50 {
-                                        editingTitle = String(newValue.prefix(50))
-                                    }
+                    // Title field - always shown when popup is open
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextField("Enter title...", text: $editingTitle)
+                            .foregroundColor(.white)
+                            .padding(.vertical, 12)
+                            .padding(.horizontal, 16)
+                            .background(Color.white.opacity(0.1))
+                            .cornerRadius(10)
+                            .padding(.horizontal, 20)
+                            .onChange(of: editingTitle) { newValue in
+                                // Limit to 50 characters
+                                if newValue.count > 50 {
+                                    editingTitle = String(newValue.prefix(50))
                                 }
-                        }
-                        .padding(.top, 20)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                            }
                     }
+                    .padding(.top, 20)
                     
                     // Action buttons
                     VStack(spacing: 12) {
-                        // Add/Edit Title button (shown when title field is hidden)
-                        if !showingTitleField {
-                            Button(action: {
-                                // Show title field
-                                withAnimation {
-                                    showingTitleField = true
+                        // Save button
+                        Button(action: {
+                            saveContentTitle()
+                        }) {
+                            HStack {
+                                if isUpdatingContent {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                } else {
+                                    Text("Save Title")
+                                        .fontWeight(.semibold)
                                 }
-                            }) {
-                                Text((managingContent?.title ?? "").isEmpty ? "Add Title" : "Edit Title")
-                                    .fontWeight(.semibold)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 14)
-                                    .background(
-                                        LinearGradient(
-                                            colors: [.twillyTeal, .twillyCyan],
-                                            startPoint: .leading,
-                                            endPoint: .trailing
-                                        )
-                                    )
-                                    .foregroundColor(.white)
-                                    .cornerRadius(12)
                             }
-                            .disabled(isUpdatingContent)
-                            .opacity(isUpdatingContent ? 0.6 : 1.0)
-                        }
-                        
-                        // Save button (shown when title field is visible)
-                        if showingTitleField {
-                            Button(action: {
-                                saveContentTitle()
-                            }) {
-                                HStack {
-                                    if isUpdatingContent {
-                                        ProgressView()
-                                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                    } else {
-                                        Text("Save Title")
-                                            .fontWeight(.semibold)
-                                    }
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 14)
-                                .background(
-                                    LinearGradient(
-                                        colors: [.twillyTeal, .twillyCyan],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    )
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(
+                                LinearGradient(
+                                    colors: [.twillyTeal, .twillyCyan],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
                                 )
-                                .foregroundColor(.white)
-                                .cornerRadius(12)
-                            }
-                            .disabled(isUpdatingContent || editingTitle.trimmingCharacters(in: .whitespaces).isEmpty)
-                            .opacity(isUpdatingContent || editingTitle.trimmingCharacters(in: .whitespaces).isEmpty ? 0.6 : 1.0)
+                            )
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
                         }
+                        .disabled(isUpdatingContent || editingTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .opacity(isUpdatingContent || editingTitle.trimmingCharacters(in: .whitespaces).isEmpty ? 0.6 : 1.0)
                     }
                     .padding(.horizontal, 20)
                     .padding(.bottom, 20)
