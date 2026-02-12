@@ -2491,18 +2491,18 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   
   const cloudFrontBaseUrl = 'https://d4idc5cmwxlpy.cloudfront.net';
   
-  // CRITICAL FIX: For RTMP streams (uploadId starts with "rtmp-"), use OLD FORMAT (no uploadId in path)
+  // CRITICAL FIX: For RTMP streams (uploadId starts with "rtmp-"), ALWAYS use OLD FORMAT (no uploadId in path)
   // This matches the actual S3 structure where files are at clips/{streamName}/{file}
   // NOT clips/{streamName}/{uploadId}/{file}
+  // REVERTED: Just use username, no lock logic - keep it simple
   const isRTMPStream = uploadId && uploadId.startsWith('rtmp-');
   const basePath = isRTMPStream ? `clips/${streamName}` : `clips/${streamName}/${uploadId}`;
   const masterPlaylistKey = `${basePath}/${uniquePrefix}_master.m3u8`;
   const masterPlaylistUrl = `${cloudFrontBaseUrl}/${masterPlaylistKey}`;
   const thumbnailKey = `${basePath}/${uniquePrefix}_thumb.jpg`;
   
-  // CRITICAL FIX FOR RTMP STREAMS: Check BOTH paths (new format with uploadId, old format without)
-  // RTMP streams upload thumbnails to old path (without uploadId) but createVideoEntryImmediately uses new uploadId
-  const thumbnailKeyOldFormat = `clips/${streamName}/${uniquePrefix}_thumb.jpg`; // Old format (when uploadId was NULL)
+  // For RTMP streams, files are ALWAYS in old format (no uploadId)
+  const thumbnailKeyOldFormat = `clips/${streamName}/${uniquePrefix}_thumb.jpg`; // Old format (RTMP streams)
   
   // Use early thumbnail URL if available from context AND successfully uploaded to S3
   // CRITICAL: Only use thumbnail URL if it was successfully uploaded to S3
@@ -2514,8 +2514,13 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
     hasEarlyThumbnail = true;
   } else {
     // Construct thumbnail URL from path (fallback)
-    // NOTE: This constructed URL may not exist in S3 - it will be verified below
-    thumbnailUrl = `${cloudFrontBaseUrl}/${thumbnailKey}`;
+    // CRITICAL: For RTMP streams, use OLD FORMAT (where files actually are)
+    // For HTTP uploads, use NEW FORMAT
+    if (isRTMPStream) {
+      thumbnailUrl = `${cloudFrontBaseUrl}/${thumbnailKeyOldFormat}`;
+    } else {
+      thumbnailUrl = `${cloudFrontBaseUrl}/${thumbnailKey}`;
+    }
     hasEarlyThumbnail = false;
   }
   
@@ -2552,72 +2557,67 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
         finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
         usingDefaultThumbnail = true;
       } else {
-        // CRITICAL: Verify thumbnail actually exists in S3 before creating DynamoDB entry
-        // Extract S3 key from CloudFront URL
-        const s3KeyMatch = finalThumbnailUrl.match(/https:\/\/[^\/]+\/(.+)/);
-        if (s3KeyMatch) {
-          const s3Key = s3KeyMatch[1];
-          
-          try {
-            await s3.headObject({
-              Bucket: BUCKET_NAME,
-              Key: s3Key
-            }).promise();
-            console.log(`✅ [createVideoEntryImmediately] Thumbnail verified in S3: ${s3Key}`);
-          } catch (s3VerifyError) {
-            if (s3VerifyError.code === 'NotFound' || s3VerifyError.code === 'NoSuchKey') {
-              console.warn(`⚠️ [createVideoEntryImmediately] Thumbnail NOT FOUND in S3 (new format): ${s3Key}`);
-              console.warn(`   → Checking old format path (for RTMP streams)...`);
-              
-              // CRITICAL FIX FOR RTMP STREAMS: Try old format path (without uploadId)
-              // RTMP streams upload thumbnails to old path but createVideoEntryImmediately uses new uploadId
-              // Also add retry logic in case S3 upload just completed (eventual consistency)
-              let foundInOldFormat = false;
-              for (let retry = 0; retry < 3; retry++) {
-                if (retry > 0) {
-                  console.log(`   → Retry ${retry}/3: Waiting 500ms for S3 eventual consistency...`);
-                  await new Promise(resolve => setTimeout(resolve, 500));
+        // CRITICAL: For RTMP streams, check OLD FORMAT first (where files actually are)
+        // For HTTP uploads, check NEW FORMAT
+        if (isRTMPStream) {
+          // RTMP streams: Check old format FIRST with retry logic
+          console.log(`🔍 [createVideoEntryImmediately] RTMP stream - checking OLD FORMAT: ${thumbnailKeyOldFormat}`);
+          let foundThumbnail = false;
+          for (let retry = 0; retry < 3; retry++) {
+            if (retry > 0) {
+              console.log(`   → Retry ${retry}/3: Waiting 500ms for S3 eventual consistency...`);
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            try {
+              await s3.headObject({
+                Bucket: BUCKET_NAME,
+                Key: thumbnailKeyOldFormat
+              }).promise();
+              finalThumbnailUrl = `${cloudFrontBaseUrl}/${thumbnailKeyOldFormat}`;
+              console.log(`✅ [createVideoEntryImmediately] Thumbnail found in OLD FORMAT (retry ${retry}): ${thumbnailKeyOldFormat}`);
+              usingDefaultThumbnail = false;
+              foundThumbnail = true;
+              break;
+            } catch (oldFormatError) {
+              if (oldFormatError.code === 'NotFound' || oldFormatError.code === 'NoSuchKey') {
+                if (retry === 2) {
+                  console.warn(`⚠️ [createVideoEntryImmediately] Thumbnail NOT FOUND in old format after 3 retries: ${thumbnailKeyOldFormat}`);
+                  console.warn(`   → Using default thumbnail instead`);
+                  finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
+                  usingDefaultThumbnail = true;
                 }
-                try {
-                  await s3.headObject({
-                    Bucket: BUCKET_NAME,
-                    Key: thumbnailKeyOldFormat
-                  }).promise();
-                  // Found in old format! Use that URL instead
-                  finalThumbnailUrl = `${cloudFrontBaseUrl}/${thumbnailKeyOldFormat}`;
-                  console.log(`✅ [createVideoEntryImmediately] Thumbnail found in OLD FORMAT (retry ${retry}): ${thumbnailKeyOldFormat}`);
-                  console.log(`   → Using old format URL: ${finalThumbnailUrl}`);
-                  usingDefaultThumbnail = false; // We found it, don't use default
-                  foundInOldFormat = true;
-                  break; // Exit retry loop
-                } catch (oldFormatError) {
-                  if (oldFormatError.code === 'NotFound' || oldFormatError.code === 'NoSuchKey') {
-                    if (retry === 2) {
-                      // Last retry failed
-                      console.warn(`⚠️ [createVideoEntryImmediately] Thumbnail NOT FOUND in old format after 3 retries: ${thumbnailKeyOldFormat}`);
-                      console.warn(`   → Using default thumbnail instead`);
-                      finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
-                      usingDefaultThumbnail = true;
-                    }
-                    // Continue to next retry
-                  } else {
-                    console.error(`⚠️ [createVideoEntryImmediately] Error checking old format: ${oldFormatError.message}`);
-                    finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
-                    usingDefaultThumbnail = true;
-                    break; // Exit on non-404 error
-                  }
-                }
+              } else {
+                console.error(`⚠️ [createVideoEntryImmediately] Error checking old format: ${oldFormatError.message}`);
+                finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
+                usingDefaultThumbnail = true;
+                break;
               }
-            } else {
-              console.error(`⚠️ [createVideoEntryImmediately] Error verifying thumbnail in S3: ${s3VerifyError.message}`);
-              console.error(`   Error code: ${s3VerifyError.code || 'N/A'}`);
-              console.error(`   Error name: ${s3VerifyError.name || 'N/A'}`);
-              // Don't throw - might be a temporary S3 issue, but use default to be safe
-              finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
-              usingDefaultThumbnail = true;
             }
           }
         } else {
+          // HTTP uploads: Check new format
+          const s3KeyMatch = finalThumbnailUrl.match(/https:\/\/[^\/]+\/(.+)/);
+          if (s3KeyMatch) {
+            const s3Key = s3KeyMatch[1];
+            try {
+              await s3.headObject({
+                Bucket: BUCKET_NAME,
+                Key: s3Key
+              }).promise();
+              console.log(`✅ [createVideoEntryImmediately] Thumbnail verified in S3: ${s3Key}`);
+            } catch (s3VerifyError) {
+              if (s3VerifyError.code === 'NotFound' || s3VerifyError.code === 'NoSuchKey') {
+                console.warn(`⚠️ [createVideoEntryImmediately] Thumbnail NOT FOUND in S3: ${s3Key}`);
+                console.warn(`   → Using default thumbnail instead`);
+                finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
+                usingDefaultThumbnail = true;
+              } else {
+                console.error(`⚠️ [createVideoEntryImmediately] Error verifying thumbnail in S3: ${s3VerifyError.message}`);
+                finalThumbnailUrl = DEFAULT_THUMBNAIL_URL;
+                usingDefaultThumbnail = true;
+              }
+            }
+          } else {
           // If we can't extract S3 key from URL, it's likely malformed - use default
           console.warn(`⚠️ [createVideoEntryImmediately] Could not extract S3 key from thumbnail URL: ${finalThumbnailUrl}`);
           console.warn(`   → Using default thumbnail instead`);
@@ -3006,15 +3006,25 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   videoItem.isPrivateUsername = isPrivateUsername === true ? true : false; // Explicitly set to boolean
   console.log(`📝 [createVideoEntryImmediately] Final isPrivateUsername value: ${videoItem.isPrivateUsername} (type: ${typeof videoItem.isPrivateUsername}, will be saved to video entry)`);
   
-  // CRITICAL SIMPLIFICATION: Use streamUsername from mapping as creatorUsername
-  // streamUsername will be "username🔒" if private, or just "username" if public
-  // This is the SIMPLEST approach - no flags needed, just check for 🔒 in creatorUsername
-  if (streamKeyResult && streamKeyResult.Item && streamKeyResult.Item.streamUsername) {
-    videoItem.creatorUsername = streamKeyResult.Item.streamUsername;
-    console.log(`✅ [createVideoEntryImmediately] Set creatorUsername from streamUsername: ${videoItem.creatorUsername}`);
-    console.log(`   This username ${videoItem.creatorUsername.includes('🔒') ? 'IS PRIVATE' : 'IS PUBLIC'} (has 🔒: ${videoItem.creatorUsername.includes('🔒')})`);
+  // REVERTED: Just use username from mapping (no lock logic complexity)
+  // Get username from streamKey mapping - simple and reliable
+  if (streamKeyResult && streamKeyResult.Item) {
+    // Try to get username from streamUsername first, then fallback to ownerEmail/collaboratorEmail
+    if (streamKeyResult.Item.streamUsername) {
+      // Remove lock icon if present - just use plain username
+      const plainUsername = streamKeyResult.Item.streamUsername.replace('🔒', '');
+      videoItem.creatorUsername = plainUsername;
+      console.log(`✅ [createVideoEntryImmediately] Set creatorUsername from streamUsername: ${plainUsername}`);
+    } else {
+      // Fallback: use email prefix
+      const email = streamKeyResult.Item.collaboratorEmail || streamKeyResult.Item.ownerEmail;
+      if (email) {
+        videoItem.creatorUsername = email.split('@')[0];
+        console.log(`✅ [createVideoEntryImmediately] Set creatorUsername from email: ${videoItem.creatorUsername}`);
+      }
+    }
   } else {
-    console.log(`⚠️ [createVideoEntryImmediately] streamUsername not found in mapping - creatorUsername will be set later by get-content API`);
+    console.log(`⚠️ [createVideoEntryImmediately] streamKey mapping not found - creatorUsername will be set later by get-content API`);
   }
   
   // Check if this is a collaborator video by looking at streamKey mapping
