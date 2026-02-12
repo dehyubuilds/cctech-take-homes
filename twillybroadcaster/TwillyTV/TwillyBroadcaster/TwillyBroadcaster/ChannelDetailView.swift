@@ -1218,9 +1218,11 @@ struct ChannelDetailView: View {
             channelCreatorEmail: currentChannel.creatorEmail,
             isLatestContent: isLatest,
             airScheduleLabel: airScheduleLabel,
-            // When filter is active, show edit button only (no delete button)
-            showDeleteButton: false, // Never show delete button on card
-            onDelete: nil,
+            // When filter is active, show both edit and delete buttons
+            showDeleteButton: showOnlyOwnContent && isOwnContent, // Show delete button when filter is active
+            onDelete: showOnlyOwnContent && isOwnContent ? {
+                deleteContent(item: item)
+            } : nil,
             showEditButton: showOnlyOwnContent && isOwnContent, // Show edit button only when filter is active
             onEdit: showOnlyOwnContent && isOwnContent ? {
                 // Open title page when edit button is clicked
@@ -3375,7 +3377,7 @@ struct ContentCard: View {
                                     .truncationMode(.tail)
                             }
                             
-                            // Creator username (with lock icon for private streams)
+                            // Creator username (display same for public and private)
                             if let username = content.creatorUsername, !username.isEmpty {
                                 HStack(spacing: 4) {
                                     Image(systemName: "person.circle.fill")
@@ -3385,14 +3387,11 @@ struct ContentCard: View {
                                         .font(.subheadline)
                                         .fontWeight(.semibold)
                                         .foregroundColor(.twillyCyan)
-                                    
-                                    // Lock icon for private streams
-                                    if content.isPrivateUsername == true {
-                                        Image(systemName: "lock.fill")
-                                            .font(.system(size: 10))
-                                            .foregroundColor(.orange)
-                                    }
+                                        .lineLimit(1) // Force single line
+                                        .truncationMode(.tail) // Truncate if too long
+                                        .fixedSize(horizontal: false, vertical: true) // Prevent wrapping
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading) // Ensure consistent width
                             }
                             
                             // Video duration
@@ -3415,44 +3414,51 @@ struct ContentCard: View {
                                 }
                             }
                         }
-                        
-                        Spacer()
+                        .frame(maxWidth: .infinity, alignment: .leading) // Take available space, keep aligned left
                         
                         // Edit and Delete buttons (when filtering to own content)
-                        if showEditButton || showDeleteButton {
-                            HStack(spacing: 8) {
-                                // Edit button
-                                if showEditButton {
-                                    Button(action: {
-                                        onEdit?()
-                                    }) {
-                                        Image(systemName: "pencil.circle.fill")
-                                            .font(.system(size: 18))
-                                            .foregroundColor(.twillyCyan)
-                                            .padding(8)
-                                            .background(Color.black.opacity(0.6))
-                                            .clipShape(Circle())
-                                    }
-                                    .buttonStyle(PlainButtonStyle())
+                        // Always reserve space for buttons to prevent layout shift - NO SPACER so username always has same width
+                        HStack(spacing: 8) {
+                            // Edit button - always reserve space
+                            if showEditButton {
+                                Button(action: {
+                                    onEdit?()
+                                }) {
+                                    Image(systemName: "pencil.circle.fill")
+                                        .font(.system(size: 18))
+                                        .foregroundColor(.twillyCyan)
+                                        .padding(8)
+                                        .background(Color.black.opacity(0.6))
+                                        .clipShape(Circle())
                                 }
-                                
-                                // Delete button
-                                if showDeleteButton {
-                                    Button(action: {
-                                        onDelete?()
-                                    }) {
-                                        Image(systemName: "trash.fill")
-                                            .font(.system(size: 18))
-                                            .foregroundColor(.red)
-                                            .padding(8)
-                                            .background(Color.black.opacity(0.6))
-                                            .clipShape(Circle())
-                                    }
-                                    .buttonStyle(PlainButtonStyle())
-                                }
+                                .buttonStyle(PlainButtonStyle())
+                            } else {
+                                // Invisible spacer to maintain layout (same size as button)
+                                Color.clear
+                                    .frame(width: 34, height: 34)
                             }
-                            .padding(.trailing, 8)
+                            
+                            // Delete button - always reserve space
+                            if showDeleteButton {
+                                Button(action: {
+                                    onDelete?()
+                                }) {
+                                    Image(systemName: "trash.fill")
+                                        .font(.system(size: 18))
+                                        .foregroundColor(.red)
+                                        .padding(8)
+                                        .background(Color.black.opacity(0.6))
+                                        .clipShape(Circle())
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            } else {
+                                // Invisible spacer to maintain layout (same size as button)
+                                Color.clear
+                                    .frame(width: 34, height: 34)
+                            }
                         }
+                        .frame(width: 76) // Fixed width: 34 (button) + 8 (spacing) + 34 (button) = 76
+                        .padding(.trailing, 8)
                     }
                 }
                 .buttonStyle(PlainButtonStyle())
