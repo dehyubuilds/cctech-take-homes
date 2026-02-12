@@ -1504,10 +1504,15 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
       finalIsPrivateUsername = false; // Default to public
     }
     
-    // Call createVideoEntryImmediately if we have the required info
+    // Upload master playlist to S3 FIRST (so thumbnail is available when we check)
+    // Pass uploadId so it can be included in S3 key for Lambda to read metadata
+    await uploadToS3(outputDir, streamName, schedulerId, uploadId);
+    
+    // CRITICAL: Call createVideoEntryImmediately AFTER uploadToS3 so thumbnail is in S3
+    // This ensures the thumbnail path check will find the uploaded thumbnail
     if (finalUserEmail && rtmpUploadId && uniquePrefix) {
       try {
-        console.log(`📝 [RTMP OLD FLOW] Creating DynamoDB entry immediately...`);
+        console.log(`📝 [RTMP OLD FLOW] Creating DynamoDB entry immediately (AFTER S3 upload)...`);
         console.log(`   StreamName: ${streamName}`);
         console.log(`   UploadId: ${rtmpUploadId}`);
         console.log(`   UserEmail: ${finalUserEmail}`);
@@ -1526,10 +1531,6 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
       console.error(`   rtmpUploadId: ${rtmpUploadId || 'NULL'}`);
       console.error(`   uniquePrefix: ${uniquePrefix || 'NULL'}`);
     }
-    
-    // Upload master playlist to S3
-    // Pass uploadId so it can be included in S3 key for Lambda to read metadata
-    await uploadToS3(outputDir, streamName, schedulerId, uploadId);
     
     // Clean up temporary files
     cleanupTempFiles(outputDir);
