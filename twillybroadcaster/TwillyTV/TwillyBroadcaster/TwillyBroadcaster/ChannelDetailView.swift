@@ -2557,16 +2557,6 @@ struct ChannelDetailView: View {
         } else {
             filteredOwnContent = []
         }
-        // Always populate filteredOwnContent (owner's videos) regardless of filter state
-        // This ensures instant switching when filter is toggled
-        if let username = authService.username {
-            filteredOwnContent = filteredSortedContent.filter { item in
-                item.creatorUsername?.lowercased() == username.lowercased()
-            }
-            print("🔍 [ChannelDetailView] Populated filteredOwnContent: \(filteredOwnContent.count) items (from \(originalUnfilteredContent.count) total)")
-        } else {
-            filteredOwnContent = []
-        }
         // Now apply "own content" filter if active
         if showOnlyOwnContent {
             filteredSortedContent = filteredOwnContent
