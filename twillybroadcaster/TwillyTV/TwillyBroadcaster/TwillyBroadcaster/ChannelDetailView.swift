@@ -3135,6 +3135,7 @@ struct ChannelDetailView: View {
         }
     }
     // Content Management Popup (Title + Delete) - Simple popup style
+    }
     private var contentManagementPopup: some View {
         ZStack {
             // Semi-transparent background overlay
