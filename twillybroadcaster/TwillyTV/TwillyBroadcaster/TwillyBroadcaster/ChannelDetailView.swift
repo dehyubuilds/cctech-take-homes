@@ -135,21 +135,21 @@ struct ChannelDetailView: View {
                 if currentChannel.channelName.lowercased() == "twilly tv" {
                     Button(action: {
                         withAnimation {
-                            showOnlyOwnContent.toggle()
+                            self.showOnlyOwnContent.toggle()
                         }
                         // Instantly switch between filtered and unfiltered lists
-                        if showOnlyOwnContent {
+                        if self.showOnlyOwnContent {
                             // Switch to filtered list (owner's videos)
-                            content = filteredOwnContent
-                            print("🔍 [ChannelDetailView] Switched to filtered content: \(content.count) items")
+                            self.content = self.filteredOwnContent
+                            print("🔍 [ChannelDetailView] Switched to filtered content: \(self.content.count) items")
                         } else {
                             // Switch back to unfiltered list
-                            content = originalUnfilteredContent
-                            print("🔍 [ChannelDetailView] Switched to unfiltered content: \(content.count) items")
+                            self.content = self.originalUnfilteredContent
+                            print("🔍 [ChannelDetailView] Switched to unfiltered content: \(self.content.count) items")
                         }
                     }) {
-                        Image(systemName: showOnlyOwnContent ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
-                            .foregroundColor(showOnlyOwnContent ? .twillyCyan : .white)
+                        Image(systemName: self.showOnlyOwnContent ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                            .foregroundColor(self.showOnlyOwnContent ? .twillyCyan : .white)
                     }
                     // Private content toggle - show private content when enabled
                     Button(action: {
@@ -235,7 +235,7 @@ struct ChannelDetailView: View {
             contentManagementPopup
         }
         .onAppear {
-            print("👁️ [ChannelDetailView] onAppear called - hasLoaded: \(hasLoaded), content.count: \(content.count), isLoading: \(isLoading), forceRefresh: \(forceRefresh)")
+            print("👁️ [ChannelDetailView] onAppear called - hasLoaded: \(hasLoaded), self.content.count: \(self.content.count), isLoading: \(isLoading), forceRefresh: \(forceRefresh)")
             print("   Channel: \(currentChannel.channelName)")
             print("   Poster URL at onAppear: \(currentChannel.posterUrl.isEmpty ? "EMPTY" : currentChannel.posterUrl)")
             // Load user's schedule and post automatically status (for admin stream button visibility)
@@ -269,7 +269,7 @@ struct ChannelDetailView: View {
                 localVideoContent = localContent
                 content = [localContent] // Show local video immediately
                 isLoading = false // Don't show loading spinner - we have content
-                print("✅ [ChannelDetailView] Local video added to content list - content.count: \(content.count)")
+                print("✅ [ChannelDetailView] Local video added to content list - self.content.count: \(self.content.count)")
                 // Start polling for thumbnail immediately
                 startThumbnailPolling()
                 // Clear global info after using it
@@ -1866,7 +1866,7 @@ struct ChannelDetailView: View {
     private func handleContentCardAppear(_ item: ChannelContent) {
         // Load more when user scrolls near the end (last 3 items)
         if let index = content.firstIndex(where: { $0.id == item.id }),
-           index >= content.count - 3,
+           index >= self.content.count - 3,
            hasMoreContent && !isLoadingMore {
             loadMoreContent()
         }
@@ -1902,7 +1902,7 @@ struct ChannelDetailView: View {
             errorMessage = nil
             nextToken = nil
             hasMoreContent = true
-            initialContentCount = content.count
+            initialContentCount = self.content.count
             refreshMessage = nil
         }
         // Refresh both channel metadata (poster) and content
@@ -1917,8 +1917,8 @@ struct ChannelDetailView: View {
                     print("✅ [ChannelDetailView] Channel metadata (poster) refreshed")
                 }
                 if let result = contentResult {
-                    let newCount = result.content.count
-                    let oldCount = content.count
+                    let newCount = result.self.content.count
+                    let oldCount = self.content.count
                     updateContentWith(result.content, replaceLocal: false)
                     nextToken = result.nextToken
                     hasMoreContent = result.hasMore
@@ -2159,7 +2159,7 @@ struct ChannelDetailView: View {
                                     content = updatedArray // Update array - SwiftUI should detect change
                                     print("✅ [ChannelDetailView] Content updated with thumbnail - UI should refresh")
                                     print("   - Updated thumbnailUrl: \(updatedContent.thumbnailUrl ?? "nil")")
-                                    print("   - Content array count: \(content.count)")
+                                    print("   - Content array count: \(self.content.count)")
                                 } else {
                                     print("⚠️ [ChannelDetailView] Could not find local content in array to update!")
                                 }
@@ -2200,14 +2200,14 @@ struct ChannelDetailView: View {
                             forceRefresh: true,
                             showPrivateContent: showPrivateContent
                         )
-                        print("✅ [ChannelDetailView] Fetched \(result.content.count) items from API, hasMore: \(result.hasMore)")
+                        print("✅ [ChannelDetailView] Fetched \(result.self.content.count) items from API, hasMore: \(result.hasMore)")
                         await MainActor.run {
                             updateContentWith(result.content, replaceLocal: false)
                             nextToken = result.nextToken
                             hasMoreContent = result.hasMore
                             isLoading = false
                             hasLoaded = true
-                            print("✅ [ChannelDetailView] Content loaded - isLoading: \(isLoading), hasLoaded: \(hasLoaded), content.count: \(content.count)")
+                            print("✅ [ChannelDetailView] Content loaded - isLoading: \(isLoading), hasLoaded: \(hasLoaded), self.content.count: \(self.content.count)")
                         }
                     }
                 } else {
@@ -2224,21 +2224,21 @@ struct ChannelDetailView: View {
                         forceRefresh: forceRefresh,
                         showPrivateContent: showPrivateContent
                     )
-                    print("✅ [ChannelDetailView] Fetched \(result.content.count) items from API, hasMore: \(result.hasMore)")
+                    print("✅ [ChannelDetailView] Fetched \(result.self.content.count) items from API, hasMore: \(result.hasMore)")
                     if result.content.isEmpty {
                         print("⚠️ [ChannelDetailView] WARNING: API returned empty content array!")
                     } else {
-                        print("✅ [ChannelDetailView] API returned \(result.content.count) items - first item: \(result.content[0].fileName)")
+                        print("✅ [ChannelDetailView] API returned \(result.self.content.count) items - first item: \(result.content[0].fileName)")
                     }
                     await MainActor.run {
-                        print("🔄 [ChannelDetailView] About to call updateContentWith with \(result.content.count) items")
+                        print("🔄 [ChannelDetailView] About to call updateContentWith with \(result.self.content.count) items")
                         updateContentWith(result.content, replaceLocal: false)
-                        print("🔄 [ChannelDetailView] After updateContentWith - content.count: \(content.count)")
+                        print("🔄 [ChannelDetailView] After updateContentWith - self.content.count: \(self.content.count)")
                         nextToken = result.nextToken
                         hasMoreContent = result.hasMore
                         isLoading = false
                         hasLoaded = true
-                        print("✅ [ChannelDetailView] Final state - content.count: \(content.count), isLoading: \(isLoading), hasLoaded: \(hasLoaded), errorMessage: \(errorMessage ?? "nil")")
+                        print("✅ [ChannelDetailView] Final state - self.content.count: \(self.content.count), isLoading: \(isLoading), hasLoaded: \(hasLoaded), errorMessage: \(errorMessage ?? "nil")")
                         // Check and delete short videos after content is loaded
                         Task {
                             await checkAndDeleteShortVideos()
@@ -2268,7 +2268,7 @@ struct ChannelDetailView: View {
     @MainActor private func updateContentWith(_ fetchedContent: [ChannelContent], replaceLocal: Bool = false) {
         print("🔄 [ChannelDetailView] ========== UPDATE CONTENT START ==========")
         print("🔄 [ChannelDetailView] Received \(fetchedContent.count) items from API, replaceLocal: \(replaceLocal)")
-        print("🔄 [ChannelDetailView] Current content.count before update: \(content.count)")
+        print("🔄 [ChannelDetailView] Current self.content.count before update: \(self.content.count)")
         print("🔄 [ChannelDetailView] localVideoContent exists: \(localVideoContent != nil)")
         // Log all received items with details
         print("📋 [ChannelDetailView] === RECEIVED FROM API ===")
@@ -2533,16 +2533,16 @@ struct ChannelDetailView: View {
         // Always populate filteredOwnContent (owner's videos) regardless of filter state
         // This ensures instant switching when filter is toggled
         if let username = authService.username {
-            filteredOwnContent = filteredSortedContent.filter { item in
+            self.filteredOwnContent = filteredSortedContent.filter { item in
                 item.creatorUsername?.lowercased() == username.lowercased()
             }
-            print("🔍 [ChannelDetailView] Populated filteredOwnContent: \(filteredOwnContent.count) items (from \(originalUnfilteredContent.count) total)")
+            print("🔍 [ChannelDetailView] Populated filteredOwnContent: \(self.filteredOwnContent.count) items (from \(originalUnfilteredContent.count) total)")
         } else {
-            filteredOwnContent = []
+            self.filteredOwnContent = []
         }
         // Now apply "own content" filter if active
-        if showOnlyOwnContent {
-            filteredSortedContent = filteredOwnContent
+        if self.showOnlyOwnContent {
+            filteredSortedContent = self.filteredOwnContent
             print("🔍 [ChannelDetailView] Filtering to own content: \(filteredSortedContent.count) items")
         }
         // CRITICAL: Preserve titles from existing content when server version is nil/empty
@@ -2583,7 +2583,7 @@ struct ChannelDetailView: View {
         isLoading = false
         hasLoaded = true
         print("✅ [ChannelDetailView] ========== FINAL CONTENT STATE ==========")
-        print("✅ [ChannelDetailView] content.count: \(content.count)")
+        print("✅ [ChannelDetailView] self.content.count: \(self.content.count)")
         print("✅ [ChannelDetailView] isLoading: \(isLoading), hasLoaded: \(hasLoaded)")
         // Log final sorted order (newest first)
         print("📋 [ChannelDetailView] Final sorted order (newest first):")
@@ -2592,16 +2592,16 @@ struct ChannelDetailView: View {
             print("   [\(index)] \(item.fileName) - date: \(dateStr)")
         }
         // Summary: Show what videos are displayed and why
-        if content.count > 1 {
-            print("📊 [ChannelDetailView] SUMMARY: Showing \(content.count) different videos:")
+        if self.content.count > 1 {
+            print("📊 [ChannelDetailView] SUMMARY: Showing \(self.content.count) different videos:")
             for (index, item) in content.enumerated() {
                 let dateStr = item.createdAt ?? "unknown date"
                 let isNew = index == 0 ? " (🆕 NEWEST)" : ""
                 print("   \(index + 1). \(item.fileName) - Created: \(dateStr)\(isNew)")
             }
-            print("   ℹ️ These are \(content.count) DIFFERENT videos, not duplicates.")
+            print("   ℹ️ These are \(self.content.count) DIFFERENT videos, not duplicates.")
             print("   ℹ️ Each has a unique ID: \(content.map { $0.id }.joined(separator: ", "))")
-        } else if content.count == 1 {
+        } else if self.content.count == 1 {
             print("📊 [ChannelDetailView] SUMMARY: Showing 1 video: \(content[0].fileName)")
         } else {
             print("📊 [ChannelDetailView] SUMMARY: No videos to display")
@@ -2641,7 +2641,7 @@ struct ChannelDetailView: View {
                 print("   First filtered item: \(filteredFetchedContent[0].fileName)")
             }
         } else {
-            print("✅ [ChannelDetailView] Content array has \(content.count) items")
+            print("✅ [ChannelDetailView] Content array has \(self.content.count) items")
             print("📋 [ChannelDetailView] === FINAL CONTENT LIST (as displayed) ===")
             // Log all final content items with full details
             for (index, item) in content.enumerated() {
@@ -2748,7 +2748,7 @@ struct ChannelDetailView: View {
                         print("     title: '\(localContent.title ?? "nil")'")
                         print("     description: '\(localContent.description?.prefix(30) ?? "nil")...'")
                         print("     price: \(localContent.price ?? 0)")
-                        print("   - Server returned \(result.content.count) videos:")
+                        print("   - Server returned \(result.self.content.count) videos:")
                         for (index, item) in result.content.enumerated() {
                             print("     [\(index)] title: '\(item.title ?? "nil")', desc: '\(item.description?.prefix(20) ?? "nil")...', price: \(item.price ?? 0), hasThumbnail: \(item.thumbnailUrl != nil)")
                         }
@@ -2788,7 +2788,7 @@ struct ChannelDetailView: View {
                                     content = updatedArray // Update array - SwiftUI should detect change
                                     print("✅ [ChannelDetailView] Content updated with thumbnail in polling - UI should refresh")
                                     print("   - Updated thumbnailUrl: \(updatedContent.thumbnailUrl ?? "nil")")
-                                    print("   - Content array count: \(content.count)")
+                                    print("   - Content array count: \(self.content.count)")
                                 } else {
                                     print("⚠️ [ChannelDetailView] Could not find local content in array to update!")
                                 }
@@ -2861,7 +2861,7 @@ struct ChannelDetailView: View {
                 await MainActor.run {
                     print("🔄 [ChannelDetailView] Auto-refreshing content and channel metadata...")
                     // Refresh both content and channel metadata without showing loading spinner
-                    let previousCount = content.count
+                    let previousCount = self.content.count
                     Task {
                         do {
                             // Refresh channel metadata (poster) and content in parallel
@@ -2874,7 +2874,7 @@ struct ChannelDetailView: View {
                                     print("✅ [ChannelDetailView] Channel poster updated via auto-refresh")
                                 }
                                 if let result = contentResult {
-                                    let newCount = result.content.count
+                                    let newCount = result.self.content.count
                                     if newCount > previousCount {
                                         print("✅ [ChannelDetailView] Found \(newCount - previousCount) new video(s)")
                                     }
@@ -2980,9 +2980,9 @@ struct ChannelDetailView: View {
                     isDeleting = false
                     if response.success {
                         // Remove ONLY the specific item by its unique ID
-                        let beforeCount = content.count
+                        let beforeCount = self.content.count
                         content.removeAll { $0.id == itemId }
-                        let afterCount = content.count
+                        let afterCount = self.content.count
                         if beforeCount == afterCount {
                             print("⚠️ [ChannelDetailView] Item not found in content array after delete - may have already been removed")
                         } else {
@@ -3419,7 +3419,7 @@ struct ChannelDetailView: View {
         editingContent = nil
         editingTitle = ""
         // Deselect the filter toggle so user sees their changes in the full timeline
-        if showOnlyOwnContent {
+        if self.showOnlyOwnContent {
             showOnlyOwnContent = false
             // Refresh content to show updated title in full timeline
             Task {
@@ -3563,7 +3563,7 @@ struct ChannelDetailView: View {
                 )
                 // If filtering to own content, filter the results
                 var filteredContent = result.content
-                if showOnlyOwnContent, let username = authService.username {
+                if self.showOnlyOwnContent, let username = authService.username {
                     filteredContent = result.content.filter { item in
                         item.creatorUsername?.lowercased() == username.lowercased()
                     }
@@ -3575,7 +3575,7 @@ struct ChannelDetailView: View {
                     nextToken = result.nextToken
                     hasMoreContent = result.hasMore
                     isLoadingMore = false
-                    print("📄 [ChannelDetailView] Total content count: \(content.count)")
+                    print("📄 [ChannelDetailView] Total content count: \(self.content.count)")
                 }
             } catch {
                 print("❌ [ChannelDetailView] Error loading more content: \(error.localizedDescription)")
