@@ -146,7 +146,7 @@ struct ChannelDetailView: View {
                             // Switch back to unfiltered list
                             content = originalUnfilteredContent
                             print("🔍 [ChannelDetailView] Switched to unfiltered content: \(content.count) items")
-                        }
+                        }) {
                         Image(systemName: showOnlyOwnContent ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
                             .foregroundColor(showOnlyOwnContent ? .twillyCyan : .white)
                     }
@@ -2264,8 +2264,7 @@ struct ChannelDetailView: View {
             }
         }
     }
-@MainActor
-    private func updateContentWith(_ fetchedContent: [ChannelContent], replaceLocal: Bool = false) {
+    @MainActor private func updateContentWith(_ fetchedContent: [ChannelContent], replaceLocal: Bool = false) {
         print("🔄 [ChannelDetailView] ========== UPDATE CONTENT START ==========")
         print("🔄 [ChannelDetailView] Received \(fetchedContent.count) items from API, replaceLocal: \(replaceLocal)")
         print("🔄 [ChannelDetailView] Current content.count before update: \(content.count)")
