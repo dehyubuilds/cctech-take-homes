@@ -1698,6 +1698,8 @@ struct ChannelDetailView: View {
         .padding(.horizontal)
     }
     }
+    }
+    }
     private var loadingView: some View {
         VStack(spacing: 16) {
             ProgressView()
