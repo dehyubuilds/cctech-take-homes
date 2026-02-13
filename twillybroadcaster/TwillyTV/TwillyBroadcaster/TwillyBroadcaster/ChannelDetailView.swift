@@ -1420,19 +1420,9 @@ struct ChannelDetailView: View {
                                             .foregroundColor(.twillyTeal)
                                         
                                         // Show displayUsername if available (includes 🔒 for private), otherwise username
-                                        // CRITICAL: Don't add lock icon if username already has 🔒 in it
-                                        // Usernames with locks are already stored with 🔒 in the database
-                                        let usernameText = result.displayName
-                                        Text(usernameText)
+                                        // CRITICAL: Username already contains 🔒 if it's private - don't add lock icon
+                                        Text(result.displayName)
                                             .foregroundColor(.white)
-                                        
-                                        // Only show lock icon if username doesn't already have 🔒
-                                        // This prevents double locks
-                                        if result.isPrivate == true && !usernameText.contains("🔒") {
-                                            Image(systemName: "lock.fill")
-                                                .foregroundColor(.orange)
-                                                .font(.caption2)
-                                        }
                                         
                                         Spacer()
                                         
