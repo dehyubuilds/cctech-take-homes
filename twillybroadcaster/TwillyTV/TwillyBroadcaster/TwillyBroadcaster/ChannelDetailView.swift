@@ -1436,62 +1436,65 @@ struct ChannelDetailView: View {
                                         
                                         Spacer()
                                         
+                                        // CRITICAL: Public and private usernames are SEPARATE accounts
+                                        // Public: "POM-J" → shows "Add" or "Added"
+                                        // Private: "POM-J🔒" → shows "Request" or "Requested"
+                                        let isPrivate = result.isPrivate == true || result.username.contains("🔒")
+                                        
                                         if isUsernameBeingAdded(result.username) {
                                             ProgressView()
                                                 .tint(.white)
                                                 .scaleEffect(0.8)
-                                        } else if isUsernameAdded(result.username) {
-                                            // Check if it's actually added (active) or just requested (pending)
-                                            let addedUsername = addedUsernames.first(where: { $0.streamerUsername.lowercased() == result.username.lowercased() })
-                                            let isActive = addedUsername?.streamerVisibility?.lowercased() == "public" || addedUsername?.streamerVisibility == nil
-                                            
-                                            Button(action: {}) {
-                                                Text(isActive ? "Added" : "Requested")
-                                                    .font(.caption)
-                                                    .fontWeight(.semibold)
-                                                    .foregroundColor(isActive ? .twillyCyan : .orange)
-                                                    .padding(.horizontal, 12)
-                                                    .padding(.vertical, 6)
-                                                    .background((isActive ? Color.twillyCyan : Color.orange).opacity(0.2))
-                                                    .cornerRadius(6)
-                                            }
-                                            .disabled(true)
-                                        } else if isFollowRequestSent(result.username) {
-                                            // Follow request already sent
-                                            Button(action: {}) {
-                                                Text("Requested")
-                                                    .font(.caption)
-                                                    .fontWeight(.semibold)
-                                                    .foregroundColor(.orange)
-                                                    .padding(.horizontal, 12)
-                                                    .padding(.vertical, 6)
-                                                    .background(Color.orange.opacity(0.2))
-                                                    .cornerRadius(6)
-                                            }
-                                            .disabled(true)
-                                        } else {
-                                            // Show "Request" for private usernames, "Add" for public
-                                            let isPrivate = result.isPrivate == true
-                                            Button(action: {
-                                                addUsernameInline(result.username, email: result.email)
-                                            }) {
-                                                Text(isPrivate ? "Request" : "Add")
-                                                    .font(.caption)
-                                                    .fontWeight(.semibold)
-                                                    .foregroundColor(.white)
-                                                    .padding(.horizontal, 12)
-                                                    .padding(.vertical, 6)
-                                                    .background(
-                                                        LinearGradient(
-                                                            gradient: Gradient(colors: [
-                                                                Color.twillyTeal,
-                                                                Color.twillyCyan
-                                                            ]),
-                                                            startPoint: .leading,
-                                                            endPoint: .trailing
+                                        } else if isPrivate {
+                                            // Private username logic: Check if requested or added
+                                            if isFollowRequestSent(result.username) {
+                                                // Follow request already sent
+                                                Button(action: {}) {
+                                                    Text("Requested")
+                                                        .font(.caption)
+                                                        .fontWeight(.semibold)
+                                                        .foregroundColor(.orange)
+                                                        .padding(.horizontal, 12)
+                                                        .padding(.vertical, 6)
+                                                        .background(Color.orange.opacity(0.2))
+                                                        .cornerRadius(6)
+                                                }
+                                                .disabled(true)
+                                            } else if isUsernameAdded(result.username) {
+                                                // Private username was added (after acceptance)
+                                                Button(action: {}) {
+                                                    Text("Added")
+                                                        .font(.caption)
+                                                        .fontWeight(.semibold)
+                                                        .foregroundColor(.twillyCyan)
+                                                        .padding(.horizontal, 12)
+                                                        .padding(.vertical, 6)
+                                                        .background(Color.twillyCyan.opacity(0.2))
+                                                        .cornerRadius(6)
+                                                }
+                                                .disabled(true)
+                                            } else {
+                                                // Show "Request" for private usernames
+                                                Button(action: {
+                                                    addUsernameInline(result.username, email: result.email)
+                                                }) {
+                                                    Text("Request")
+                                                        .font(.caption)
+                                                        .fontWeight(.semibold)
+                                                        .foregroundColor(.white)
+                                                        .padding(.horizontal, 12)
+                                                        .padding(.vertical, 6)
+                                                        .background(
+                                                            LinearGradient(
+                                                                gradient: Gradient(colors: [
+                                                                    Color.twillyTeal,
+                                                                    Color.twillyCyan
+                                                                ]),
+                                                                startPoint: .leading,
+                                                                endPoint: .trailing
+                                                            )
                                                         )
-                                                    )
-                                                    .cornerRadius(6)
+                                                        .cornerRadius(6)
                                                 }
                                             }
                                         } else {
