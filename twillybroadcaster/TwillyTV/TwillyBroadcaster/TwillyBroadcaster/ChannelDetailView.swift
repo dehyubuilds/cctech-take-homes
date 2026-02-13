@@ -1702,8 +1702,6 @@ struct ChannelDetailView: View {
     }
     }
     }
-    }
-    }
     @ViewBuilder
     private var contentSection: some View {
         if isLoading {
@@ -3597,11 +3595,7 @@ struct ChannelDetailView: View {
             }
         }
     }
-}
 
-}
-}
-}
 struct ContentCard: View {
     let content: ChannelContent
     let onTap: () -> Void
