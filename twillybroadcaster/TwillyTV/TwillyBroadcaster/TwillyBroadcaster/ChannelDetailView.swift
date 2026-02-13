@@ -460,22 +460,8 @@ struct ChannelDetailView: View {
                         Spacer()
                     }
                 }
-                    // Swipe RIGHT (from left to right, positive width) to go to stream screen
-                    // Only process as swipe if horizontal movement is significant and greater than vertical
-                    if horizontalMovement > 50 && horizontalMovement > verticalMovement {
-                        if value.translation.width > 80 || value.predictedEndTranslation.width > 150 {
-                            // Post notification to show stream screen
-                            print("✅ [ChannelDetailView] Swipe RIGHT detected on ScrollView → Going to Stream screen")
-                            NotificationCenter.default.post(
-                                name: NSNotification.Name("ShowStreamScreen"),
-                                object: nil
-                            )
-                            // Dismiss channel view to show stream screen
-                            dismiss()
-                        }
-                    }
-                }
-        )
+            }
+        }
     }
     private var channelHeader: some View {
         VStack(alignment: .center, spacing: 12) {
