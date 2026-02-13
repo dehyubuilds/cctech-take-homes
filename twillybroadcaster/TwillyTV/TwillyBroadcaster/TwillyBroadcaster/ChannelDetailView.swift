@@ -421,19 +421,6 @@ struct ChannelDetailView: View {
                 print("   - selectedContent at change: \(selectedContent?.fileName ?? "nil")")
             }
         }
-    }
-    private var channelHeader: some View {
-        VStack(alignment: .center, spacing: 12) {
-            channelPoster
-            channelInfo
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top)
-    }
-    private var channelPoster: some View {
-        Group {
-            if !currentChannel.posterUrl.isEmpty {
-                // Validate URL before creating
                 if let url = URL(string: currentChannel.posterUrl) {
                     // Check if it's an SVG file
                     if currentChannel.posterUrl.lowercased().hasSuffix(".svg") {
