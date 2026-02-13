@@ -4098,13 +4098,13 @@ struct ContentCard: View {
                                         .font(.system(size: 12))
                                         .foregroundColor(.twillyCyan)
                                     
-                                    // Username text - display fully, no truncation
+                                    // Username text - truncate if too long to prevent overlap with buttons
                                     Text(username)
                                         .font(.subheadline)
                                         .fontWeight(.semibold)
                                         .foregroundColor(.twillyCyan)
                                         .lineLimit(1) // Force single line
-                                        .fixedSize(horizontal: true, vertical: false) // Allow horizontal expansion, prevent wrapping
+                                        .truncationMode(.tail) // Truncate with ellipsis if too long to prevent overlap
                                     
                                     // Lock icon overlay - positioned absolutely, doesn't take layout space
                                     if content.isPrivateUsername == true {
@@ -5320,3 +5320,13 @@ class OrientationAwarePlayerViewController: AVPlayerViewController, UIGestureRec
     }
 }
 
+// ViewModifier to conditionally show scroll indicators based on iOS version
+struct ScrollIndicatorsModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content.scrollIndicators(.visible)
+        } else {
+            content
+        }
+    }
+}
