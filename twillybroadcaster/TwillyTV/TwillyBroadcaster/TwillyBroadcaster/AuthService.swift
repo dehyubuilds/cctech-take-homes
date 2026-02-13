@@ -424,12 +424,52 @@ class AuthService: ObservableObject {
         print("🔍 [AuthService] Converting error to friendly message")
         print("   - Error: \(error)")
         print("   - Error type: \(type(of: error))")
+        print("   - Error string representation: \(String(describing: error))")
+        
+        // FIRST: Check the error's string representation directly (most reliable)
+        let errorString = String(describing: error).lowercased()
+        print("   🔎 Checking error string representation: '\(errorString)'")
+        
+        // Check for "user already exists" patterns in the string representation
+        if errorString.contains("already exists") ||
+           errorString.contains("user already exists") ||
+           errorString.contains("usernameexists") ||
+           errorString.contains("username exists") {
+            print("   ✅ MATCHED 'user already exists' in string representation - returning friendly message")
+            return "An account with this email already exists. Please sign in instead."
+        }
         
         // Check for Amplify AuthError
         if let authError = error as? AuthError {
             print("   - AuthError detected")
-            print("   - errorDescription: \(authError.errorDescription ?? "nil")")
-            print("   - recoverySuggestion: \(authError.recoverySuggestion ?? "nil")")
+            print("   - errorDescription: '\(authError.errorDescription ?? "nil")'")
+            print("   - recoverySuggestion: '\(authError.recoverySuggestion ?? "nil")'")
+            
+            // Map common AuthError cases to friendly messages
+            let errorDesc = authError.errorDescription?.lowercased() ?? ""
+            let recoverySuggestion = authError.recoverySuggestion?.lowercased() ?? ""
+            
+            // Debug logging - log to Xcode console
+            print("🔍 [getFriendlyErrorMessage] Checking AuthError:")
+            print("   📝 errorDesc: '\(errorDesc)'")
+            print("   📝 recoverySuggestion: '\(recoverySuggestion)'")
+            
+            // Sign up errors - check for "user already exists" first (most common)
+            // Check errorDescription FIRST (most reliable for AuthError)
+            if errorDesc.contains("already exists") ||
+               errorDesc.contains("user already exists") ||
+               errorDesc.contains("usernameexists") ||
+               errorDesc.contains("username exists") {
+                print("   ✅ MATCHED 'user already exists' in errorDescription - returning friendly message")
+                return "An account with this email already exists. Please sign in instead."
+            }
+            
+            // Check recovery suggestion for "different username" (indicates user exists)
+            if recoverySuggestion.contains("different username") ||
+               recoverySuggestion.contains("already exists") {
+                print("   ✅ MATCHED 'user already exists' in recoverySuggestion - returning friendly message")
+                return "An account with this email already exists. Please sign in instead."
+            }
             
             // Check underlying error if available (via NSError)
             var underlyingError: NSError? = nil
@@ -441,89 +481,30 @@ class AuthService: ObservableObject {
                 print("   - underlyingError description: \(underlying.localizedDescription)")
             }
             
-            // Map common AuthError cases to friendly messages
-            let errorDesc = authError.errorDescription?.lowercased() ?? ""
-            let recoverySuggestion = authError.recoverySuggestion?.lowercased() ?? ""
-            let errorString = String(describing: error).lowercased()
-            
-            // Debug logging - log to Xcode console
-            print("🔍 [getFriendlyErrorMessage] Checking AuthError:")
-            print("   📝 errorString: '\(errorString)'")
-            print("   📝 errorDesc: '\(errorDesc)'")
-            print("   📝 recoverySuggestion: '\(recoverySuggestion)'")
-            
-            // Sign up errors - check for "user already exists" first (most common)
-            // Check the error's string representation (e.g., "AuthError: User already exists")
-            let check1 = errorString.contains("already exists")
-            let check2 = errorString.contains("user already exists")
-            let check3 = errorString.contains("usernameexists")
-            let check4 = errorDesc.contains("already exists")
-            let check5 = errorDesc.contains("user already exists")
-            let check6 = errorDesc.contains("usernameexists")
-            let check7 = recoverySuggestion.contains("different username")
-            
-            print("   🔎 Check results:")
-            print("      - errorString.contains('already exists'): \(check1)")
-            print("      - errorString.contains('user already exists'): \(check2)")
-            print("      - errorString.contains('usernameexists'): \(check3)")
-            print("      - errorDesc.contains('already exists'): \(check4)")
-            print("      - errorDesc.contains('user already exists'): \(check5)")
-            print("      - errorDesc.contains('usernameexists'): \(check6)")
-            print("      - recoverySuggestion.contains('different username'): \(check7)")
-            
-            if check1 || check2 || check3 || check4 || check5 || check6 || check7 {
-                print("   ✅ MATCHED 'user already exists' - returning friendly message")
-                return "An account with this email already exists. Please sign in instead."
-            }
-            
             // Check underlying error for "usernameExists" or related messages
             if let underlying = underlyingError {
                 let underlyingDesc = underlying.localizedDescription.lowercased()
                 print("   🔎 Checking underlying error:")
                 print("      - underlyingDesc: '\(underlyingDesc)'")
-                let underlyingCheck1 = underlyingDesc.contains("already exists")
-                let underlyingCheck2 = underlyingDesc.contains("user already exists")
-                let underlyingCheck3 = underlyingDesc.contains("usernameexists")
-                let underlyingCheck4 = underlyingDesc.contains("alias exists")
-                print("      - Contains 'already exists': \(underlyingCheck1)")
-                print("      - Contains 'user already exists': \(underlyingCheck2)")
-                print("      - Contains 'usernameexists': \(underlyingCheck3)")
-                print("      - Contains 'alias exists': \(underlyingCheck4)")
-                if underlyingCheck1 || underlyingCheck2 || underlyingCheck3 || underlyingCheck4 {
+                if underlyingDesc.contains("already exists") ||
+                   underlyingDesc.contains("user already exists") ||
+                   underlyingDesc.contains("usernameexists") ||
+                   underlyingDesc.contains("alias exists") {
                     print("   ✅ MATCHED underlying error 'user already exists' - returning friendly message")
                     return "An account with this email already exists. Please sign in instead."
                 }
             }
             
-            // Check for Amplify.AuthError code 1 with "User already exists" message
+            // Check for Amplify.AuthError code 1 - this is the "User already exists" error code
             if let nsError = error as NSError? {
                 print("   🔎 Checking NSError:")
                 print("      - Domain: '\(nsError.domain)'")
                 print("      - Code: \(nsError.code)")
+                // Amplify.AuthError code 1 is "User already exists"
                 if nsError.domain == "Amplify.AuthError" && nsError.code == 1 {
-                    let nsErrorDesc = nsError.localizedDescription.lowercased()
-                    print("      - localizedDescription: '\(nsErrorDesc)'")
-                    let nsCheck1 = errorString.contains("already exists")
-                    let nsCheck2 = errorString.contains("user already exists")
-                    let nsCheck3 = errorString.contains("usernameexists")
-                    let nsCheck4 = nsErrorDesc.contains("already exists")
-                    let nsCheck5 = nsErrorDesc.contains("user already exists")
-                    print("      - errorString checks: \(nsCheck1), \(nsCheck2), \(nsCheck3)")
-                    print("      - nsErrorDesc checks: \(nsCheck4), \(nsCheck5)")
-                    if nsCheck1 || nsCheck2 || nsCheck3 || nsCheck4 || nsCheck5 {
-                        print("   ✅ MATCHED AuthError code 1 with 'user already exists' - returning friendly message")
-                        return "An account with this email already exists. Please sign in instead."
-                    }
+                    print("   ✅ MATCHED AuthError code 1 (User already exists) - returning friendly message")
+                    return "An account with this email already exists. Please sign in instead."
                 }
-            }
-            
-            // Final check: if recovery suggestion mentions "different username", it's likely a "user already exists" error
-            print("   🔎 Final check - recovery suggestion:")
-            print("      - recoverySuggestion.isEmpty: \(recoverySuggestion.isEmpty)")
-            print("      - recoverySuggestion.contains('different username'): \(recoverySuggestion.contains("different username"))")
-            if !recoverySuggestion.isEmpty && recoverySuggestion.contains("different username") {
-                print("   ✅ MATCHED recovery suggestion 'different username' - returning friendly message")
-                return "An account with this email already exists. Please sign in instead."
             }
             
             // Password validation errors
