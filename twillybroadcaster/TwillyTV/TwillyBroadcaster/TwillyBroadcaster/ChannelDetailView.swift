@@ -3580,8 +3580,9 @@ struct ChannelDetailView: View {
                 }
                 print("✅ [ChannelDetailView] Loaded \(filteredContent.count) more items, hasMore: \(result.hasMore)")
                 await MainActor.run {
-                    // Append new content to existing content
-                    content.append(contentsOf: filteredContent)
+                    // Use updateContentWith to properly merge new content and update filteredOwnContent
+                    // This ensures filteredOwnContent stays in sync with all loaded content
+                    updateContentWith(filteredContent, replaceLocal: false)
                     nextToken = result.nextToken
                     hasMoreContent = result.hasMore
                     isLoadingMore = false
