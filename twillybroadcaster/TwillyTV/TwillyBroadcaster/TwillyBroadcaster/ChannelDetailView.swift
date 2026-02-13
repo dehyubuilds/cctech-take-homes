@@ -421,19 +421,6 @@ struct ChannelDetailView: View {
                 print("   - selectedContent at change: \(selectedContent?.fileName ?? "nil")")
             }
         }
-    }
-    // Scrollable content section (videos) - scrolls underneath fixed header
-    private var scrollableContentSection: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                contentSection
-                // Visual indicator at bottom - only show "End of content" when no more content
-                // Don't show spinner - loading happens silently in background
-                if !content.isEmpty && !hasMoreContent {
-                    HStack {
-                        Spacer()
-                        Text("End of content")
-                            .font(.caption)
                             .foregroundColor(.white.opacity(0.4))
                             .padding(.vertical, 20)
                         Spacer()
