@@ -418,7 +418,8 @@ class AuthService: ObservableObject {
     // MARK: - Error Handling Helper
     
     /// Converts technical errors to human-readable messages
-    private func getFriendlyErrorMessage(from error: Error, defaultMessage: String) -> String {
+    // Public function to get friendly error messages - can be called from views
+    func getFriendlyErrorMessage(from error: Error, defaultMessage: String) -> String {
         // Log the full error for debugging
         print("🔍 [AuthService] Converting error to friendly message")
         print("   - Error: \(error)")
