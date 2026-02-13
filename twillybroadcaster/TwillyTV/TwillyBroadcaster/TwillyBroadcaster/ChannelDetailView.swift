@@ -421,13 +421,6 @@ struct ChannelDetailView: View {
                 print("   - selectedContent at change: \(selectedContent?.fileName ?? "nil")")
             }
         }
-                            .foregroundColor(.white.opacity(0.4))
-                            .padding(.vertical, 20)
-                        Spacer()
-                    }
-                }
-            }
-        }
     }
     private var channelHeader: some View {
         VStack(alignment: .center, spacing: 12) {
