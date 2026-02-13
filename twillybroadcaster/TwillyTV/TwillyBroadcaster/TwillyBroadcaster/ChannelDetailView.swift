@@ -117,11 +117,17 @@ struct ChannelDetailView: View {
             VStack(spacing: 0) {
                 // Fixed header section (poster + search bar)
                 fixedHeaderSection
-                    .background(backgroundGradient)
+                    .background(
+                        ZStack {
+                            backgroundGradient
+                            Color.black.opacity(0.95) // Solid background to cover scrolling content
+                        }
+                    )
                     .zIndex(1) // Ensure it stays on top
                 
                 // Scrollable content section (videos)
                 scrollableContentSection
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .navigationTitle(currentChannel.channelName)
