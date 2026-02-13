@@ -1332,7 +1332,6 @@ struct ChannelDetailView: View {
                                             .font(.caption)
                                             .fontWeight(searchVisibilityFilter == "private" ? .bold : .regular)
                                     }
-                                    }
                                     .foregroundColor(searchVisibilityFilter == "private" ? .white : .gray)
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 6)
@@ -1699,6 +1698,7 @@ struct ChannelDetailView: View {
             // Price display removed - will be revealed later
         }
         .padding(.horizontal)
+    }
     }
     }
     }
