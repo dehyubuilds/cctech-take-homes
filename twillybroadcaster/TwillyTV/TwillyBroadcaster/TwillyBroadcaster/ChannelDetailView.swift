@@ -146,7 +146,8 @@ struct ChannelDetailView: View {
                             // Switch back to unfiltered list
                             content = originalUnfilteredContent
                             print("🔍 [ChannelDetailView] Switched to unfiltered content: \(content.count) items")
-                        }) {
+                        }
+                    }) {
                         Image(systemName: showOnlyOwnContent ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
                             .foregroundColor(showOnlyOwnContent ? .twillyCyan : .white)
                     }
