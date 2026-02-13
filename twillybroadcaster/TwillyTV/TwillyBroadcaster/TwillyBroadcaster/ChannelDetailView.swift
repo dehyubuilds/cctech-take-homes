@@ -114,7 +114,15 @@ struct ChannelDetailView: View {
     var body: some View {
         ZStack {
             backgroundGradient
-            mainScrollView
+            VStack(spacing: 0) {
+                // Fixed header section (poster + search bar)
+                fixedHeaderSection
+                    .background(backgroundGradient)
+                    .zIndex(1) // Ensure it stays on top
+                
+                // Scrollable content section (videos)
+                scrollableContentSection
+            }
         }
         .navigationTitle(currentChannel.channelName)
         .navigationBarTitleDisplayMode(.inline)
@@ -442,15 +450,25 @@ struct ChannelDetailView: View {
         .ignoresSafeArea()
     }
     
-    private var mainScrollView: some View {
+    // Fixed header section (poster + search bar) - stays at top
+    private var fixedHeaderSection: some View {
+        VStack(spacing: 0) {
+            channelHeader
+            Divider()
+                .background(Color.white.opacity(0.2))
+                .padding(.vertical, 8)
+        }
+        .padding(.horizontal)
+        .padding(.top, 8)
+    }
+    
+    // Scrollable content section (videos) - scrolls underneath fixed header
+    private var scrollableContentSection: some View {
         ScrollView {
             VStack(spacing: 0) {
-                channelHeader
-                Divider()
-                    .background(Color.white.opacity(0.2))
-                    .padding(.vertical)
                 contentSection
             }
+            .padding(.horizontal)
         }
         .refreshable {
             await refreshContent()
