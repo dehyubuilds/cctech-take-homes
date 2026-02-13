@@ -65,6 +65,7 @@ struct ChannelDetailView: View {
     @State private var showOnlyOwnContent = false // Filter to show only user's own content
     @State private var showPrivateContent = false // Filter to show private content (default: show public)
     @State private var isFilteringContent = false // Loading state when filtering content
+    @State private var originalUnfilteredContent: [ChannelContent] = [] // Store original content for instant filter toggle
     @State private var contentToDelete: ChannelContent? = nil // Content item to delete
     @State private var showingDeleteConfirmation = false // Show delete confirmation alert
     @State private var isDeleting = false // Whether delete is in progress
@@ -144,15 +145,28 @@ struct ChannelDetailView: View {
                         }
                         // Apply filter to existing content immediately (no need to reload from server)
                         if showOnlyOwnContent, let username = authService.username {
+                            // Always store current content as backup before filtering
+                            // This ensures we can restore instantly when toggling off
+                            if originalUnfilteredContent.isEmpty {
+                                originalUnfilteredContent = content
+                            }
                             // Filter existing content to only show own content
                             content = content.filter { item in
                                 item.creatorUsername?.lowercased() == username.lowercased()
                             }
                             print("🔍 [ChannelDetailView] Filtered existing content: \(content.count) items")
                         } else if wasFiltered {
-                            // Reload all content when filter is turned off
-                            Task {
-                                try? await refreshChannelContent()
+                            // Restore original unfiltered content instantly (no API call needed)
+                            // originalUnfilteredContent already has visibility filter applied, so just restore it
+                            if !originalUnfilteredContent.isEmpty {
+                                // Instant restore - no delay
+                                content = originalUnfilteredContent
+                                print("🔍 [ChannelDetailView] Instantly restored unfiltered content: \(content.count) items")
+                            } else {
+                                // Edge case: original content not stored yet
+                                // This shouldn't happen, but if it does, just keep current content
+                                // (which is already filtered, so user sees filtered view)
+                                print("⚠️ [ChannelDetailView] originalUnfilteredContent is empty - keeping current content")
                             }
                         }
                     }) {
@@ -2700,15 +2714,9 @@ struct ChannelDetailView: View {
         // managefiles.vue returns all filtered videos sorted by createdAt (newest first)
         
         // CRITICAL: Apply filters BEFORE preserving titles
-        // 1. Filter for own content if active
-        // 2. Filter for public/private content
+        // 1. Filter for public/private content first
+        // 2. Filter for own content if active (after visibility filter)
         var filteredSortedContent = sortedContent
-        if showOnlyOwnContent, let username = authService.username {
-            filteredSortedContent = filteredSortedContent.filter { item in
-                item.creatorUsername?.lowercased() == username.lowercased()
-            }
-            print("🔍 [ChannelDetailView] Filtering to own content: \(filteredSortedContent.count) items (from \(sortedContent.count) total)")
-        }
         
         // Filter by public/private visibility (default: show public)
         // REVERTED: Public videos show all videos where isPrivateUsername != true (including nil/false)
@@ -2736,6 +2744,18 @@ struct ChannelDetailView: View {
                 }
                 print("🔍 [ChannelDetailView] Filtering by visibility: public - \(filteredSortedContent.count) items")
             }
+        }
+        
+        // CRITICAL: Store original content AFTER visibility filter but BEFORE "own content" filter
+        // This allows instant "own content" filter toggle without API calls
+        originalUnfilteredContent = filteredSortedContent
+        
+        // Now apply "own content" filter if active
+        if showOnlyOwnContent, let username = authService.username {
+            filteredSortedContent = filteredSortedContent.filter { item in
+                item.creatorUsername?.lowercased() == username.lowercased()
+            }
+            print("🔍 [ChannelDetailView] Filtering to own content: \(filteredSortedContent.count) items (from \(originalUnfilteredContent.count) total)")
         }
         
         // CRITICAL: Preserve titles from existing content when server version is nil/empty
