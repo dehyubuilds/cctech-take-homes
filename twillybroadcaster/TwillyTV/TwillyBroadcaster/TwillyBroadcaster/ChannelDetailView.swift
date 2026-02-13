@@ -421,7 +421,6 @@ struct ChannelDetailView: View {
                 print("   - selectedContent at change: \(selectedContent?.fileName ?? "nil")")
             }
         }
-            channelHeader
     }
     // Scrollable content section (videos) - scrolls underneath fixed header
     private var scrollableContentSection: some View {
