@@ -130,7 +130,6 @@ struct ChannelDetailView: View {
                 scrollableContentSection
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        }
         .navigationTitle(currentChannel.channelName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
