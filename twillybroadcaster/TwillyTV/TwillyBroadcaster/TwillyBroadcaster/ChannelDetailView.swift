@@ -1420,11 +1420,15 @@ struct ChannelDetailView: View {
                                             .foregroundColor(.twillyTeal)
                                         
                                         // Show displayUsername if available (includes 🔒 for private), otherwise username
-                                        Text(result.displayName)
+                                        // CRITICAL: Don't add lock icon if username already has 🔒 in it
+                                        // Usernames with locks are already stored with 🔒 in the database
+                                        let usernameText = result.displayName
+                                        Text(usernameText)
                                             .foregroundColor(.white)
                                         
-                                        // Show lock icon if private
-                                        if result.isPrivate == true {
+                                        // Only show lock icon if username doesn't already have 🔒
+                                        // This prevents double locks
+                                        if result.isPrivate == true && !usernameText.contains("🔒") {
                                             Image(systemName: "lock.fill")
                                                 .foregroundColor(.orange)
                                                 .font(.caption2)
@@ -1488,6 +1492,45 @@ struct ChannelDetailView: View {
                                                         )
                                                     )
                                                     .cornerRadius(6)
+                                                }
+                                            }
+                                        } else {
+                                            // Public username logic: Check if added
+                                            if isUsernameAdded(result.username) {
+                                                Button(action: {}) {
+                                                    Text("Added")
+                                                        .font(.caption)
+                                                        .fontWeight(.semibold)
+                                                        .foregroundColor(.twillyCyan)
+                                                        .padding(.horizontal, 12)
+                                                        .padding(.vertical, 6)
+                                                        .background(Color.twillyCyan.opacity(0.2))
+                                                        .cornerRadius(6)
+                                                }
+                                                .disabled(true)
+                                            } else {
+                                                // Show "Add" for public usernames
+                                                Button(action: {
+                                                    addUsernameInline(result.username, email: result.email)
+                                                }) {
+                                                    Text("Add")
+                                                        .font(.caption)
+                                                        .fontWeight(.semibold)
+                                                        .foregroundColor(.white)
+                                                        .padding(.horizontal, 12)
+                                                        .padding(.vertical, 6)
+                                                        .background(
+                                                            LinearGradient(
+                                                                gradient: Gradient(colors: [
+                                                                    Color.twillyTeal,
+                                                                    Color.twillyCyan
+                                                                ]),
+                                                                startPoint: .leading,
+                                                                endPoint: .trailing
+                                                            )
+                                                        )
+                                                        .cornerRadius(6)
+                                                }
                                             }
                                         }
                                     }
