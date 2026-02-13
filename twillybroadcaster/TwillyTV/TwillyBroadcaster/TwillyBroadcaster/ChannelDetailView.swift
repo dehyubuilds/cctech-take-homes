@@ -524,6 +524,7 @@ struct ChannelDetailView: View {
             channelPoster
             channelInfo
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top)
     }
     
@@ -1220,6 +1221,7 @@ struct ChannelDetailView: View {
                     .font(.title)
                     .fontWeight(.bold)
                     .foregroundColor(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             
             if !currentChannel.description.isEmpty {
@@ -1229,6 +1231,7 @@ struct ChannelDetailView: View {
                     .lineLimit(nil)
                     .fixedSize(horizontal: false, vertical: true)
                     .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, currentChannel.channelName.lowercased() == "twilly tv" ? 0 : 4)
             }
             
