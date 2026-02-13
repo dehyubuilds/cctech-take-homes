@@ -1300,6 +1300,14 @@ struct ChannelDetailView: View {
                                         showAddedUsernamesDropdown = false
                                         addedUsernamesSearchText = ""
                                     }
+                                }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .font(.caption2)
+                                        Text("Public")
+                                            .font(.caption)
+                                            .fontWeight(searchVisibilityFilter == "public" ? .bold : .regular)
+                                    }
                                     .foregroundColor(searchVisibilityFilter == "public" ? .white : .gray)
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 6)
@@ -1315,7 +1323,15 @@ struct ChannelDetailView: View {
                                         usernameSearchResults = []
                                         showAddedUsernamesDropdown = false
                                         addedUsernamesSearchText = ""
+                                    }
                                 }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "lock.fill")
+                                            .font(.caption2)
+                                        Text("Private")
+                                            .font(.caption)
+                                            .fontWeight(searchVisibilityFilter == "private" ? .bold : .regular)
+                                    }
                                     }
                                     .foregroundColor(searchVisibilityFilter == "private" ? .white : .gray)
                                     .padding(.horizontal, 12)
