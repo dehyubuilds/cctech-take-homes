@@ -46,8 +46,14 @@ struct ChannelDetailView: View {
     @State private var usernameSearchResults: [UsernameSearchResult] = [] // Search results
     @State private var isSearchingUsernames = false // Whether search is in progress
     @State private var showSearchDropdown = false // Show search results dropdown
+    @State private var searchTask: Task<Void, Never>? = nil // Debounce task for search
     @State private var showAddedUsernamesDropdown = false // Show added usernames dropdown
-    @State private var isAddingUsername = false // Whether adding username is in progress
+    @State private var addingUsernames: Set<String> = [] // Track which usernames are currently being added
+    @State private var searchVisibilityFilter: String = "public" // Filter: "all", "public", "private" (default: "public")
+    @State private var sentFollowRequests: [SentFollowRequest] = [] // Track follow requests sent by current user
+    @State private var isLoadingSentRequests = false
+    @State private var addedUsernamesSearchText = "" // Search text for filtering added usernames
+    @State private var addedUsernamesVisibilityFilter: String = "public" // Filter: "all", "public", "private" (default: "public")
     @State private var autoRefreshTask: Task<Void, Never>? = nil // Task for auto-refreshing content
     @State private var hasSelectedTimeslot = false // Whether user has selected a timeslot
     @State private var allTimeslotsFilled = false // Whether all timeslots are filled
@@ -181,8 +187,8 @@ struct ChannelDetailView: View {
             UsernameSearchView(
                 channelName: currentChannel.channelName,
                 onUsernameAdded: {
-                    // Reload added usernames and refresh content
-                    loadAddedUsernames()
+                    // Reload added usernames and refresh content (merge to preserve optimistic updates)
+                    loadAddedUsernames(mergeWithExisting: true)
                     Task {
                         try? await refreshChannelContent()
                     }
@@ -671,10 +677,100 @@ struct ChannelDetailView: View {
         }
     }
     
+    // UserDefaults key for persisting added usernames
+    private func addedUsernamesKey(for userEmail: String) -> String {
+        return "addedUsernames_\(userEmail)"
+    }
+    
+    // Save added usernames to UserDefaults
+    private func saveAddedUsernamesToUserDefaults() {
+        guard let userEmail = authService.userEmail else {
+            print("⚠️ [ChannelDetailView] Cannot save to UserDefaults - userEmail is nil")
+            return
+        }
+        
+        let key = addedUsernamesKey(for: userEmail)
+        print("🔑 [ChannelDetailView] Saving to UserDefaults with key: \(key)")
+        
+        do {
+            let encoder = JSONEncoder()
+            let encoded = try encoder.encode(addedUsernames)
+            UserDefaults.standard.set(encoded, forKey: key)
+            UserDefaults.standard.synchronize() // Force immediate write
+            print("💾 [ChannelDetailView] Saved \(addedUsernames.count) added usernames to UserDefaults (key: \(key))")
+            print("   📋 Usernames: \(addedUsernames.map { $0.streamerUsername }.joined(separator: ", "))")
+        } catch {
+            print("❌ [ChannelDetailView] Error saving added usernames to UserDefaults: \(error)")
+            print("   Key used: \(key)")
+        }
+    }
+    
+    // Load added usernames from UserDefaults
+    private func loadAddedUsernamesFromUserDefaults() -> [AddedUsername] {
+        guard let userEmail = authService.userEmail else {
+            print("⚠️ [ChannelDetailView] Cannot load from UserDefaults - userEmail is nil")
+            return []
+        }
+        
+        let key = addedUsernamesKey(for: userEmail)
+        print("🔑 [ChannelDetailView] Attempting to load from UserDefaults with key: \(key)")
+        
+        guard let data = UserDefaults.standard.data(forKey: key) else {
+            print("📭 [ChannelDetailView] No cached added usernames in UserDefaults for key: \(key)")
+            return []
+        }
+        
+        do {
+            let decoder = JSONDecoder()
+            let cached = try decoder.decode([AddedUsername].self, from: data)
+            print("📂 [ChannelDetailView] Loaded \(cached.count) added usernames from UserDefaults (key: \(key))")
+            print("   📋 Usernames: \(cached.map { $0.streamerUsername }.joined(separator: ", "))")
+            return cached
+        } catch {
+            print("❌ [ChannelDetailView] Error loading added usernames from UserDefaults: \(error)")
+            print("   Key used: \(key)")
+            return []
+        }
+    }
+    
     // Load added usernames for Twilly TV filtering
-    private func loadAddedUsernames() {
-        guard currentChannel.channelName.lowercased() == "twilly tv",
-              let userEmail = authService.userEmail else {
+    private func loadAddedUsernames(mergeWithExisting: Bool = false) {
+        // Also load sent follow requests when loading added usernames
+        loadSentFollowRequests()
+        guard currentChannel.channelName.lowercased() == "twilly tv" else {
+            return
+        }
+        
+        // Try to load from UserDefaults first (even if email is temporarily unavailable)
+        if !mergeWithExisting {
+            if let userEmail = authService.userEmail {
+                let cached = loadAddedUsernamesFromUserDefaults()
+                if !cached.isEmpty {
+                    addedUsernames = cached
+                    print("✅ [ChannelDetailView] Loaded \(cached.count) added usernames from cache (showing immediately)")
+                }
+            } else {
+                // Email not available yet - try loading with a delay
+                print("⚠️ [ChannelDetailView] userEmail not available yet, will retry loading from cache")
+                Task {
+                    // Wait a bit for auth to complete
+                    try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+                    await MainActor.run {
+                        if let userEmail = authService.userEmail {
+                            let cached = loadAddedUsernamesFromUserDefaults()
+                            if !cached.isEmpty {
+                                addedUsernames = cached
+                                print("✅ [ChannelDetailView] Loaded \(cached.count) added usernames from cache (delayed load)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Now proceed with server load (requires email)
+        guard let userEmail = authService.userEmail else {
+            print("⚠️ [ChannelDetailView] Cannot load from server - userEmail not available")
             return
         }
         
@@ -683,14 +779,91 @@ struct ChannelDetailView: View {
             do {
                 let response = try await ChannelService.shared.getAddedUsernames(userEmail: userEmail)
                 await MainActor.run {
-                    addedUsernames = response.addedUsernames ?? []
+                    if mergeWithExisting && !addedUsernames.isEmpty {
+                        // Merge server data with existing optimistic updates
+                        let serverUsernames = response.addedUsernames ?? []
+                        var mergedUsernames: [AddedUsername] = []
+                        let existingUsernamesLower = Set(addedUsernames.map { $0.streamerUsername.lowercased() })
+                        let serverUsernamesLower = Set(serverUsernames.map { $0.streamerUsername.lowercased() })
+                        
+                        // Start with existing (optimistic) usernames
+                        mergedUsernames = addedUsernames
+                        
+                        // Add server usernames that aren't already in the list
+                        for serverUsername in serverUsernames {
+                            if !existingUsernamesLower.contains(serverUsername.streamerUsername.lowercased()) {
+                                mergedUsernames.append(serverUsername)
+                                print("   ➕ Added server username: \(serverUsername.streamerUsername)")
+                            }
+                        }
+                        
+                        // Update existing entries with server data (more accurate) but keep optimistic ones if server doesn't have them
+                        for (index, existing) in mergedUsernames.enumerated() {
+                            if let serverVersion = serverUsernames.first(where: { $0.streamerUsername.lowercased() == existing.streamerUsername.lowercased() }) {
+                                mergedUsernames[index] = serverVersion
+                            } else {
+                                // Keep optimistic update if server doesn't have it yet (might be processing)
+                                print("   ⚠️ Keeping optimistic username (not in server yet): \(existing.streamerUsername)")
+                            }
+                        }
+                        
+                        addedUsernames = mergedUsernames
+                        print("✅ [ChannelDetailView] Merged added usernames: \(addedUsernames.count) total (kept optimistic updates)")
+                    } else {
+                        // Initial load: Replace with server data, but preserve cached data if server returns empty
+                        let serverUsernames = response.addedUsernames ?? []
+                        if !serverUsernames.isEmpty {
+                            // Server has data - use it
+                            addedUsernames = serverUsernames
+                            print("✅ [ChannelDetailView] Loaded \(addedUsernames.count) added usernames from server (initial load)")
+                        } else {
+                            // Server returned empty - keep cached data if we have it
+                            if addedUsernames.isEmpty {
+                                // No cached data either - truly empty
+                                print("⚠️ [ChannelDetailView] Server returned empty list and no cached data")
+                            } else {
+                                // Keep cached data since server is empty
+                                print("⚠️ [ChannelDetailView] Server returned empty list, keeping \(addedUsernames.count) cached usernames")
+                            }
+                        }
+                    }
+                    
+                    // Save to UserDefaults after loading from server (only if we have data to save)
+                    if !addedUsernames.isEmpty {
+                        saveAddedUsernamesToUserDefaults()
+                    }
+                    
                     isLoadingAddedUsernames = false
-                    print("✅ [ChannelDetailView] Loaded \(addedUsernames.count) added usernames")
+                    // Log usernames for debugging
+                    if !addedUsernames.isEmpty {
+                        print("   📋 Final usernames: \(addedUsernames.map { $0.streamerUsername }.joined(separator: ", "))")
+                    } else {
+                        print("   ⚠️ No usernames found")
+                    }
                 }
             } catch {
-                print("❌ [ChannelDetailView] Error loading added usernames: \(error.localizedDescription)")
+                print("❌ [ChannelDetailView] Error loading added usernames: \(error)")
+                print("   Error type: \(type(of: error))")
+                print("   Error description: \(error.localizedDescription)")
+                if let channelError = error as? ChannelServiceError {
+                    print("   ChannelServiceError: \(channelError)")
+                }
                 await MainActor.run {
                     isLoadingAddedUsernames = false
+                    // Don't clear existing addedUsernames on error - keep optimistic updates or cached data
+                    if addedUsernames.isEmpty {
+                        // If we have no data at all, try loading from cache
+                        let cached = loadAddedUsernamesFromUserDefaults()
+                        if !cached.isEmpty {
+                            addedUsernames = cached
+                            print("⚠️ [ChannelDetailView] Using cached added usernames due to server error: \(cached.count) usernames")
+                        }
+                    } else {
+                        print("⚠️ [ChannelDetailView] Keeping existing \(addedUsernames.count) usernames (optimistic updates)")
+                    }
+                    if !addedUsernames.isEmpty {
+                        print("   Current usernames: \(addedUsernames.map { $0.streamerUsername }.joined(separator: ", "))")
+                    }
                 }
             }
         }
@@ -712,8 +885,8 @@ struct ChannelDetailView: View {
                 do {
                     // Request follow with own username (will auto-accept if public)
                     _ = try await ChannelService.shared.requestFollow(requesterEmail: userEmail, requestedUsername: username)
-                    // Reload added usernames to get updated list
-                    loadAddedUsernames()
+                    // Reload added usernames to get updated list (merge to preserve any optimistic updates)
+                    loadAddedUsernames(mergeWithExisting: true)
                 } catch {
                     print("⚠️ [ChannelDetailView] Could not auto-add own username: \(error.localizedDescription)")
                 }
@@ -723,22 +896,48 @@ struct ChannelDetailView: View {
     
     // Search usernames inline
     private func searchUsernamesInline() {
+        // Cancel previous search task
+        searchTask?.cancel()
+        
         guard !usernameSearchText.isEmpty else {
             usernameSearchResults = []
             showSearchDropdown = false
+            isSearchingUsernames = false
             return
         }
         
-        isSearchingUsernames = true
-        Task {
+        // Debounce search by 300ms to avoid too many API calls
+        searchTask = Task {
             do {
-                let results = try await ChannelService.shared.searchUsernames(query: usernameSearchText, limit: 10)
+                try await Task.sleep(nanoseconds: 300_000_000) // 300ms delay
+                
+                // Check if task was cancelled
+                guard !Task.isCancelled else { return }
+                
                 await MainActor.run {
+                    isSearchingUsernames = true
+                }
+                
+                // Use visibility filter (default: "public")
+                let results = try await ChannelService.shared.searchUsernames(query: usernameSearchText, limit: 10, visibilityFilter: searchVisibilityFilter)
+                
+                // Check again if task was cancelled
+                guard !Task.isCancelled else { return }
+                
+                await MainActor.run {
+                    print("🔍 [ChannelDetailView] Search completed: Found \(results.count) results for '\(usernameSearchText)'")
                     usernameSearchResults = results
                     showSearchDropdown = !results.isEmpty
                     isSearchingUsernames = false
+                    
+                    if results.isEmpty {
+                        print("⚠️ [ChannelDetailView] No results found for '\(usernameSearchText)' with filter '\(searchVisibilityFilter)'")
+                    } else {
+                        print("✅ [ChannelDetailView] Showing dropdown with \(results.count) results")
+                    }
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 print("❌ [ChannelDetailView] Error searching usernames: \(error.localizedDescription)")
                 await MainActor.run {
                     usernameSearchResults = []
@@ -750,28 +949,95 @@ struct ChannelDetailView: View {
     }
     
     // Add username inline
-    private func addUsernameInline(_ username: String) {
+    private func addUsernameInline(_ username: String, email: String? = nil) {
         guard let userEmail = authService.userEmail else {
             return
         }
         
+        // Remove 🔒 from username for API call (API expects username without lock)
+        let cleanUsername = username.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces)
+        
         // Check if already added
-        if addedUsernames.contains(where: { $0.streamerUsername.lowercased() == username.lowercased() }) {
-            print("ℹ️ [ChannelDetailView] Username already added: \(username)")
+        if addedUsernames.contains(where: { $0.streamerUsername.lowercased() == cleanUsername.lowercased() }) {
+            print("ℹ️ [ChannelDetailView] Username already added: \(cleanUsername)")
             return
         }
         
-        isAddingUsername = true
+        // Check if already being added
+        if addingUsernames.contains(cleanUsername.lowercased()) {
+            print("ℹ️ [ChannelDetailView] Username already being added: \(cleanUsername)")
+            return
+        }
+        
+        // Mark as being added
+        addingUsernames.insert(cleanUsername.lowercased())
+        
         Task {
             do {
-                let response = try await ChannelService.shared.requestFollow(requesterEmail: userEmail, requestedUsername: username)
+                // Use clean username (without 🔒) for API call
+                let response = try await ChannelService.shared.requestFollow(requesterEmail: userEmail, requestedUsername: cleanUsername)
                 await MainActor.run {
-                    // Clear search and reload added usernames
-                    usernameSearchText = ""
-                    usernameSearchResults = []
-                    showSearchDropdown = false
-                    isAddingUsername = false
-                    loadAddedUsernames()
+                    // Remove from adding set
+                    addingUsernames.remove(username.lowercased())
+                    
+                    // If auto-accepted (public), add to list immediately
+                    // If pending (private), add to sent requests list
+                    if response.autoAccepted == true {
+                        // Optimistically add the username to the list immediately
+                        // Use provided email, or find it from search results, or use empty string as fallback
+                        let streamerEmail = email ?? usernameSearchResults.first(where: { $0.username.lowercased() == cleanUsername.lowercased() })?.email ?? ""
+                        let newAddedUsername = AddedUsername(
+                            streamerEmail: streamerEmail,
+                            streamerUsername: cleanUsername,
+                            addedAt: ISO8601DateFormatter().string(from: Date()),
+                            streamerVisibility: "public"
+                        )
+                        
+                        // Only add if not already present
+                        if !addedUsernames.contains(where: { $0.streamerUsername.lowercased() == cleanUsername.lowercased() }) {
+                            addedUsernames.append(newAddedUsername)
+                            print("✅ [ChannelDetailView] Optimistically added username: \(cleanUsername) (email: \(streamerEmail.isEmpty ? "N/A" : streamerEmail))")
+                            print("   📊 Current addedUsernames count: \(addedUsernames.count)")
+                            print("   📋 Current usernames: \(addedUsernames.map { $0.streamerUsername }.joined(separator: ", "))")
+                            
+                            // Save to UserDefaults immediately
+                            saveAddedUsernamesToUserDefaults()
+                        } else {
+                            print("⚠️ [ChannelDetailView] Username \(cleanUsername) already in addedUsernames list")
+                        }
+                    } else {
+                        // Private user - add to sent requests list
+                        let streamerEmail = email ?? usernameSearchResults.first(where: { $0.username.lowercased() == cleanUsername.lowercased() })?.email ?? ""
+                        let newSentRequest = SentFollowRequest(
+                            requestedUserEmail: streamerEmail,
+                            requestedUsername: cleanUsername,
+                            requestedAt: ISO8601DateFormatter().string(from: Date()),
+                            respondedAt: nil,
+                            status: "pending"
+                        )
+                        
+                        if !sentFollowRequests.contains(where: { $0.requestedUsername.lowercased() == cleanUsername.lowercased() }) {
+                            sentFollowRequests.append(newSentRequest)
+                            print("✅ [ChannelDetailView] Added to sent requests: \(cleanUsername)")
+                        }
+                    }
+                    
+                    // Try to reload from server in the background (non-blocking)
+                    // Wait a short delay to ensure backend has processed the request
+                    Task {
+                        do {
+                            // Wait 1 second for backend to process (increased from 500ms)
+                            try await Task.sleep(nanoseconds: 1_000_000_000)
+                            // Use merge mode to preserve optimistic updates
+                            loadAddedUsernames(mergeWithExisting: true)
+                            // Also reload sent follow requests to update button states
+                            loadSentFollowRequests()
+                        } catch {
+                            // Silently fail - we already have the optimistic update
+                            print("⚠️ [ChannelDetailView] Could not refresh added usernames from server: \(error.localizedDescription)")
+                            print("   Keeping optimistic update: \(addedUsernames.map { $0.streamerUsername }.joined(separator: ", "))")
+                        }
+                    }
                     
                     // If auto-accepted (public user), refresh content immediately
                     // If pending (private user), they'll see content after acceptance
@@ -781,7 +1047,9 @@ struct ChannelDetailView: View {
                             try? await refreshChannelContent()
                         }
                     } else {
-                        print("📩 [ChannelDetailView] Follow request sent to private user: \(username)")
+                        print("📩 [ChannelDetailView] Follow request sent to private user: \(cleanUsername)")
+                        // Reload sent requests to ensure UI is updated
+                        loadSentFollowRequests()
                     }
                 }
             } catch {
@@ -792,12 +1060,67 @@ struct ChannelDetailView: View {
                     print("   ChannelServiceError: \(channelError)")
                 }
                 await MainActor.run {
-                    isAddingUsername = false
+                    // Remove from adding set on error
+                    addingUsernames.remove(username.lowercased())
                     // Show error to user
                     errorMessage = "Failed to add username: \(error.localizedDescription)"
                 }
             }
         }
+    }
+    
+    // Check if username is already added
+    private func isUsernameAdded(_ username: String) -> Bool {
+        // CRITICAL: Public and private usernames are SEPARATE accounts
+        // Check EXACT match (with or without 🔒) - don't remove locks
+        // "POM-J" (public) and "POM-J🔒" (private) are DIFFERENT accounts
+        let isAdded = addedUsernames.contains(where: { 
+            $0.streamerUsername.lowercased() == username.lowercased() 
+        })
+        if isAdded {
+            print("✅ [ChannelDetailView] Username '\(username)' is in addedUsernames list")
+        }
+        return isAdded
+    }
+    
+    // Check if a follow request was already sent for this username
+    private func isFollowRequestSent(_ username: String) -> Bool {
+        // CRITICAL: Check EXACT match - don't remove locks
+        // Public username "POM-J" and private username "POM-J🔒" are SEPARATE
+        let isSent = sentFollowRequests.contains(where: { 
+            $0.requestedUsername.lowercased() == username.lowercased() && $0.status == "pending"
+        })
+        if isSent {
+            print("✅ [ChannelDetailView] Follow request already sent for: \(username)")
+        }
+        return isSent
+    }
+    
+    // Load sent follow requests
+    private func loadSentFollowRequests() {
+        guard let userEmail = authService.userEmail else { return }
+        
+        isLoadingSentRequests = true
+        Task {
+            do {
+                let response = try await ChannelService.shared.getSentFollowRequests(requesterEmail: userEmail, status: "pending")
+                await MainActor.run {
+                    sentFollowRequests = response.requests ?? []
+                    isLoadingSentRequests = false
+                    print("✅ [ChannelDetailView] Loaded \(sentFollowRequests.count) sent follow requests")
+                }
+            } catch {
+                print("❌ [ChannelDetailView] Error loading sent follow requests: \(error.localizedDescription)")
+                await MainActor.run {
+                    isLoadingSentRequests = false
+                }
+            }
+        }
+    }
+    
+    // Check if username is currently being added
+    private func isUsernameBeingAdded(_ username: String) -> Bool {
+        return addingUsernames.contains(username.lowercased())
     }
     
     // Remove username
@@ -806,24 +1129,45 @@ struct ChannelDetailView: View {
             return
         }
         
+        // Find the AddedUsername object to get the email
+        guard let addedUsername = addedUsernames.first(where: { $0.streamerUsername.lowercased() == username.lowercased() }) else {
+            print("⚠️ [ChannelDetailView] Could not find username in addedUsernames: \(username)")
+            return
+        }
+        
         Task {
             do {
-                // Call remove follow API endpoint
-                let response = try await ChannelService.shared.removeFollow(requesterEmail: userEmail, requestedUsername: username)
-                if response.success {
-                    await MainActor.run {
-                        // Remove from local list and reload
-                        addedUsernames.removeAll { $0.streamerUsername.lowercased() == username.lowercased() }
-                        showAddedUsernamesDropdown = false
-                        loadAddedUsernames()
-                        // Refresh content
-                        Task {
-                            try? await refreshChannelContent()
-                        }
+                // Call remove follow API endpoint with email directly
+                let response = try await ChannelService.shared.removeFollow(
+                    requesterEmail: userEmail,
+                    requestedUsername: username,
+                    requestedUserEmail: addedUsername.streamerEmail
+                )
+                
+                // Response.success is already checked in removeFollow, so if we get here, it succeeded
+                await MainActor.run {
+                    // Optimistically remove from local list
+                    addedUsernames.removeAll { $0.streamerUsername.lowercased() == username.lowercased() }
+                    showAddedUsernamesDropdown = false
+                    
+                    // Save to UserDefaults immediately
+                    saveAddedUsernamesToUserDefaults()
+                    
+                    // Reload from server to ensure consistency (merge to preserve any other optimistic updates)
+                    loadAddedUsernames(mergeWithExisting: true)
+                    
+                    // Refresh content to remove their posts from the timeline
+                    Task {
+                        try? await refreshChannelContent()
                     }
                 }
             } catch {
                 print("❌ [ChannelDetailView] Error removing username: \(error.localizedDescription)")
+                // Show error to user
+                await MainActor.run {
+                    // You could add an error state here to show an alert
+                    print("❌ [ChannelDetailView] Failed to remove \(username): \(error)")
+                }
             }
         }
     }
@@ -912,36 +1256,55 @@ struct ChannelDetailView: View {
                 // For Twilly TV, show inline username search bar
                 if currentChannel.channelName.lowercased() == "twilly tv" {
                     VStack(alignment: .leading, spacing: 8) {
-                        // Search bar
-                        HStack(spacing: 12) {
+                            // Search bar
+                            HStack(spacing: 12) {
                             // Toggle added usernames dropdown (moved to left)
                             Button(action: {
                                 withAnimation {
                                     showAddedUsernamesDropdown.toggle()
-                                }
-                            }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "person.2.fill")
-                                    if !addedUsernames.isEmpty {
-                                        Text("\(addedUsernames.count)")
-                                            .font(.caption)
-                                            .fontWeight(.semibold)
+                                    // Clear search when opening/closing dropdown
+                                    if !showAddedUsernamesDropdown {
+                                        addedUsernamesSearchText = ""
+                                    }
+                                    // Close search dropdown when opening added usernames
+                                    if showAddedUsernamesDropdown {
+                                        showSearchDropdown = false
+                                        usernameSearchText = ""
+                                        usernameSearchResults = []
                                     }
                                 }
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(
-                                    LinearGradient(
-                                        gradient: Gradient(colors: [
-                                            Color.twillyTeal,
-                                            Color.twillyCyan
-                                        ]),
-                                        startPoint: .leading,
-                                        endPoint: .trailing
+                            }) {
+                                ZStack(alignment: .topTrailing) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "person.2.fill")
+                                    }
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        LinearGradient(
+                                            gradient: Gradient(colors: [
+                                                Color.twillyTeal,
+                                                Color.twillyCyan
+                                            ]),
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
                                     )
-                                )
-                                .cornerRadius(8)
+                                    .cornerRadius(8)
+                                    
+                                    // Badge with count
+                                    if !addedUsernames.isEmpty {
+                                        Text("\(addedUsernames.count)")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundColor(.white)
+                                            .padding(.horizontal, 5)
+                                            .padding(.vertical, 2)
+                                            .background(Color.orange)
+                                            .clipShape(Capsule())
+                                            .offset(x: 8, y: -8)
+                                    }
+                                }
                             }
                             
                             TextField("Search username...", text: $usernameSearchText)
@@ -949,16 +1312,23 @@ struct ChannelDetailView: View {
                                 .autocapitalization(.none)
                                 .autocorrectionDisabled()
                                 .onChange(of: usernameSearchText) { newValue in
+                                    // Close added usernames dropdown when searching
                                     if !newValue.isEmpty {
+                                        showAddedUsernamesDropdown = false
+                                        addedUsernamesSearchText = ""
                                         searchUsernamesInline()
                                     } else {
+                                        // Cancel any pending search
+                                        searchTask?.cancel()
                                         usernameSearchResults = []
                                         showSearchDropdown = false
+                                        isSearchingUsernames = false
                                     }
                                 }
                                 .onTapGesture {
                                     if !usernameSearchText.isEmpty && !usernameSearchResults.isEmpty {
                                         showSearchDropdown = true
+                                        showAddedUsernamesDropdown = false
                                     }
                                 }
                             
@@ -982,6 +1352,65 @@ struct ChannelDetailView: View {
                         .background(Color.white.opacity(0.1))
                         .cornerRadius(12)
                         
+                        // Visibility filter buttons for search
+                        if !usernameSearchText.isEmpty {
+                            HStack(spacing: 12) {
+                                Button(action: {
+                                    searchVisibilityFilter = "all"
+                                    searchUsernamesInline()
+                                }) {
+                                    Text("All")
+                                        .font(.caption)
+                                        .fontWeight(searchVisibilityFilter == "all" ? .bold : .regular)
+                                        .foregroundColor(searchVisibilityFilter == "all" ? .white : .gray)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 6)
+                                        .background(searchVisibilityFilter == "all" ? Color.twillyCyan.opacity(0.3) : Color.clear)
+                                        .cornerRadius(8)
+                                }
+                                
+                                Button(action: {
+                                    searchVisibilityFilter = "public"
+                                    searchUsernamesInline()
+                                }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .font(.caption2)
+                                        Text("Public")
+                                            .font(.caption)
+                                            .fontWeight(searchVisibilityFilter == "public" ? .bold : .regular)
+                                    }
+                                    .foregroundColor(searchVisibilityFilter == "public" ? .white : .gray)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(searchVisibilityFilter == "public" ? Color.twillyCyan.opacity(0.3) : Color.clear)
+                                    .cornerRadius(8)
+                                }
+                                
+                                Button(action: {
+                                    searchVisibilityFilter = "private"
+                                    searchUsernamesInline()
+                                }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "lock.fill")
+                                            .font(.caption2)
+                                        Text("Private")
+                                            .font(.caption)
+                                            .fontWeight(searchVisibilityFilter == "private" ? .bold : .regular)
+                                    }
+                                    .foregroundColor(searchVisibilityFilter == "private" ? .white : .gray)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(searchVisibilityFilter == "private" ? Color.orange.opacity(0.3) : Color.clear)
+                                    .cornerRadius(8)
+                                }
+                                
+                                Spacer()
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.top, 8)
+                        }
+                        
                         // Search results dropdown
                         if showSearchDropdown && !usernameSearchResults.isEmpty {
                             VStack(alignment: .leading, spacing: 0) {
@@ -990,20 +1419,59 @@ struct ChannelDetailView: View {
                                         Image(systemName: "person.circle.fill")
                                             .foregroundColor(.twillyTeal)
                                         
-                                        Text(result.username)
+                                        // Show displayUsername if available (includes 🔒 for private), otherwise username
+                                        Text(result.displayName)
                                             .foregroundColor(.white)
+                                        
+                                        // Show lock icon if private
+                                        if result.isPrivate == true {
+                                            Image(systemName: "lock.fill")
+                                                .foregroundColor(.orange)
+                                                .font(.caption2)
+                                        }
                                         
                                         Spacer()
                                         
-                                        if isAddingUsername {
+                                        if isUsernameBeingAdded(result.username) {
                                             ProgressView()
                                                 .tint(.white)
                                                 .scaleEffect(0.8)
+                                        } else if isUsernameAdded(result.username) {
+                                            // Check if it's actually added (active) or just requested (pending)
+                                            let addedUsername = addedUsernames.first(where: { $0.streamerUsername.lowercased() == result.username.lowercased() })
+                                            let isActive = addedUsername?.streamerVisibility?.lowercased() == "public" || addedUsername?.streamerVisibility == nil
+                                            
+                                            Button(action: {}) {
+                                                Text(isActive ? "Added" : "Requested")
+                                                    .font(.caption)
+                                                    .fontWeight(.semibold)
+                                                    .foregroundColor(isActive ? .twillyCyan : .orange)
+                                                    .padding(.horizontal, 12)
+                                                    .padding(.vertical, 6)
+                                                    .background((isActive ? Color.twillyCyan : Color.orange).opacity(0.2))
+                                                    .cornerRadius(6)
+                                            }
+                                            .disabled(true)
+                                        } else if isFollowRequestSent(result.username) {
+                                            // Follow request already sent
+                                            Button(action: {}) {
+                                                Text("Requested")
+                                                    .font(.caption)
+                                                    .fontWeight(.semibold)
+                                                    .foregroundColor(.orange)
+                                                    .padding(.horizontal, 12)
+                                                    .padding(.vertical, 6)
+                                                    .background(Color.orange.opacity(0.2))
+                                                    .cornerRadius(6)
+                                            }
+                                            .disabled(true)
                                         } else {
+                                            // Show "Request" for private usernames, "Add" for public
+                                            let isPrivate = result.isPrivate == true
                                             Button(action: {
-                                                addUsernameInline(result.username)
+                                                addUsernameInline(result.username, email: result.email)
                                             }) {
-                                                Text("Add")
+                                                Text(isPrivate ? "Request" : "Add")
                                                     .font(.caption)
                                                     .fontWeight(.semibold)
                                                     .foregroundColor(.white)
@@ -1036,42 +1504,197 @@ struct ChannelDetailView: View {
                             .background(Color.white.opacity(0.1))
                             .cornerRadius(12)
                             .padding(.top, 4)
+                            .zIndex(1000) // Ensure dropdown appears above other content
+                            .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 4)
                         }
                         
-                        // Added usernames dropdown
-                        if showAddedUsernamesDropdown && !addedUsernames.isEmpty {
+                        // Debug: Show loading state
+                        if isSearchingUsernames && !usernameSearchText.isEmpty {
+                            HStack {
+                                ProgressView()
+                                    .tint(.white)
+                                Text("Searching...")
+                                    .foregroundColor(.white.opacity(0.7))
+                                    .font(.caption)
+                            }
+                            .padding(.top, 4)
+                        }
+                        
+                        // Debug: Show "no results" message
+                        if !isSearchingUsernames && !usernameSearchText.isEmpty && usernameSearchResults.isEmpty && !showSearchDropdown {
+                            Text("No users found")
+                                .foregroundColor(.white.opacity(0.5))
+                                .font(.caption)
+                                .padding(.top, 4)
+                        }
+                        
+                        // Added usernames dropdown with search
+                        if showAddedUsernamesDropdown {
                             VStack(alignment: .leading, spacing: 0) {
-                                ForEach(addedUsernames) { addedUsername in
+                                // Search field and visibility filter for added usernames
+                                VStack(spacing: 8) {
                                     HStack {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundColor(.twillyCyan)
-                                        
-                                        Text(addedUsername.streamerUsername)
+                                        Image(systemName: "magnifyingglass")
+                                            .foregroundColor(.white.opacity(0.6))
+                                        TextField("Search added usernames...", text: $addedUsernamesSearchText)
                                             .foregroundColor(.white)
+                                            .autocapitalization(.none)
+                                            .autocorrectionDisabled()
                                         
-                                        Spacer()
-                                        
-                                        Button(action: {
-                                            removeUsername(addedUsername.streamerUsername)
-                                        }) {
-                                            Image(systemName: "trash")
-                                                .foregroundColor(.red)
-                                                .font(.caption)
+                                        if !addedUsernamesSearchText.isEmpty {
+                                            Button(action: {
+                                                addedUsernamesSearchText = ""
+                                            }) {
+                                                Image(systemName: "xmark.circle.fill")
+                                                    .foregroundColor(.white.opacity(0.6))
+                                            }
                                         }
                                     }
                                     .padding(.horizontal, 16)
                                     .padding(.vertical, 12)
                                     .background(Color.white.opacity(0.05))
                                     
-                                    if addedUsername.id != addedUsernames.last?.id {
-                                        Divider()
-                                            .background(Color.white.opacity(0.1))
+                                    // Visibility filter buttons
+                                    HStack(spacing: 12) {
+                                        Button(action: {
+                                            addedUsernamesVisibilityFilter = "all"
+                                        }) {
+                                            Text("All")
+                                                .font(.caption)
+                                                .fontWeight(addedUsernamesVisibilityFilter == "all" ? .bold : .regular)
+                                                .foregroundColor(addedUsernamesVisibilityFilter == "all" ? .white : .gray)
+                                                .padding(.horizontal, 12)
+                                                .padding(.vertical, 6)
+                                                .background(addedUsernamesVisibilityFilter == "all" ? Color.twillyCyan.opacity(0.3) : Color.clear)
+                                                .cornerRadius(8)
+                                        }
+                                        
+                                        Button(action: {
+                                            addedUsernamesVisibilityFilter = "public"
+                                        }) {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "checkmark.circle.fill")
+                                                    .font(.caption2)
+                                                Text("Public")
+                                                    .font(.caption)
+                                                    .fontWeight(addedUsernamesVisibilityFilter == "public" ? .bold : .regular)
+                                            }
+                                            .foregroundColor(addedUsernamesVisibilityFilter == "public" ? .white : .gray)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 6)
+                                            .background(addedUsernamesVisibilityFilter == "public" ? Color.twillyCyan.opacity(0.3) : Color.clear)
+                                            .cornerRadius(8)
+                                        }
+                                        
+                                        Button(action: {
+                                            addedUsernamesVisibilityFilter = "private"
+                                        }) {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "lock.fill")
+                                                    .font(.caption2)
+                                                Text("Private")
+                                                    .font(.caption)
+                                                    .fontWeight(addedUsernamesVisibilityFilter == "private" ? .bold : .regular)
+                                            }
+                                            .foregroundColor(addedUsernamesVisibilityFilter == "private" ? .white : .gray)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 6)
+                                            .background(addedUsernamesVisibilityFilter == "private" ? Color.orange.opacity(0.3) : Color.clear)
+                                            .cornerRadius(8)
+                                        }
+                                        
+                                        Spacer()
                                     }
+                                    .padding(.horizontal, 16)
+                                }
+                                
+                                if !addedUsernames.isEmpty {
+                                    // Filter added usernames based on search text and visibility
+                                    let filteredAddedUsernames = addedUsernames.filter { username in
+                                        // Apply visibility filter (default: show public)
+                                        let isPrivate = username.streamerVisibility?.lowercased() == "private"
+                                        if addedUsernamesVisibilityFilter == "public" && isPrivate {
+                                            return false
+                                        }
+                                        if addedUsernamesVisibilityFilter == "private" && !isPrivate {
+                                            return false
+                                        }
+                                        
+                                        // Apply search text filter
+                                        if addedUsernamesSearchText.isEmpty {
+                                            return true
+                                        }
+                                        return username.streamerUsername.lowercased().contains(addedUsernamesSearchText.lowercased())
+                                    }
+                                    
+                                    if filteredAddedUsernames.isEmpty {
+                                        Text("No usernames found")
+                                            .font(.subheadline)
+                                            .foregroundColor(.gray)
+                                            .padding(.horizontal, 16)
+                                            .padding(.vertical, 12)
+                                    } else {
+                                        ForEach(filteredAddedUsernames) { addedUsername in
+                                            HStack {
+                                                Image(systemName: "checkmark.circle.fill")
+                                                    .foregroundColor(.twillyCyan)
+                                                
+                                                Text(addedUsername.streamerUsername)
+                                                    .foregroundColor(.white)
+                                                
+                                                if addedUsername.streamerVisibility?.lowercased() == "private" {
+                                                    Image(systemName: "lock.fill")
+                                                        .foregroundColor(.orange)
+                                                        .font(.caption2)
+                                                }
+                                                
+                                                Spacer()
+                                                
+                                                Button(action: {
+                                                    removeUsername(addedUsername.streamerUsername)
+                                                }) {
+                                                    Image(systemName: "trash")
+                                                        .foregroundColor(.red)
+                                                        .font(.caption)
+                                                }
+                                            }
+                                            .padding(.horizontal, 16)
+                                            .padding(.vertical, 12)
+                                            .background(Color.white.opacity(0.05))
+                                            
+                                            if addedUsername.id != filteredAddedUsernames.last?.id {
+                                                Divider()
+                                                    .background(Color.white.opacity(0.1))
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    Text("No added usernames")
+                                        .font(.subheadline)
+                                        .foregroundColor(.gray)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 12)
                                 }
                             }
                             .background(Color.white.opacity(0.1))
                             .cornerRadius(12)
                             .padding(.top, 4)
+                        }
+                        
+                        // Tap area below dropdowns to close them
+                        if showSearchDropdown || showAddedUsernamesDropdown {
+                            Spacer()
+                                .frame(minHeight: 200)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    withAnimation {
+                                        showSearchDropdown = false
+                                        showAddedUsernamesDropdown = false
+                                        usernameSearchText = ""
+                                        usernameSearchResults = []
+                                        addedUsernamesSearchText = ""
+                                    }
+                                }
                         }
                     }
                     .padding(.top, 8)
