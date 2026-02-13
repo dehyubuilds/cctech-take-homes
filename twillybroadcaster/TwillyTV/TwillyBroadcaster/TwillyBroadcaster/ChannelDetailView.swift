@@ -142,6 +142,9 @@ struct ChannelDetailView: View {
                         if self.showOnlyOwnContent {
                             // Switch to filtered list (owner's videos)
                             self.content = self.filteredOwnContent
+                            // Disable pagination for filtered view - all content is already loaded
+                            self.hasMoreContent = false
+                            self.nextToken = nil
                             print("🔍 [ChannelDetailView] Switched to filtered content: \(self.content.count) items")
                         } else {
                             // Switch back to unfiltered list
@@ -1868,7 +1871,8 @@ struct ChannelDetailView: View {
         // Load more when user scrolls near the end (last 3 items)
         if let index = content.firstIndex(where: { $0.id == item.id }),
            index >= self.content.count - 3,
-           hasMoreContent && !isLoadingMore {
+           // Don't paginate when filter is active - all content is already loaded
+           hasMoreContent && !isLoadingMore && !showOnlyOwnContent {
             loadMoreContent()
         }
     }
@@ -3543,8 +3547,13 @@ struct ChannelDetailView: View {
     }
     // Load more content (pagination)
     private func loadMoreContent() {
-        guard hasMoreContent, !isLoadingMore, let currentToken = nextToken else {
+        // Don't paginate when filter is active - all content is already loaded
+        guard !showOnlyOwnContent, hasMoreContent, !isLoadingMore, let currentToken = nextToken else {
             print("⚠️ [ChannelDetailView] Cannot load more - hasMore: \(hasMoreContent), isLoadingMore: \(isLoadingMore), nextToken: \(nextToken != nil ? "exists" : "nil")")
+            if showOnlyOwnContent {
+                print("⚠️ [ChannelDetailView] Pagination disabled - filter is active")
+            } else {
+            }
             return
         }
         print("📄 [ChannelDetailView] Loading more content (pagination)...")
