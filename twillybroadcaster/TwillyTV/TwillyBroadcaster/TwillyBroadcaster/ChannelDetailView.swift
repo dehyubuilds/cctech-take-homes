@@ -510,7 +510,7 @@ struct ChannelDetailView: View {
             }
             .padding(.horizontal)
         }
-        .scrollIndicators(.visible) // Always show scroll indicators
+        .modifier(ScrollIndicatorsModifier())
         .refreshable {
             await refreshContent()
         }
