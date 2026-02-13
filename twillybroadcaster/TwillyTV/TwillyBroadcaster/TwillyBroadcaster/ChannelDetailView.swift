@@ -1699,6 +1699,7 @@ struct ChannelDetailView: View {
         }
         .padding(.horizontal)
     }
+    }
     @ViewBuilder
     private var contentSection: some View {
         if isLoading {
