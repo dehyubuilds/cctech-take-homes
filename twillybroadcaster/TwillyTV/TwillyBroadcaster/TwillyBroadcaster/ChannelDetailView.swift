@@ -1291,15 +1291,14 @@ struct ChannelDetailView: View {
                                         .cornerRadius(8)
                                 }
                                 Button(action: {
-                                    searchVisibilityFilter = "public"
-                                    searchUsernamesInline()
-                                }) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .font(.caption2)
-                                        Text("Public")
-                                            .font(.caption)
-                                            .fontWeight(searchVisibilityFilter == "public" ? .bold : .regular)
+                                    // Exit search when toggling visibility filter
+                                    withAnimation {
+                                        searchVisibilityFilter = "public"
+                                        showSearchDropdown = false
+                                        usernameSearchText = ""
+                                        usernameSearchResults = []
+                                        showAddedUsernamesDropdown = false
+                                        addedUsernamesSearchText = ""
                                     }
                                     .foregroundColor(searchVisibilityFilter == "public" ? .white : .gray)
                                     .padding(.horizontal, 12)
@@ -1308,15 +1307,15 @@ struct ChannelDetailView: View {
                                     .cornerRadius(8)
                                 }
                                 Button(action: {
-                                    searchVisibilityFilter = "private"
-                                    searchUsernamesInline()
+                                    // Exit search when toggling visibility filter
+                                    withAnimation {
+                                        searchVisibilityFilter = "private"
+                                        showSearchDropdown = false
+                                        usernameSearchText = ""
+                                        usernameSearchResults = []
+                                        showAddedUsernamesDropdown = false
+                                        addedUsernamesSearchText = ""
                                 }) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "lock.fill")
-                                            .font(.caption2)
-                                        Text("Private")
-                                            .font(.caption)
-                                            .fontWeight(searchVisibilityFilter == "private" ? .bold : .regular)
                                     }
                                     .foregroundColor(searchVisibilityFilter == "private" ? .white : .gray)
                                     .padding(.horizontal, 12)
@@ -1440,7 +1439,6 @@ struct ChannelDetailView: View {
                                                 }
                                             }
                                         }
-                                    }
                                     .padding(.horizontal, 16)
                                     .padding(.vertical, 12)
                                     .background(Color.white.opacity(0.05))
@@ -1494,7 +1492,6 @@ struct ChannelDetailView: View {
                                                     .foregroundColor(.white.opacity(0.6))
                                             }
                                         }
-                                    }
                                     .padding(.horizontal, 16)
                                     .padding(.vertical, 12)
                                     .background(Color.white.opacity(0.05))
@@ -1518,6 +1515,11 @@ struct ChannelDetailView: View {
                                         Button(action: {
                                             withAnimation(.easeInOut(duration: 0.2)) {
                                                 addedUsernamesVisibilityFilter = "public"
+                                                showAddedUsernamesDropdown = false
+                                                addedUsernamesSearchText = ""
+                                                showSearchDropdown = false
+                                                usernameSearchText = ""
+                                                usernameSearchResults = []
                                             }
                                         }) {
                                             HStack(spacing: 4) {
@@ -1537,6 +1539,11 @@ struct ChannelDetailView: View {
                                         Button(action: {
                                             withAnimation(.easeInOut(duration: 0.2)) {
                                                 addedUsernamesVisibilityFilter = "private"
+                                                showAddedUsernamesDropdown = false
+                                                addedUsernamesSearchText = ""
+                                                showSearchDropdown = false
+                                                usernameSearchText = ""
+                                                usernameSearchResults = []
                                             }
                                         }) {
                                             HStack(spacing: 4) {
@@ -1609,7 +1616,6 @@ struct ChannelDetailView: View {
                                                     .background(Color.white.opacity(0.1))
                                             }
                                         }
-                                    }
                                 } else {
                                     Text("No added usernames")
                                         .font(.subheadline)
@@ -3059,7 +3065,6 @@ struct ChannelDetailView: View {
                                         if newValue.count > 50 {
                                             editingTitle = String(newValue.prefix(50))
                                         }
-                                    }
                             }
                         }
                         .padding(.horizontal, 20)
