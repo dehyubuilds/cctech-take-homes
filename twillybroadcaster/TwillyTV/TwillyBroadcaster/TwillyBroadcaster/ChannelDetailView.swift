@@ -3737,13 +3737,12 @@ struct ContentCard: View {
                                     Image(systemName: "person.circle.fill")
                                         .font(.system(size: 12))
                                         .foregroundColor(.twillyCyan)
-                                    // Username text - truncate if too long to prevent overlap with buttons
+                                    // Username text - display fully, no truncation
                                     Text(username)
                                         .font(.subheadline)
                                         .fontWeight(.semibold)
                                         .foregroundColor(.twillyCyan)
-                                        .lineLimit(1) // Force single line
-                                        .truncationMode(.tail) // Truncate with ellipsis if too long to prevent overlap
+                                        .fixedSize(horizontal: true, vertical: false) // Display full username without truncation
                                     // Lock icon overlay - positioned absolutely, doesn't take layout space
                                     if content.isPrivateUsername == true {
                                         Image(systemName: "lock.fill")
