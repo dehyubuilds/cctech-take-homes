@@ -1702,7 +1702,6 @@ struct ChannelDetailView: View {
     }
     }
     }
-    }
     @ViewBuilder
     private var contentSection: some View {
         if isLoading {
