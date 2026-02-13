@@ -4829,6 +4829,9 @@ class OrientationAwarePlayerViewController: AVPlayerViewController, UIGestureRec
 }
 
 // ViewModifier to conditionally show scroll indicators based on iOS version
+}
+}
+}
 struct ScrollIndicatorsModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 16.0, *) {
