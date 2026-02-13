@@ -124,6 +124,7 @@ struct ChannelDetailView: View {
                         }
                     )
                     .zIndex(1) // Ensure it stays on top
+                    .frame(maxWidth: .infinity, alignment: .top)
                 
                 // Scrollable content section (videos)
                 scrollableContentSection
@@ -466,6 +467,7 @@ struct ChannelDetailView: View {
         }
         .padding(.horizontal)
         .padding(.top, 8)
+        .frame(maxWidth: .infinity, alignment: .top)
     }
     
     // Scrollable content section (videos) - scrolls underneath fixed header
@@ -1210,6 +1212,9 @@ struct ChannelDetailView: View {
                 Text(currentChannel.description)
                     .font(.body)
                     .foregroundColor(.white.opacity(0.8))
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
                     .padding(.top, currentChannel.channelName.lowercased() == "twilly tv" ? 0 : 4)
             }
             
