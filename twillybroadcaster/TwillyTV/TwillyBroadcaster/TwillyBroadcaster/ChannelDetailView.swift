@@ -421,19 +421,6 @@ struct ChannelDetailView: View {
                 print("   - selectedContent at change: \(selectedContent?.fileName ?? "nil")")
             }
         }
-    }
-    // MARK: - View Components
-    private var backgroundGradient: some View {
-        LinearGradient(
-            gradient: Gradient(colors: [Color.black, Color(red: 0.1, green: 0.1, blue: 0.15)]),
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        .ignoresSafeArea()
-    }
-    // Fixed header section (poster + search bar) - stays at top
-    private var fixedHeaderSection: some View {
-        VStack(spacing: 0) {
             channelHeader
             Divider()
                 .background(Color.white.opacity(0.2))
