@@ -422,13 +422,6 @@ struct ChannelDetailView: View {
             }
         }
             channelHeader
-            Divider()
-                .background(Color.white.opacity(0.2))
-                .padding(.vertical, 8)
-        }
-        .padding(.horizontal)
-        .padding(.top, 8)
-        .frame(maxWidth: .infinity, alignment: .top)
     }
     // Scrollable content section (videos) - scrolls underneath fixed header
     private var scrollableContentSection: some View {
