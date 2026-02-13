@@ -423,7 +423,6 @@ struct ChannelDetailView: View {
                 print("   - selectedContent at change: \(selectedContent?.fileName ?? "nil")")
             }
         }
-    }
     // MARK: - View Components
     private var backgroundGradient: some View {
         LinearGradient(
