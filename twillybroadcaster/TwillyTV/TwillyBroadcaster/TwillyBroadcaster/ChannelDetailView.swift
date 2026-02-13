@@ -520,11 +520,11 @@ struct ChannelDetailView: View {
     }
     
     private var channelHeader: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .center, spacing: 12) {
             channelPoster
             channelInfo
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity)
         .padding(.top)
     }
     
@@ -1214,14 +1214,15 @@ struct ChannelDetailView: View {
     }
     
     private var channelInfo: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .center, spacing: 12) {
             // Hide channel name for Twilly TV
             if currentChannel.channelName.lowercased() != "twilly tv" {
                 Text(currentChannel.channelName)
                     .font(.title)
                     .fontWeight(.bold)
                     .foregroundColor(.white)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
             }
             
             if !currentChannel.description.isEmpty {
@@ -1230,8 +1231,8 @@ struct ChannelDetailView: View {
                     .foregroundColor(.white.opacity(0.8))
                     .lineLimit(nil)
                     .fixedSize(horizontal: false, vertical: true)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
                     .padding(.top, currentChannel.channelName.lowercased() == "twilly tv" ? 0 : 4)
             }
             
