@@ -1501,7 +1501,9 @@ struct ChannelDetailView: View {
                                     // Visibility filter buttons
                                     HStack(spacing: 12) {
                                         Button(action: {
-                                            addedUsernamesVisibilityFilter = "all"
+                                            withAnimation(.easeInOut(duration: 0.2)) {
+                                                addedUsernamesVisibilityFilter = "all"
+                                            }
                                         }) {
                                             Text("All")
                                                 .font(.caption)
@@ -1511,9 +1513,12 @@ struct ChannelDetailView: View {
                                                 .padding(.vertical, 6)
                                                 .background(addedUsernamesVisibilityFilter == "all" ? Color.twillyCyan.opacity(0.3) : Color.clear)
                                                 .cornerRadius(8)
+                                                .animation(.easeInOut(duration: 0.2), value: addedUsernamesVisibilityFilter)
                                         }
                                         Button(action: {
-                                            addedUsernamesVisibilityFilter = "public"
+                                            withAnimation(.easeInOut(duration: 0.2)) {
+                                                addedUsernamesVisibilityFilter = "public"
+                                            }
                                         }) {
                                             HStack(spacing: 4) {
                                                 Image(systemName: "checkmark.circle.fill")
@@ -1527,9 +1532,12 @@ struct ChannelDetailView: View {
                                             .padding(.vertical, 6)
                                             .background(addedUsernamesVisibilityFilter == "public" ? Color.twillyCyan.opacity(0.3) : Color.clear)
                                             .cornerRadius(8)
+                                            .animation(.easeInOut(duration: 0.2), value: addedUsernamesVisibilityFilter)
                                         }
                                         Button(action: {
-                                            addedUsernamesVisibilityFilter = "private"
+                                            withAnimation(.easeInOut(duration: 0.2)) {
+                                                addedUsernamesVisibilityFilter = "private"
+                                            }
                                         }) {
                                             HStack(spacing: 4) {
                                                 Image(systemName: "lock.fill")
@@ -1543,6 +1551,7 @@ struct ChannelDetailView: View {
                                             .padding(.vertical, 6)
                                             .background(addedUsernamesVisibilityFilter == "private" ? Color.orange.opacity(0.3) : Color.clear)
                                             .cornerRadius(8)
+                                            .animation(.easeInOut(duration: 0.2), value: addedUsernamesVisibilityFilter)
                                         }
                                         Spacer()
                                     }
