@@ -1692,20 +1692,14 @@ struct ChannelDetailView: View {
                         .font(.caption)
                         .foregroundColor(.gray)
                         .padding(.top, 4)
-                }
             }
-            .padding(.top, 8)
             // Price display removed - will be revealed later
         }
         .padding(.horizontal)
     }
     }
-    }
-    }
     @ViewBuilder
-    private var contentSection: some View {
         if isLoading {
-            loadingView
         } else if let error = errorMessage {
             errorView(error)
         } else if isFilteringContent {
