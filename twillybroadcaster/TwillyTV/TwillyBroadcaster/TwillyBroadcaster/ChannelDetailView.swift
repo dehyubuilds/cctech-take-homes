@@ -977,8 +977,8 @@ struct ChannelDetailView: View {
                 // Use clean username (without 🔒) for API call
                 let response = try await ChannelService.shared.requestFollow(requesterEmail: userEmail, requestedUsername: cleanUsername)
                 await MainActor.run {
-                    // Remove from adding set
-                    addingUsernames.remove(username.lowercased())
+                    // Remove from adding set (use cleanUsername, not username)
+                    addingUsernames.remove(cleanUsername.lowercased())
                     
                     // If auto-accepted (public), add to list immediately
                     // If pending (private), add to sent requests list
@@ -1060,8 +1060,8 @@ struct ChannelDetailView: View {
                     print("   ChannelServiceError: \(channelError)")
                 }
                 await MainActor.run {
-                    // Remove from adding set on error
-                    addingUsernames.remove(username.lowercased())
+                    // Remove from adding set on error (use cleanUsername, not username)
+                    addingUsernames.remove(cleanUsername.lowercased())
                     // Show error to user
                     errorMessage = "Failed to add username: \(error.localizedDescription)"
                 }
