@@ -448,35 +448,18 @@ struct ChannelDetailView: View {
         ScrollView {
             VStack(spacing: 0) {
                 contentSection
-                // Visual indicator at bottom to show more content or end of list
-                if !content.isEmpty {
+                // Visual indicator at bottom - only show "End of content" when no more content
+                // Don't show spinner - loading happens silently in background
+                if !content.isEmpty && !hasMoreContent {
                     HStack {
                         Spacer()
-                        if hasMoreContent || isLoadingMore {
-                            ProgressView()
-                                .tint(.white.opacity(0.6))
-                                .padding(.vertical, 20)
-                        } else {
-                            Text("End of content")
-                                .font(.caption)
-                                .foregroundColor(.white.opacity(0.4))
-                                .padding(.vertical, 20)
-                        }
+                        Text("End of content")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.4))
+                            .padding(.vertical, 20)
                         Spacer()
                     }
                 }
-            }
-            .padding(.horizontal)
-        }
-        .modifier(ScrollIndicatorsModifier())
-        .refreshable {
-            await refreshContent()
-        }
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 20)
-                .onEnded { value in
-                    let horizontalMovement = abs(value.translation.width)
-                    let verticalMovement = abs(value.translation.height)
                     // Swipe RIGHT (from left to right, positive width) to go to stream screen
                     // Only process as swipe if horizontal movement is significant and greater than vertical
                     if horizontalMovement > 50 && horizontalMovement > verticalMovement {
@@ -1767,9 +1750,6 @@ struct ChannelDetailView: View {
             ForEach(content) { item in
                 contentCard(for: item)
             }
-            if isLoadingMore {
-                loadingMoreIndicator
-            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 20)
@@ -1916,10 +1896,7 @@ struct ChannelDetailView: View {
             async let refreshContentTask: (content: [ChannelContent], nextToken: String?, hasMore: Bool)? = refreshChannelContent()
             // Wait for both to complete
             let channelUpdated = try await refreshChannelTask
-            let contentResult = try await refreshContentTask
-            await MainActor.run {
-                if channelUpdated {
-                    print("✅ [ChannelDetailView] Channel metadata (poster) refreshed")
+            // Loading happens silently in background - no spinner shown
                 }
                 if let result = contentResult {
                     let newCount = result.self.content.count
