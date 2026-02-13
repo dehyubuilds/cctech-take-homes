@@ -1229,6 +1229,8 @@ struct ChannelDetailView: View {
                                     }
                                 }
                             }
+                            // Only show regular search field when added usernames dropdown is closed
+                            if !showAddedUsernamesDropdown {
                             TextField("Search username...", text: $usernameSearchText)
                                 .foregroundColor(.white)
                                 .autocapitalization(.none)
@@ -1266,6 +1268,7 @@ struct ChannelDetailView: View {
                             // Magnifying glass icon on the right
                             Image(systemName: "magnifyingglass")
                                 .foregroundColor(.white.opacity(0.6))
+                            }
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 12)
