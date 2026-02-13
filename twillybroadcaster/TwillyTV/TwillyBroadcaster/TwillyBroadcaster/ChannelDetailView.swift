@@ -65,6 +65,7 @@ struct ChannelDetailView: View {
     @State private var showPrivateContent = false // Filter to show private content (default: show public)
     @State private var isFilteringContent = false // Loading state when filtering content
     @State private var originalUnfilteredContent: [ChannelContent] = [] // Store original content for instant filter toggle
+    @State private var filteredOwnContent: [ChannelContent] = [] // Separate list for owner's videos - always maintained
     @State private var contentToDelete: ChannelContent? = nil // Content item to delete
     @State private var showingDeleteConfirmation = false // Show delete confirmation alert
     @State private var isDeleting = false // Whether delete is in progress
