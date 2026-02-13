@@ -1588,105 +1588,114 @@ struct ChannelDetailView: View {
                                 .padding(.top, 4)
                         }
                         
-                        // Added usernames dropdown with search
+                    }
+                    .padding(.top, 8)
+                    .overlay(alignment: .topLeading) {
+                        // Added usernames dropdown as overlay - doesn't push content
                         if showAddedUsernamesDropdown {
-                            VStack(alignment: .leading, spacing: 0) {
-                                // Search field and visibility filter for added usernames
-                                VStack(spacing: 8) {
-                                    HStack {
-                                        Image(systemName: "magnifyingglass")
-                                            .foregroundColor(.white.opacity(0.6))
-                                        TextField("Search added usernames...", text: $addedUsernamesSearchText)
-                                            .foregroundColor(.white)
-                                            .autocapitalization(.none)
-                                            .autocorrectionDisabled()
-                                        
-                                        if !addedUsernamesSearchText.isEmpty {
-                                            Button(action: {
-                                                addedUsernamesSearchText = ""
-                                            }) {
-                                                Image(systemName: "xmark.circle.fill")
-                                                    .foregroundColor(.white.opacity(0.6))
-                                            }
-                                        }
-                                    }
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 12)
-                                    .background(Color.white.opacity(0.05))
+                            VStack(spacing: 0) {
+                                // Spacer to position dropdown below search bar
+                                Spacer()
+                                    .frame(height: 100) // Approximate height of search bar + filters
+                                
+                                VStack(alignment: .leading, spacing: 0) {
+                            // Search field and visibility filter for added usernames
+                            VStack(spacing: 8) {
+                                HStack {
+                                    Image(systemName: "magnifyingglass")
+                                        .foregroundColor(.white.opacity(0.6))
+                                    TextField("Search added usernames...", text: $addedUsernamesSearchText)
+                                        .foregroundColor(.white)
+                                        .autocapitalization(.none)
+                                        .autocorrectionDisabled()
                                     
-                                    // Visibility filter buttons
-                                    HStack(spacing: 12) {
+                                    if !addedUsernamesSearchText.isEmpty {
                                         Button(action: {
-                                            addedUsernamesVisibilityFilter = "all"
+                                            addedUsernamesSearchText = ""
                                         }) {
-                                            Text("All")
-                                                .font(.caption)
-                                                .fontWeight(addedUsernamesVisibilityFilter == "all" ? .bold : .regular)
-                                                .foregroundColor(addedUsernamesVisibilityFilter == "all" ? .white : .gray)
-                                                .padding(.horizontal, 12)
-                                                .padding(.vertical, 6)
-                                                .background(addedUsernamesVisibilityFilter == "all" ? Color.twillyCyan.opacity(0.3) : Color.clear)
-                                                .cornerRadius(8)
+                                            Image(systemName: "xmark.circle.fill")
+                                                .foregroundColor(.white.opacity(0.6))
                                         }
-                                        
-                                        Button(action: {
-                                            addedUsernamesVisibilityFilter = "public"
-                                        }) {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "checkmark.circle.fill")
-                                                    .font(.caption2)
-                                                Text("Public")
-                                                    .font(.caption)
-                                                    .fontWeight(addedUsernamesVisibilityFilter == "public" ? .bold : .regular)
-                                            }
-                                            .foregroundColor(addedUsernamesVisibilityFilter == "public" ? .white : .gray)
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 6)
-                                            .background(addedUsernamesVisibilityFilter == "public" ? Color.twillyCyan.opacity(0.3) : Color.clear)
-                                            .cornerRadius(8)
-                                        }
-                                        
-                                        Button(action: {
-                                            addedUsernamesVisibilityFilter = "private"
-                                        }) {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "lock.fill")
-                                                    .font(.caption2)
-                                                Text("Private")
-                                                    .font(.caption)
-                                                    .fontWeight(addedUsernamesVisibilityFilter == "private" ? .bold : .regular)
-                                            }
-                                            .foregroundColor(addedUsernamesVisibilityFilter == "private" ? .white : .gray)
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 6)
-                                            .background(addedUsernamesVisibilityFilter == "private" ? Color.orange.opacity(0.3) : Color.clear)
-                                            .cornerRadius(8)
-                                        }
-                                        
-                                        Spacer()
                                     }
-                                    .padding(.horizontal, 16)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
+                                .background(Color.white.opacity(0.05))
+                                
+                                // Visibility filter buttons
+                                HStack(spacing: 12) {
+                                    Button(action: {
+                                        addedUsernamesVisibilityFilter = "all"
+                                    }) {
+                                        Text("All")
+                                            .font(.caption)
+                                            .fontWeight(addedUsernamesVisibilityFilter == "all" ? .bold : .regular)
+                                            .foregroundColor(addedUsernamesVisibilityFilter == "all" ? .white : .gray)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 6)
+                                            .background(addedUsernamesVisibilityFilter == "all" ? Color.twillyCyan.opacity(0.3) : Color.clear)
+                                            .cornerRadius(8)
+                                    }
+                                    
+                                    Button(action: {
+                                        addedUsernamesVisibilityFilter = "public"
+                                    }) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .font(.caption2)
+                                            Text("Public")
+                                                .font(.caption)
+                                                .fontWeight(addedUsernamesVisibilityFilter == "public" ? .bold : .regular)
+                                        }
+                                        .foregroundColor(addedUsernamesVisibilityFilter == "public" ? .white : .gray)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 6)
+                                        .background(addedUsernamesVisibilityFilter == "public" ? Color.twillyCyan.opacity(0.3) : Color.clear)
+                                        .cornerRadius(8)
+                                    }
+                                    
+                                    Button(action: {
+                                        addedUsernamesVisibilityFilter = "private"
+                                    }) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "lock.fill")
+                                                .font(.caption2)
+                                            Text("Private")
+                                                .font(.caption)
+                                                .fontWeight(addedUsernamesVisibilityFilter == "private" ? .bold : .regular)
+                                        }
+                                        .foregroundColor(addedUsernamesVisibilityFilter == "private" ? .white : .gray)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 6)
+                                        .background(addedUsernamesVisibilityFilter == "private" ? Color.orange.opacity(0.3) : Color.clear)
+                                        .cornerRadius(8)
+                                    }
+                                    
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 16)
+                            }
+                            
+                            if !addedUsernames.isEmpty {
+                                // Filter added usernames based on search text and visibility
+                                let filteredAddedUsernames = addedUsernames.filter { username in
+                                    // Apply visibility filter (default: show public)
+                                    let isPrivate = username.streamerVisibility?.lowercased() == "private"
+                                    if addedUsernamesVisibilityFilter == "public" && isPrivate {
+                                        return false
+                                    }
+                                    if addedUsernamesVisibilityFilter == "private" && !isPrivate {
+                                        return false
+                                    }
+                                    
+                                    // Apply search text filter
+                                    if addedUsernamesSearchText.isEmpty {
+                                        return true
+                                    }
+                                    return username.streamerUsername.lowercased().contains(addedUsernamesSearchText.lowercased())
                                 }
                                 
-                                if !addedUsernames.isEmpty {
-                                    // Filter added usernames based on search text and visibility
-                                    let filteredAddedUsernames = addedUsernames.filter { username in
-                                        // Apply visibility filter (default: show public)
-                                        let isPrivate = username.streamerVisibility?.lowercased() == "private"
-                                        if addedUsernamesVisibilityFilter == "public" && isPrivate {
-                                            return false
-                                        }
-                                        if addedUsernamesVisibilityFilter == "private" && !isPrivate {
-                                            return false
-                                        }
-                                        
-                                        // Apply search text filter
-                                        if addedUsernamesSearchText.isEmpty {
-                                            return true
-                                        }
-                                        return username.streamerUsername.lowercased().contains(addedUsernamesSearchText.lowercased())
-                                    }
-                                    
+                                ScrollView {
                                     if filteredAddedUsernames.isEmpty {
                                         Text("No usernames found")
                                             .font(.subheadline)
@@ -1728,36 +1737,30 @@ struct ChannelDetailView: View {
                                             }
                                         }
                                     }
-                                } else {
-                                    Text("No added usernames")
-                                        .font(.subheadline)
-                                        .foregroundColor(.gray)
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 12)
                                 }
+                                .frame(maxHeight: 300) // Limit height so it doesn't take up entire screen
+                            } else {
+                                Text("No added usernames")
+                                    .font(.subheadline)
+                                    .foregroundColor(.gray)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 12)
                             }
-                            .background(Color.white.opacity(0.1))
-                            .cornerRadius(12)
-                            .padding(.top, 4)
-                        }
-                        
-                        // Tap area below dropdowns to close them
-                        if showSearchDropdown || showAddedUsernamesDropdown {
-                            Spacer()
-                                .frame(minHeight: 200)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    withAnimation {
-                                        showSearchDropdown = false
-                                        showAddedUsernamesDropdown = false
-                                        usernameSearchText = ""
-                                        usernameSearchResults = []
-                                        addedUsernamesSearchText = ""
-                                    }
                                 }
+                                .background(
+                                    ZStack {
+                                        backgroundGradient
+                                        Color.black.opacity(0.95)
+                                    }
+                                )
+                                .cornerRadius(12)
+                                .padding(.top, 4)
+                                .shadow(color: .black.opacity(0.5), radius: 12, x: 0, y: 4)
+                            }
+                            .zIndex(1000) // Ensure it appears above other content
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                         }
                     }
-                    .padding(.top, 8)
                 }
                 
                 // Viewer badge for regular viewers (if not a collaborator)
