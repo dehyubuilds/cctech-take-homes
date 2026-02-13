@@ -111,6 +111,9 @@ struct ChannelDetailView: View {
     }
     var body: some View {
         ZStack {
+    }
+    }
+    }
             backgroundGradient
             VStack(spacing: 0) {
                 // Fixed header section (poster + search bar)
