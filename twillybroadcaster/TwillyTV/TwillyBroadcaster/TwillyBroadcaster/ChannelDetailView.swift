@@ -421,6 +421,60 @@ struct ChannelDetailView: View {
                 print("   - selectedContent at change: \(selectedContent?.fileName ?? "nil")")
             }
         }
+    }
+    // MARK: - View Components
+    private var backgroundGradient: some View {
+        LinearGradient(
+            gradient: Gradient(colors: [Color.black, Color(red: 0.1, green: 0.1, blue: 0.15)]),
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .ignoresSafeArea()
+    }
+    // Fixed header section (poster + search bar) - stays at top
+    private var fixedHeaderSection: some View {
+        VStack(spacing: 0) {
+            channelHeader
+            Divider()
+                .background(Color.white.opacity(0.2))
+                .padding(.vertical, 8)
+        }
+        .padding(.horizontal)
+        .padding(.top, 8)
+        .frame(maxWidth: .infinity, alignment: .top)
+    }
+    // Scrollable content section (videos) - scrolls underneath fixed header
+    private var scrollableContentSection: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                contentSection
+                // Visual indicator at bottom - only show "End of content" when no more content
+                // Don't show spinner - loading happens silently in background
+                if !content.isEmpty && !hasMoreContent {
+                    HStack {
+                        Spacer()
+                        Text("End of content")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.4))
+                            .padding(.vertical, 20)
+                        Spacer()
+                    }
+                }
+            }
+        }
+    }
+    private var channelHeader: some View {
+        VStack(alignment: .center, spacing: 12) {
+            channelPoster
+            channelInfo
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top)
+    }
+    private var channelPoster: some View {
+        Group {
+            if !currentChannel.posterUrl.isEmpty {
+                // Validate URL before creating
                 if let url = URL(string: currentChannel.posterUrl) {
                     // Check if it's an SVG file
                     if currentChannel.posterUrl.lowercased().hasSuffix(".svg") {
@@ -1237,15 +1291,8 @@ struct ChannelDetailView: View {
                                         .cornerRadius(8)
                                 }
                                 Button(action: {
-                                    // Exit search when toggling visibility filter
-                                    withAnimation {
-                                        searchVisibilityFilter = "public"
-                                        showSearchDropdown = false
-                                        usernameSearchText = ""
-                                        usernameSearchResults = []
-                                        showAddedUsernamesDropdown = false
-                                        addedUsernamesSearchText = ""
-                                    }
+                                    searchVisibilityFilter = "public"
+                                    searchUsernamesInline()
                                 }) {
                                     HStack(spacing: 4) {
                                         Image(systemName: "checkmark.circle.fill")
@@ -1261,15 +1308,8 @@ struct ChannelDetailView: View {
                                     .cornerRadius(8)
                                 }
                                 Button(action: {
-                                    // Exit search when toggling visibility filter
-                                    withAnimation {
-                                        searchVisibilityFilter = "private"
-                                        showSearchDropdown = false
-                                        usernameSearchText = ""
-                                        usernameSearchResults = []
-                                        showAddedUsernamesDropdown = false
-                                        addedUsernamesSearchText = ""
-                                    }
+                                    searchVisibilityFilter = "private"
+                                    searchUsernamesInline()
                                 }) {
                                     HStack(spacing: 4) {
                                         Image(systemName: "lock.fill")
@@ -1400,6 +1440,7 @@ struct ChannelDetailView: View {
                                                 }
                                             }
                                         }
+                                    }
                                     .padding(.horizontal, 16)
                                     .padding(.vertical, 12)
                                     .background(Color.white.opacity(0.05))
@@ -1453,6 +1494,7 @@ struct ChannelDetailView: View {
                                                     .foregroundColor(.white.opacity(0.6))
                                             }
                                         }
+                                    }
                                     .padding(.horizontal, 16)
                                     .padding(.vertical, 12)
                                     .background(Color.white.opacity(0.05))
@@ -1476,11 +1518,6 @@ struct ChannelDetailView: View {
                                         Button(action: {
                                             withAnimation(.easeInOut(duration: 0.2)) {
                                                 addedUsernamesVisibilityFilter = "public"
-                                                showAddedUsernamesDropdown = false
-                                                addedUsernamesSearchText = ""
-                                                showSearchDropdown = false
-                                                usernameSearchText = ""
-                                                usernameSearchResults = []
                                             }
                                         }) {
                                             HStack(spacing: 4) {
@@ -1500,11 +1537,6 @@ struct ChannelDetailView: View {
                                         Button(action: {
                                             withAnimation(.easeInOut(duration: 0.2)) {
                                                 addedUsernamesVisibilityFilter = "private"
-                                                showAddedUsernamesDropdown = false
-                                                addedUsernamesSearchText = ""
-                                                showSearchDropdown = false
-                                                usernameSearchText = ""
-                                                usernameSearchResults = []
                                             }
                                         }) {
                                             HStack(spacing: 4) {
@@ -1577,7 +1609,7 @@ struct ChannelDetailView: View {
                                                     .background(Color.white.opacity(0.1))
                                             }
                                         }
-                                        }
+                                    }
                                 } else {
                                     Text("No added usernames")
                                         .font(.subheadline)
@@ -1638,11 +1670,27 @@ struct ChannelDetailView: View {
                         .font(.caption)
                         .foregroundColor(.gray)
                         .padding(.top, 4)
+                }
             }
+            .padding(.top, 8)
             // Price display removed - will be revealed later
         }
         .padding(.horizontal)
     }
+    @ViewBuilder
+    private var contentSection: some View {
+        if isLoading {
+            loadingView
+        } else if let error = errorMessage {
+            errorView(error)
+        } else if isFilteringContent {
+            // Show spinner while filtering
+            loadingView
+        } else if content.isEmpty {
+            emptyStateView
+        } else {
+            contentListView
+        }
     }
     private var loadingView: some View {
         VStack(spacing: 16) {
@@ -3011,6 +3059,7 @@ struct ChannelDetailView: View {
                                         if newValue.count > 50 {
                                             editingTitle = String(newValue.prefix(50))
                                         }
+                                    }
                             }
                         }
                         .padding(.horizontal, 20)
@@ -3061,7 +3110,6 @@ struct ChannelDetailView: View {
         }
     }
     // Content Management Popup (Title + Delete) - Simple popup style
-    }
     private var contentManagementPopup: some View {
         ZStack {
             // Semi-transparent background overlay
@@ -3522,6 +3570,7 @@ struct ChannelDetailView: View {
             }
         }
     }
+}
 
 struct ContentCard: View {
     let content: ChannelContent
