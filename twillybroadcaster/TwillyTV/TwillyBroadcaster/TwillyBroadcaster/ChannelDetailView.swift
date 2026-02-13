@@ -127,6 +127,7 @@ struct ChannelDetailView: View {
                 scrollableContentSection
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
         .navigationTitle(currentChannel.channelName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -420,6 +421,7 @@ struct ChannelDetailView: View {
                 print("   - selectedContent at change: \(selectedContent?.fileName ?? "nil")")
             }
         }
+    }
     // MARK: - View Components
     private var backgroundGradient: some View {
         LinearGradient(
@@ -1694,8 +1696,6 @@ struct ChannelDetailView: View {
             // Price display removed - will be revealed later
         }
         .padding(.horizontal)
-    }
-    }
     }
     }
     private var loadingView: some View {
@@ -4829,9 +4829,6 @@ class OrientationAwarePlayerViewController: AVPlayerViewController, UIGestureRec
 }
 
 // ViewModifier to conditionally show scroll indicators based on iOS version
-}
-}
-}
 struct ScrollIndicatorsModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 16.0, *) {
