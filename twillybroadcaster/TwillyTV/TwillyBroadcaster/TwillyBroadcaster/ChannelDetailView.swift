@@ -134,37 +134,19 @@ struct ChannelDetailView: View {
                 // Filter icon - only show for Twilly TV channel
                 if currentChannel.channelName.lowercased() == "twilly tv" {
                     Button(action: {
-                        let wasFiltered = showOnlyOwnContent
                         withAnimation {
                             showOnlyOwnContent.toggle()
                         }
-                        // Apply filter to existing content immediately (no need to reload from server)
-        if showOnlyOwnContent {
-                            // Always store current content as backup before filtering
-                            // This ensures we can restore instantly when toggling off
-                            if originalUnfilteredContent.isEmpty {
-                                originalUnfilteredContent = content
-                            }
-                            // Filter existing content to only show own content
-                            content = content.filter { item in
-                                item.creatorUsername?.lowercased() == username.lowercased()
-                            }
-                            print("🔍 [ChannelDetailView] Filtered existing content: \(content.count) items")
-                        } else if wasFiltered {
-                            // Restore original unfiltered content instantly (no API call needed)
-                            // originalUnfilteredContent already has visibility filter applied, so just restore it
-                            if !originalUnfilteredContent.isEmpty {
-                                // Instant restore - no delay
-                                content = originalUnfilteredContent
-                                print("🔍 [ChannelDetailView] Instantly restored unfiltered content: \(content.count) items")
-                            } else {
-                                // Edge case: original content not stored yet
-                                // This shouldn't happen, but if it does, just keep current content
-                                // (which is already filtered, so user sees filtered view)
-                                print("⚠️ [ChannelDetailView] originalUnfilteredContent is empty - keeping current content")
-                            }
+                        // Instantly switch between filtered and unfiltered lists
+                        if showOnlyOwnContent {
+                            // Switch to filtered list (owner's videos)
+                            content = filteredOwnContent
+                            print("🔍 [ChannelDetailView] Switched to filtered content: \(content.count) items")
+                        } else {
+                            // Switch back to unfiltered list
+                            content = originalUnfilteredContent
+                            print("🔍 [ChannelDetailView] Switched to unfiltered content: \(content.count) items")
                         }
-                    }) {
                         Image(systemName: showOnlyOwnContent ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
                             .foregroundColor(showOnlyOwnContent ? .twillyCyan : .white)
                     }
@@ -2282,6 +2264,7 @@ struct ChannelDetailView: View {
             }
         }
     }
+@MainActor
     private func updateContentWith(_ fetchedContent: [ChannelContent], replaceLocal: Bool = false) {
         print("🔄 [ChannelDetailView] ========== UPDATE CONTENT START ==========")
         print("🔄 [ChannelDetailView] Received \(fetchedContent.count) items from API, replaceLocal: \(replaceLocal)")
