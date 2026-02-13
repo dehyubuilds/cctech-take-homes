@@ -1698,19 +1698,6 @@ struct ChannelDetailView: View {
         .padding(.horizontal)
     }
     }
-    @ViewBuilder
-        if isLoading {
-        } else if let error = errorMessage {
-            errorView(error)
-        } else if isFilteringContent {
-            // Show spinner while filtering
-            loadingView
-        } else if content.isEmpty {
-            emptyStateView
-        } else {
-            contentListView
-        }
-    }
     private var loadingView: some View {
         VStack(spacing: 16) {
             ProgressView()
