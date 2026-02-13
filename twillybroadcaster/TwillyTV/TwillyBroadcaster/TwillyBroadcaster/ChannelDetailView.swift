@@ -489,9 +489,28 @@ struct ChannelDetailView: View {
         ScrollView {
             VStack(spacing: 0) {
                 contentSection
+                
+                // Visual indicator at bottom to show more content or end of list
+                if !content.isEmpty {
+                    HStack {
+                        Spacer()
+                        if hasMoreContent || isLoadingMore {
+                            ProgressView()
+                                .tint(.white.opacity(0.6))
+                                .padding(.vertical, 20)
+                        } else {
+                            Text("End of content")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.4))
+                                .padding(.vertical, 20)
+                        }
+                        Spacer()
+                    }
+                }
             }
             .padding(.horizontal)
         }
+        .scrollIndicators(.visible) // Always show scroll indicators
         .refreshable {
             await refreshContent()
         }
