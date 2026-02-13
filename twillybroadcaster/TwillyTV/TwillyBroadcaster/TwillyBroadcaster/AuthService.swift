@@ -565,6 +565,16 @@ class AuthService: ObservableObject {
                 }
             }
             
+            // User already exists (sign-up error) - check this FIRST
+            if errorDesc.contains("already exists") ||
+               errorDesc.contains("user already exists") ||
+               errorDesc.contains("usernameexists") ||
+               errorDesc.contains("alias exists") ||
+               errorDesc.contains("username already exists") ||
+               errorDesc.contains("an account with the given email already exists") {
+                return "An account with this email already exists. Please sign in instead."
+            }
+            
             // User not found
             if errorDesc.contains("user does not exist") ||
                errorDesc.contains("user not found") ||
