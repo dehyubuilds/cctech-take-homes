@@ -1632,6 +1632,7 @@ struct ChannelDetailView: View {
                                                     .background(Color.white.opacity(0.1))
                                             }
                                         }
+                                        }
                                 } else {
                                     Text("No added usernames")
                                         .font(.subheadline)
