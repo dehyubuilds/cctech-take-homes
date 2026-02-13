@@ -1882,8 +1882,7 @@ struct ChannelDetailView: View {
             async let refreshContentTask: (content: [ChannelContent], nextToken: String?, hasMore: Bool)? = refreshChannelContent()
             // Wait for both to complete
             let channelUpdated = try await refreshChannelTask
-            // Loading happens silently in background - no spinner shown
-                }
+            let contentResult = try await refreshContentTask
                 if let result = contentResult {
                     let newCount = result.self.content.count
                     let oldCount = self.content.count
@@ -1906,7 +1905,6 @@ struct ChannelDetailView: View {
                 }
                 isLoading = false
                 hasLoaded = true
-            }
         } catch {
             await MainActor.run {
                 // Handle cancelled requests silently - these are intentional (user navigated away, etc.)
