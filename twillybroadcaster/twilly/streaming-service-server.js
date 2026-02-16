@@ -262,8 +262,14 @@ app.post('/stream/stop', async (req, res) => {
   }
   
   try {
-    // Process the recorded stream and generate HLS clips
-    await processStream(name, schedulerId);
+    // CRITICAL FIX: Generate unique uploadId BEFORE queuing to ensure each stream is unique
+    // This prevents collisions when multiple streams stop back-to-back
+    // Use high-resolution timestamp + random + counter to ensure uniqueness
+    const uniqueUploadId = `rtmp-${Date.now()}-${process.hrtime.bigint()}-${Math.random().toString(36).substr(2, 9)}`;
+    console.log(`📤 Generated unique uploadId for RTMP stream: ${uniqueUploadId}`);
+    
+    // Process the recorded stream and generate HLS clips with unique uploadId
+    await processStream(name, schedulerId, uniqueUploadId);
     
     // Remove from active streams
     activeStreams.delete(name);
@@ -908,16 +914,25 @@ async function processStream(streamName, schedulerId, uploadId = null) {
       if (processingQueue.length > 0) {
         const next = processingQueue.shift();
         console.log(`🔄 Processing next stream in queue: ${next.streamName}, uploadId=${next.uploadId || 'NULL'}`);
+        console.log(`📊 Queue status: ${processingQueue.length} streams remaining in queue`);
         processStream(next.streamName, next.schedulerId, next.uploadId)
-          .then(next.resolve)
-          .catch(next.reject);
+          .then((result) => {
+            console.log(`✅ Queued stream ${next.streamName} processed successfully`);
+            next.resolve(result);
+          })
+          .catch((error) => {
+            console.error(`❌ Error processing queued stream ${next.streamName}:`, error);
+            next.reject(error);
+          });
       }
     }
   } else {
     // Add to queue if resources not available
-    console.log(`⏳ Adding stream ${streamName} to processing queue`);
+    console.log(`⏳ Adding stream ${streamName} to processing queue (uploadId: ${uploadId || 'NULL'})`);
+    console.log(`📊 Queue status: ${processingQueue.length} streams already in queue`);
     return new Promise((resolve, reject) => {
       processingQueue.push({ streamName, schedulerId, uploadId, resolve, reject });
+      console.log(`✅ Stream ${streamName} added to queue. Total queued: ${processingQueue.length}`);
     });
   }
 }
@@ -1350,9 +1365,11 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
             console.log(`✅ [RTMP] Got channelName from streamKey mapping: ${finalChannelName}`);
           }
           if (!finalUploadId) {
-            // Generate uploadId for RTMP streams (needed for createVideoEntryImmediately)
-            finalUploadId = `rtmp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-            console.log(`✅ [RTMP] Generated uploadId: ${finalUploadId}`);
+            // CRITICAL FIX: Generate uploadId for RTMP streams with high-resolution timestamp
+            // This should rarely happen now since uploadId is generated before queuing,
+            // but keep as fallback with improved uniqueness
+            finalUploadId = `rtmp-${Date.now()}-${process.hrtime.bigint()}-${Math.random().toString(36).substr(2, 9)}`;
+            console.log(`✅ [RTMP] Generated uploadId (fallback): ${finalUploadId}`);
           }
           // CRITICAL: If global map didn't have it, get it from mapping (with fallback to lock icon check)
           if (finalIsPrivateUsername === null) {
@@ -3014,18 +3031,75 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   // REVERTED: Just use username from mapping (no lock logic complexity)
   // Get username from streamKey mapping - simple and reliable
   if (streamKeyResult && streamKeyResult.Item) {
-    // Try to get username from streamUsername first, then fallback to ownerEmail/collaboratorEmail
+    // Try to get username from streamUsername first, then fallback to profile lookup
     if (streamKeyResult.Item.streamUsername) {
       // Remove lock icon if present - just use plain username
       const plainUsername = streamKeyResult.Item.streamUsername.replace('🔒', '');
       videoItem.creatorUsername = plainUsername;
       console.log(`✅ [createVideoEntryImmediately] Set creatorUsername from streamUsername: ${plainUsername}`);
     } else {
-      // Fallback: use email prefix
-      const email = streamKeyResult.Item.collaboratorEmail || streamKeyResult.Item.ownerEmail;
-      if (email) {
-        videoItem.creatorUsername = email.split('@')[0];
-        console.log(`✅ [createVideoEntryImmediately] Set creatorUsername from email: ${videoItem.creatorUsername}`);
+      // Fallback: Look up username from user profile using creatorId or email
+      let usernameFromProfile = null;
+      
+      // First try using creatorId (userId)
+      if (creatorId) {
+        try {
+          const profileParams = {
+            TableName: 'Twilly',
+            Key: {
+              PK: `USER#${creatorId}`,
+              SK: 'PROFILE'
+            }
+          };
+          const profileResult = await dynamodb.get(profileParams).promise();
+          if (profileResult.Item) {
+            usernameFromProfile = profileResult.Item.username || profileResult.Item.userName;
+            if (usernameFromProfile) {
+              console.log(`✅ [createVideoEntryImmediately] Found username from creatorId profile: ${usernameFromProfile}`);
+            }
+          }
+        } catch (profileError) {
+          console.error(`❌ [createVideoEntryImmediately] Error looking up username from creatorId: ${profileError.message}`);
+        }
+      }
+      
+      // If still not found, try using email to find profile
+      if (!usernameFromProfile) {
+        const email = streamKeyResult.Item.collaboratorEmail || streamKeyResult.Item.ownerEmail;
+        if (email) {
+          try {
+            const emailProfileParams = {
+              TableName: 'Twilly',
+              Key: {
+                PK: `USER#${email}`,
+                SK: 'PROFILE'
+              }
+            };
+            const emailProfileResult = await dynamodb.get(emailProfileParams).promise();
+            if (emailProfileResult.Item) {
+              usernameFromProfile = emailProfileResult.Item.username || emailProfileResult.Item.userName;
+              if (usernameFromProfile) {
+                console.log(`✅ [createVideoEntryImmediately] Found username from email profile: ${usernameFromProfile}`);
+              }
+            }
+          } catch (emailProfileError) {
+            console.error(`❌ [createVideoEntryImmediately] Error looking up username from email: ${emailProfileError.message}`);
+          }
+        }
+      }
+      
+      // Only use email prefix as absolute last resort
+      if (usernameFromProfile) {
+        videoItem.creatorUsername = usernameFromProfile;
+        console.log(`✅ [createVideoEntryImmediately] Set creatorUsername from profile lookup: ${usernameFromProfile}`);
+      } else {
+        const email = streamKeyResult.Item.collaboratorEmail || streamKeyResult.Item.ownerEmail;
+        if (email) {
+          // Last resort: use email prefix (but log warning)
+          videoItem.creatorUsername = email.split('@')[0];
+          console.log(`⚠️ [createVideoEntryImmediately] WARNING: Using email prefix as last resort: ${videoItem.creatorUsername}`);
+          console.log(`   This should be fixed - username should be in streamUsername or profile`);
+        }
       }
     }
   } else {
