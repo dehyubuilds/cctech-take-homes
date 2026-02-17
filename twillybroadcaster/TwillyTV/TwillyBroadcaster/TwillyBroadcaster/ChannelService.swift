@@ -32,8 +32,18 @@ struct UsernameSearchResult: Identifiable, Codable {
     let username: String
     let email: String?
     let userId: String?
+    let displayUsername: String? // Username with 🔒 if private
+    let visibility: String? // 'public', 'private', or 'premium'
+    let isPrivate: Bool? // Whether user is private
+    let isPremium: Bool? // Whether user has Premium enabled
+    let subscriptionPrice: Double? // Monthly subscription price if Premium
     
     var id: String { username }
+    
+    // Computed property for display
+    var displayName: String {
+        return displayUsername ?? username
+    }
 }
 
 // Collaborator info
@@ -2520,12 +2530,12 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
     // MARK: - Collaborator Management (Admin Only)
     
     // Search for usernames on Twilly
-    func searchUsernames(query: String, limit: Int = 50) async throws -> [UsernameSearchResult] {
+    func searchUsernames(query: String, limit: Int = 50, visibilityFilter: String = "all") async throws -> [UsernameSearchResult] {
         guard let url = URL(string: "\(baseURL)/users/search-usernames") else {
             throw URLError(.badURL)
         }
         
-        print("🔍 [ChannelService] Searching usernames with query: '\(query)'")
+        print("🔍 [ChannelService] Searching usernames with query: '\(query)', limit: \(limit), filter: \(visibilityFilter)")
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -2533,7 +2543,8 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         
         let body: [String: Any] = [
             "searchQuery": query,
-            "limit": limit
+            "limit": limit,
+            "visibilityFilter": visibilityFilter
         ]
         
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -2555,32 +2566,68 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         }
         
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            print("📦 [ChannelService] Response JSON: \(json)")
+            print("📦 [ChannelService] Response JSON keys: \(json.keys.joined(separator: ", "))")
+            
+            if let success = json["success"] as? Bool {
+                print("   success: \(success)")
+            }
+            
+            if let usernames = json["usernames"] as? [[String: Any]] {
+                print("   usernames array count: \(usernames.count)")
+            } else {
+                print("   ⚠️ usernames is not an array or missing")
+            }
             
             if let success = json["success"] as? Bool, success,
                let usernames = json["usernames"] as? [[String: Any]] {
                 
                 print("✅ [ChannelService] Found \(usernames.count) usernames")
                 
-                return usernames.compactMap { userDict -> UsernameSearchResult? in
+                let results = usernames.compactMap { userDict -> UsernameSearchResult? in
                     guard let username = userDict["username"] as? String else {
                         print("⚠️ [ChannelService] User dict missing username: \(userDict)")
                         return nil
                     }
-                    return UsernameSearchResult(
+                    let result = UsernameSearchResult(
                         username: username,
                         email: userDict["email"] as? String,
-                        userId: userDict["userId"] as? String
+                        userId: userDict["userId"] as? String,
+                        displayUsername: userDict["displayUsername"] as? String,
+                        visibility: userDict["visibility"] as? String,
+                        isPrivate: userDict["isPrivate"] as? Bool,
+                        isPremium: userDict["isPremium"] as? Bool,
+                        subscriptionPrice: userDict["subscriptionPrice"] as? Double
                     )
+                    let privacyStatus = result.isPrivate == true ? "PRIVATE" : "PUBLIC"
+                    print("   ✅ Parsed: \(username) (display: \(result.displayName), \(privacyStatus))")
+                    return result
                 }
+                
+                let publicCount = results.filter { $0.isPrivate != true }.count
+                let privateCount = results.filter { $0.isPrivate == true }.count
+                print("✅ [ChannelService] Returning \(results.count) parsed results:")
+                print("   📊 Public: \(publicCount), Private: \(privateCount)")
+                if results.isEmpty {
+                    print("   ⚠️ No results found - backend may not be returning matching private accounts")
+                }
+                return results
             } else {
                 print("⚠️ [ChannelService] Response missing success or usernames array")
                 if let message = json["message"] as? String {
                     print("   Message: \(message)")
                 }
+                if let count = json["count"] as? Int {
+                    print("   Count: \(count)")
+                }
+            }
+        } else {
+            print("❌ [ChannelService] Failed to parse JSON response")
+            if let responseString = String(data: data, encoding: .utf8) {
+                print("   Raw response: \(responseString.prefix(500))")
             }
         }
         
+        print("⚠️ [ChannelService] Returning empty array")
         return []
     }
     
@@ -3304,11 +3351,12 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         
         let followResponse = try JSONDecoder().decode(FollowRequestResponse.self, from: data)
         
-        // Check if the API returned success: false
+        // Return the response even if success: false
+        // This allows the caller to check response.status and handle "already pending" cases
+        // Only throw for actual HTTP errors (handled above)
         if !followResponse.success {
             let errorMsg = followResponse.message ?? "Failed to add username"
-            print("❌ [ChannelService] requestFollow: API returned success=false - \(errorMsg)")
-            throw ChannelServiceError.serverError(errorMsg)
+            print("⚠️ [ChannelService] requestFollow: API returned success=false - \(errorMsg) (status: \(followResponse.status ?? "nil"))")
         }
         
         return followResponse
@@ -3340,12 +3388,19 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         return try JSONDecoder().decode(FollowRequestResponse.self, from: data)
     }
     
-    func removeFollow(requesterEmail: String, requestedUsername: String) async throws -> FollowRequestResponse {
-        // First, get the requested user's email from username
-        let searchResults = try await searchUsernames(query: requestedUsername, limit: 1)
-        guard let requestedUser = searchResults.first,
-              let requestedUserEmail = requestedUser.email else {
-            throw ChannelServiceError.invalidResponse
+    func removeFollow(requesterEmail: String, requestedUsername: String, requestedUserEmail: String? = nil) async throws -> FollowRequestResponse {
+        // Use provided email if available, otherwise look it up from username
+        let requestedUserEmailToUse: String
+        if let email = requestedUserEmail, !email.isEmpty {
+            requestedUserEmailToUse = email
+        } else {
+            // First, get the requested user's email from username
+            let searchResults = try await searchUsernames(query: requestedUsername, limit: 1)
+            guard let requestedUser = searchResults.first,
+                  let email = requestedUser.email else {
+                throw ChannelServiceError.serverError("User not found: \(requestedUsername)")
+            }
+            requestedUserEmailToUse = email
         }
         
         guard let url = URL(string: "\(baseURL)/users/remove-follow") else {
@@ -3358,19 +3413,37 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         
         let body: [String: Any] = [
             "requesterEmail": requesterEmail,
-            "requestedUserEmail": requestedUserEmail
+            "requestedUserEmail": requestedUserEmailToUse
         ]
         
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
         let (data, response) = try await urlSession.data(for: request)
         
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            print("❌ [ChannelService] removeFollow: Invalid HTTP response")
             throw ChannelServiceError.invalidResponse
         }
         
-        return try JSONDecoder().decode(FollowRequestResponse.self, from: data)
+        print("📥 [ChannelService] removeFollow response status: \(httpResponse.statusCode)")
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("📄 [ChannelService] removeFollow response body: \(responseString)")
+        }
+        
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown server error"
+            throw ChannelServiceError.serverError("HTTP \(httpResponse.statusCode): \(errorMessage)")
+        }
+        
+        let decodedResponse = try JSONDecoder().decode(FollowRequestResponse.self, from: data)
+        
+        // Check the 'success' field from the API response
+        guard decodedResponse.success else {
+            let message = decodedResponse.message ?? "Failed to remove user from timeline"
+            throw ChannelServiceError.serverError(message)
+        }
+        
+        return decodedResponse
     }
     
     func declineFollowRequest(userEmail: String, requesterEmail: String) async throws -> FollowRequestResponse {
@@ -3425,6 +3498,88 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         return try JSONDecoder().decode(FollowRequestsResponse.self, from: data)
     }
     
+    // Get follow requests sent by the current user
+    func getSentFollowRequests(requesterEmail: String, status: String = "pending") async throws -> SentFollowRequestsResponse {
+        guard let url = URL(string: "\(baseURL)/users/sent-follow-requests") else {
+            throw ChannelServiceError.invalidURL
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body: [String: Any] = [
+            "requesterEmail": requesterEmail,
+            "status": status
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await urlSession.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw ChannelServiceError.invalidResponse
+        }
+        
+        return try JSONDecoder().decode(SentFollowRequestsResponse.self, from: data)
+    }
+    
+    // Get notifications
+    func getNotifications(userEmail: String, limit: Int = 50, unreadOnly: Bool = false) async throws -> NotificationsResponse {
+        guard let url = URL(string: "\(baseURL)/users/get-notifications") else {
+            throw ChannelServiceError.invalidURL
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body: [String: Any] = [
+            "userEmail": userEmail,
+            "limit": limit,
+            "unreadOnly": unreadOnly
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await urlSession.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw ChannelServiceError.invalidResponse
+        }
+        
+        return try JSONDecoder().decode(NotificationsResponse.self, from: data)
+    }
+    
+    // Mark notification as read
+    func markNotificationRead(userEmail: String, notificationId: String) async throws -> FollowRequestResponse {
+        guard let url = URL(string: "\(baseURL)/users/mark-notification-read") else {
+            throw ChannelServiceError.invalidURL
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body: [String: Any] = [
+            "userEmail": userEmail,
+            "notificationId": notificationId
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await urlSession.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw ChannelServiceError.invalidResponse
+        }
+        
+        return try JSONDecoder().decode(FollowRequestResponse.self, from: data)
+    }
+    
     // MARK: - Added Usernames
     
     func getAddedUsernames(userEmail: String) async throws -> AddedUsernamesResponse {
@@ -3444,12 +3599,196 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         
         let (data, response) = try await urlSession.data(for: request)
         
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            print("❌ [ChannelService] getAddedUsernames: Invalid HTTP response")
             throw ChannelServiceError.invalidResponse
         }
         
-        return try JSONDecoder().decode(AddedUsernamesResponse.self, from: data)
+        print("📥 [ChannelService] getAddedUsernames response status: \(httpResponse.statusCode)")
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("📄 [ChannelService] getAddedUsernames response body: \(responseString)")
+        }
+        
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown server error"
+            throw ChannelServiceError.serverError("HTTP \(httpResponse.statusCode): \(errorMessage)")
+        }
+        
+        do {
+            return try JSONDecoder().decode(AddedUsernamesResponse.self, from: data)
+        } catch {
+            print("❌ [ChannelService] getAddedUsernames: Failed to decode response: \(error)")
+            if let responseString = String(data: data, encoding: .utf8) {
+                print("   Response body: \(responseString)")
+            }
+            throw ChannelServiceError.invalidResponse
+        }
+    }
+    
+    // MARK: - Premium & Subscriptions
+    
+    func getPremiumStatus(userEmail: String) async throws -> PremiumStatusResponse {
+        guard let url = URL(string: "\(baseURL)/users/get-premium-status") else {
+            throw ChannelServiceError.invalidURL
+        }
+        
+        print("💰 [ChannelService] getPremiumStatus: userEmail=\(userEmail)")
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body: [String: Any] = [
+            "userEmail": userEmail
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await urlSession.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ChannelServiceError.invalidResponse
+        }
+        
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown server error"
+            throw ChannelServiceError.serverError("HTTP \(httpResponse.statusCode): \(errorMessage)")
+        }
+        
+        return try JSONDecoder().decode(PremiumStatusResponse.self, from: data)
+    }
+    
+    func enablePremium(userEmail: String, enable: Bool) async throws -> FollowRequestResponse {
+        guard let url = URL(string: "\(baseURL)/users/enable-premium") else {
+            throw ChannelServiceError.invalidURL
+        }
+        
+        print("💰 [ChannelService] enablePremium: userEmail=\(userEmail), enable=\(enable)")
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body: [String: Any] = [
+            "userEmail": userEmail,
+            "enable": enable
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await urlSession.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ChannelServiceError.invalidResponse
+        }
+        
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown server error"
+            throw ChannelServiceError.serverError("HTTP \(httpResponse.statusCode): \(errorMessage)")
+        }
+        
+        return try JSONDecoder().decode(FollowRequestResponse.self, from: data)
+    }
+    
+    func setPremiumPrice(userEmail: String, price: Double?) async throws -> FollowRequestResponse {
+        guard let url = URL(string: "\(baseURL)/users/set-premium-price") else {
+            throw ChannelServiceError.invalidURL
+        }
+        
+        print("💰 [ChannelService] setPremiumPrice: userEmail=\(userEmail), price=\(price ?? 0)")
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        var body: [String: Any] = [
+            "userEmail": userEmail
+        ]
+        if let price = price {
+            body["subscriptionPrice"] = price
+        } else {
+            body["subscriptionPrice"] = NSNull()
+        }
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await urlSession.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ChannelServiceError.invalidResponse
+        }
+        
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown server error"
+            throw ChannelServiceError.serverError("HTTP \(httpResponse.statusCode): \(errorMessage)")
+        }
+        
+        return try JSONDecoder().decode(FollowRequestResponse.self, from: data)
+    }
+    
+    func getSubscriptionStatus(subscriberEmail: String, creatorEmail: String) async throws -> SubscriptionStatusResponse {
+        guard let url = URL(string: "\(baseURL)/users/get-subscription-status") else {
+            throw ChannelServiceError.invalidURL
+        }
+        
+        print("📋 [ChannelService] getSubscriptionStatus: subscriber=\(subscriberEmail), creator=\(creatorEmail)")
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body: [String: Any] = [
+            "subscriberEmail": subscriberEmail,
+            "creatorEmail": creatorEmail
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await urlSession.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ChannelServiceError.invalidResponse
+        }
+        
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown server error"
+            throw ChannelServiceError.serverError("HTTP \(httpResponse.statusCode): \(errorMessage)")
+        }
+        
+        return try JSONDecoder().decode(SubscriptionStatusResponse.self, from: data)
+    }
+    
+    func createPremiumSubscription(subscriberEmail: String, creatorEmail: String, creatorUsername: String) async throws -> CreatePremiumSubscriptionResponse {
+        guard let url = URL(string: "\(baseURL)/users/create-premium-subscription") else {
+            throw ChannelServiceError.invalidURL
+        }
+        
+        print("💰 [ChannelService] createPremiumSubscription: subscriber=\(subscriberEmail), creator=\(creatorEmail)")
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body: [String: Any] = [
+            "subscriberEmail": subscriberEmail,
+            "creatorEmail": creatorEmail,
+            "creatorUsername": creatorUsername
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await urlSession.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ChannelServiceError.invalidResponse
+        }
+        
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown server error"
+            throw ChannelServiceError.serverError("HTTP \(httpResponse.statusCode): \(errorMessage)")
+        }
+        
+        return try JSONDecoder().decode(CreatePremiumSubscriptionResponse.self, from: data)
     }
     
     // MARK: - Updated getContent to include viewerEmail for filtering
@@ -3531,6 +3870,7 @@ struct ScheduleAirdateData: Codable {
 // MARK: - Username Visibility Response Types
 
 struct DeleteFileResponse: Codable {
+    let alreadyDeleted: Bool?
     let success: Bool
     let message: String?
 }
@@ -3580,6 +3920,68 @@ struct FollowRequest: Codable, Identifiable {
     var id: String { requesterEmail }
 }
 
+struct SentFollowRequestsResponse: Codable {
+    let success: Bool
+    let requests: [SentFollowRequest]?
+    let count: Int?
+}
+
+struct SentFollowRequest: Codable, Identifiable {
+    let requestedUserEmail: String
+    let requestedUsername: String
+    let requestedAt: String?
+    let respondedAt: String?
+    let status: String
+    
+    var id: String { requestedUserEmail }
+}
+
+struct NotificationsResponse: Codable {
+    let success: Bool
+    let notifications: [AppNotification]?
+    let count: Int?
+    let unreadCount: Int?
+}
+
+struct AppNotification: Codable, Identifiable {
+    let id: String // SK without NOTIFICATION# prefix
+    let type: String // 'follow_request', 'follow_accepted', 'follow_declined', 'video_ready', etc.
+    let title: String
+    let message: String
+    let metadata: [String: String]?
+    let isRead: Bool
+    let createdAt: String
+    let SK: String? // Store SK for ID extraction
+    
+    enum CodingKeys: String, CodingKey {
+        case SK
+        case type
+        case title
+        case message
+        case metadata
+        case isRead
+        case createdAt
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // Extract ID from SK (format: NOTIFICATION#notification-123...)
+        if let sk = try? container.decode(String.self, forKey: .SK) {
+            self.SK = sk
+            self.id = sk.replacingOccurrences(of: "NOTIFICATION#", with: "")
+        } else {
+            self.SK = nil
+            self.id = UUID().uuidString
+        }
+        self.type = try container.decode(String.self, forKey: .type)
+        self.title = try container.decode(String.self, forKey: .title)
+        self.message = try container.decode(String.self, forKey: .message)
+        self.metadata = try? container.decode([String: String].self, forKey: .metadata)
+        self.isRead = try container.decode(Bool.self, forKey: .isRead)
+        self.createdAt = try container.decode(String.self, forKey: .createdAt)
+    }
+}
+
 // MARK: - Added Usernames Response Types
 
 struct AddedUsernamesResponse: Codable {
@@ -3595,6 +3997,40 @@ struct AddedUsername: Codable, Identifiable {
     let streamerVisibility: String?
     
     var id: String { streamerEmail }
+}
+
+// MARK: - Premium Response Types
+
+struct PremiumStatusResponse: Codable {
+    let success: Bool
+    let isPremium: Bool?
+    let isPremiumEnabled: Bool?
+    let hasStripeAccount: Bool?
+    let stripeStatus: String?
+    let stripeAccountId: String?
+    let subscriptionPrice: Double?
+    let onboardingUrl: String?
+    let dashboardUrl: String?
+}
+
+struct SubscriptionStatusResponse: Codable {
+    let success: Bool
+    let isSubscribed: Bool?
+    let status: String?
+    let subscriptionId: String?
+    let createdAt: String?
+    let amount: Double?
+}
+
+struct CreatePremiumSubscriptionResponse: Codable {
+    let success: Bool
+    let message: String?
+    let checkoutUrl: String?
+    let sessionId: String?
+    let subscriptionPrice: Double?
+    let platformFee: Double?
+    let creatorAmount: Double?
+    let isSubscribed: Bool?
 }
 
 // Helper to handle AnyCodable for JSON decoding
