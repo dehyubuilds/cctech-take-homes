@@ -135,8 +135,92 @@ struct ChannelDetailView: View {
             backgroundGradient
             mainScrollView
         }
-        .navigationTitle(currentChannel.channelName)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                if currentChannel.channelName.lowercased() == "twilly tv" {
+                    // Stunning Twilly TV title with production-ready design
+                    HStack(spacing: 10) {
+                        // Animated gradient orb
+                        ZStack {
+                            Circle()
+                                .fill(
+                                    RadialGradient(
+                                        gradient: Gradient(colors: [
+                                            Color.twillyCyan.opacity(0.9),
+                                            Color.twillyTeal.opacity(0.7),
+                                            Color.twillyCyan.opacity(0.5)
+                                        ]),
+                                        center: .center,
+                                        startRadius: 2,
+                                        endRadius: 8
+                                    )
+                                )
+                                .frame(width: 10, height: 10)
+                                .shadow(color: Color.twillyCyan.opacity(0.8), radius: 6)
+                            
+                            Circle()
+                                .stroke(Color.white.opacity(0.4), lineWidth: 1.5)
+                                .frame(width: 10, height: 10)
+                        }
+                        
+                        Text("TWILLY TV")
+                            .font(.system(size: 20, weight: .black, design: .rounded))
+                            .tracking(3)
+                            .foregroundStyle(
+                                LinearGradient(
+                                    gradient: Gradient(colors: [
+                                        Color.white,
+                                        Color.twillyTeal,
+                                        Color.twillyCyan,
+                                        Color.white
+                                    ]),
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .shadow(color: Color.twillyCyan.opacity(0.9), radius: 8, x: 0, y: 2)
+                            .shadow(color: Color.black.opacity(0.5), radius: 4, x: 0, y: 1)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(
+                                LinearGradient(
+                                    gradient: Gradient(colors: [
+                                        Color.black.opacity(0.6),
+                                        Color.black.opacity(0.4)
+                                    ]),
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .stroke(
+                                        LinearGradient(
+                                            gradient: Gradient(colors: [
+                                                Color.twillyTeal.opacity(0.8),
+                                                Color.twillyCyan.opacity(0.6),
+                                                Color.twillyTeal.opacity(0.8)
+                                            ]),
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        ),
+                                        lineWidth: 1.5
+                                    )
+                            )
+                            .shadow(color: Color.twillyCyan.opacity(0.3), radius: 12, x: 0, y: 4)
+                    )
+                } else {
+                    Text(currentChannel.channelName)
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(.white)
+                }
+            }
+        }
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarLeading) {
                 // Filter icon - only show for Twilly TV channel
@@ -254,18 +338,57 @@ struct ChannelDetailView: View {
                         // Trigger scroll to top immediately - this ensures we always start at top when toggling
                         scrollToTopTrigger = UUID()
                     }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: showPrivateContent ? "lock.fill" : "lock.open.fill")
-                                .font(.system(size: 14))
-                            Text(showPrivateContent ? "Private" : "Public")
-                                .font(.caption)
-                                .fontWeight(.medium)
+                        HStack(spacing: 6) {
+                            ZStack {
+                                Circle()
+                                    .fill(showPrivateContent ? Color.orange.opacity(0.3) : Color.twillyCyan.opacity(0.3))
+                                    .frame(width: 20, height: 20)
+                                Image(systemName: showPrivateContent ? "lock.fill" : "lock.open.fill")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(showPrivateContent ? .orange : .twillyCyan)
+                            }
+                            
+                            Text(showPrivateContent ? "PRIVATE" : "PUBLIC")
+                                .font(.system(size: 11, weight: .black, design: .rounded))
+                                .tracking(1.5)
                         }
                         .foregroundColor(showPrivateContent ? .orange : .twillyCyan)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(showPrivateContent ? Color.orange.opacity(0.2) : Color.twillyCyan.opacity(0.2))
-                        .cornerRadius(8)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(
+                                    LinearGradient(
+                                        gradient: Gradient(colors: showPrivateContent ? [
+                                            Color.orange.opacity(0.25),
+                                            Color.orange.opacity(0.15)
+                                        ] : [
+                                            Color.twillyTeal.opacity(0.25),
+                                            Color.twillyCyan.opacity(0.15)
+                                        ]),
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(
+                                            LinearGradient(
+                                                gradient: Gradient(colors: showPrivateContent ? [
+                                                    Color.orange.opacity(0.7),
+                                                    Color.orange.opacity(0.5)
+                                                ] : [
+                                                    Color.twillyTeal.opacity(0.6),
+                                                    Color.twillyCyan.opacity(0.4)
+                                                ]),
+                                                startPoint: .leading,
+                                                endPoint: .trailing
+                                            ),
+                                            lineWidth: 1.5
+                                        )
+                                )
+                        )
+                        .shadow(color: (showPrivateContent ? Color.orange : Color.twillyCyan).opacity(0.4), radius: 8, x: 0, y: 3)
                     }
                 }
             }
@@ -1199,51 +1322,116 @@ struct ChannelDetailView: View {
                     // Check if it's an SVG file
                     if currentChannel.posterUrl.lowercased().hasSuffix(".svg") {
                         // Use SVG view for SVG files
-                        SVGImageView(url: url)
-                            .scaledToFill()
-                            .onAppear {
-                                print("✅ [ChannelDetailView] Loading SVG poster")
-                                print("   URL: \(currentChannel.posterUrl)")
+                        ZStack {
+                            SVGImageView(url: url)
+                                .scaledToFill()
+                            
+                            // Overlay gradient mesh for depth
+                            LinearGradient(
+                                gradient: Gradient(colors: [
+                                    Color.twillyTeal.opacity(0.15),
+                                    Color.clear,
+                                    Color.twillyCyan.opacity(0.1)
+                                ]),
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                            
+                            // Diagonal accent line
+                            GeometryReader { geometry in
+                                Path { path in
+                                    path.move(to: CGPoint(x: 0, y: geometry.size.height * 0.3))
+                                    path.addLine(to: CGPoint(x: geometry.size.width * 0.4, y: 0))
+                                }
+                                .stroke(
+                                    LinearGradient(
+                                        gradient: Gradient(colors: [
+                                            Color.twillyCyan.opacity(0.6),
+                                            Color.clear
+                                        ]),
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    ),
+                                    lineWidth: 2
+                                )
                             }
+                        }
+                        .onAppear {
+                            print("✅ [ChannelDetailView] Loading SVG poster")
+                            print("   URL: \(currentChannel.posterUrl)")
+                        }
                     } else {
                         // Use AsyncImage for raster images (PNG, JPEG, etc.)
-                        AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFill()
-                                .onAppear {
-                                    print("✅ [ChannelDetailView] Successfully loaded poster image")
-                                    print("   URL: \(currentChannel.posterUrl)")
-                                }
-                        case .failure(let error):
-                            posterPlaceholder
-                                .onAppear {
-                                    print("❌ [ChannelDetailView] Failed to load poster image")
-                                    print("   Error: \(error.localizedDescription)")
-                                    print("   Error type: \(type(of: error))")
-                                    if let urlError = error as? URLError {
-                                        print("   URL Error code: \(urlError.code.rawValue)")
-                                        print("   URL Error description: \(urlError.localizedDescription)")
+                        ZStack {
+                            AsyncImage(url: url) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                                    .onAppear {
+                                        print("✅ [ChannelDetailView] Successfully loaded poster image")
+                                        print("   URL: \(currentChannel.posterUrl)")
                                     }
-                                    print("   Poster URL: \(currentChannel.posterUrl)")
-                                    print("   Channel: \(currentChannel.channelName)")
-                                    print("   Creator Email: \(currentChannel.creatorEmail)")
+                            case .failure(let error):
+                                posterPlaceholder
+                                    .onAppear {
+                                        print("❌ [ChannelDetailView] Failed to load poster image")
+                                        print("   Error: \(error.localizedDescription)")
+                                        print("   Error type: \(type(of: error))")
+                                        if let urlError = error as? URLError {
+                                            print("   URL Error code: \(urlError.code.rawValue)")
+                                            print("   URL Error description: \(urlError.localizedDescription)")
+                                        }
+                                        print("   Poster URL: \(currentChannel.posterUrl)")
+                                        print("   Channel: \(currentChannel.channelName)")
+                                        print("   Creator Email: \(currentChannel.creatorEmail)")
+                                    }
+                            case .empty:
+                                posterPlaceholder
+                                    .onAppear {
+                                        print("⏳ [ChannelDetailView] Poster image is loading (empty state)")
+                                        print("   URL: \(currentChannel.posterUrl)")
+                                    }
+                            @unknown default:
+                                posterPlaceholder
+                                    .onAppear {
+                                        print("⚠️ [ChannelDetailView] Unknown AsyncImage phase")
+                                        print("   URL: \(currentChannel.posterUrl)")
+                                    }
+                            }
+                            }
+                            
+                            // Overlay gradient mesh for depth and atmosphere
+                            LinearGradient(
+                                gradient: Gradient(colors: [
+                                    Color.twillyTeal.opacity(0.2),
+                                    Color.clear,
+                                    Color.twillyCyan.opacity(0.15),
+                                    Color.clear
+                                ]),
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                            
+                            // Diagonal accent line for visual interest
+                            GeometryReader { geometry in
+                                Path { path in
+                                    path.move(to: CGPoint(x: 0, y: geometry.size.height * 0.25))
+                                    path.addLine(to: CGPoint(x: geometry.size.width * 0.35, y: 0))
                                 }
-                        case .empty:
-                            posterPlaceholder
-                                .onAppear {
-                                    print("⏳ [ChannelDetailView] Poster image is loading (empty state)")
-                                    print("   URL: \(currentChannel.posterUrl)")
-                                }
-                        @unknown default:
-                            posterPlaceholder
-                                .onAppear {
-                                    print("⚠️ [ChannelDetailView] Unknown AsyncImage phase")
-                                    print("   URL: \(currentChannel.posterUrl)")
-                                }
-                        }
+                                .stroke(
+                                    LinearGradient(
+                                        gradient: Gradient(colors: [
+                                            Color.twillyCyan.opacity(0.7),
+                                            Color.clear
+                                        ]),
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    ),
+                                    lineWidth: 2.5
+                                )
+                            }
                         }
                     }
                 } else {
@@ -1265,9 +1453,26 @@ struct ChannelDetailView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 200)
+        .frame(height: currentChannel.channelName.lowercased() == "twilly tv" ? 240 : 200) // Taller for Twilly TV
         .clipped()
-        .cornerRadius(12)
+        .cornerRadius(currentChannel.channelName.lowercased() == "twilly tv" ? 20 : 12) // More rounded for Twilly TV
+        .overlay(
+            RoundedRectangle(cornerRadius: currentChannel.channelName.lowercased() == "twilly tv" ? 20 : 12)
+                .stroke(
+                    LinearGradient(
+                        gradient: Gradient(colors: [
+                            Color.twillyTeal.opacity(0.4),
+                            Color.twillyCyan.opacity(0.3),
+                            Color.twillyTeal.opacity(0.4)
+                        ]),
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1.5
+                )
+        )
+        .shadow(color: Color.twillyCyan.opacity(0.3), radius: 16, x: 0, y: 8)
+        .shadow(color: Color.black.opacity(0.4), radius: 8, x: 0, y: 4)
         .onAppear {
             print("🖼️ [ChannelDetailView] ChannelPoster onAppear")
             print("   Channel: \(currentChannel.channelName)")
@@ -1291,26 +1496,58 @@ struct ChannelDetailView: View {
     
     private var posterPlaceholder: some View {
         ZStack {
+            // Multi-layer gradient mesh for depth
             LinearGradient(
                 gradient: Gradient(colors: [
-                    Color.twillyTeal.opacity(0.2),
-                    Color.twillyCyan.opacity(0.1)
+                    Color.twillyTeal.opacity(0.3),
+                    Color.twillyCyan.opacity(0.2),
+                    Color.twillyTeal.opacity(0.15)
                 ]),
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
+            
+            // Secondary gradient overlay
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color.clear,
+                    Color.twillyCyan.opacity(0.1),
+                    Color.clear
+                ]),
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            
+            // Geometric pattern overlay
+            GeometryReader { geometry in
+                Path { path in
+                    // Diagonal lines for visual interest
+                    for i in 0..<5 {
+                        let offset = CGFloat(i) * 40
+                        path.move(to: CGPoint(x: -20 + offset, y: 0))
+                        path.addLine(to: CGPoint(x: geometry.size.width + 20 + offset, y: geometry.size.height))
+                    }
+                }
+                .stroke(
+                    Color.twillyCyan.opacity(0.1),
+                    lineWidth: 1
+                )
+            }
+            
             Image(systemName: "tv.fill")
-                .font(.system(size: 60))
+                .font(.system(size: 70, weight: .ultraLight))
                 .foregroundStyle(
                     LinearGradient(
                         gradient: Gradient(colors: [
-                            Color.twillyTeal,
-                            Color.twillyCyan
+                            Color.twillyTeal.opacity(0.8),
+                            Color.twillyCyan.opacity(0.9),
+                            Color.twillyTeal.opacity(0.8)
                         ]),
-                        startPoint: .leading,
-                        endPoint: .trailing
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
                     )
                 )
+                .shadow(color: Color.twillyCyan.opacity(0.5), radius: 12)
         }
     }
     
@@ -3187,19 +3424,39 @@ struct ChannelDetailView: View {
     }
     
     private var channelInfo: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Hide channel name for Twilly TV
+        VStack(alignment: .leading, spacing: 16) {
+            // Hide channel name for Twilly TV (shown in nav bar instead)
             if currentChannel.channelName.lowercased() != "twilly tv" {
                 Text(currentChannel.channelName)
-                    .font(.title)
-                    .fontWeight(.bold)
-                    .foregroundColor(.white)
+                    .font(.system(size: 32, weight: .black, design: .rounded))
+                    .foregroundStyle(
+                        LinearGradient(
+                            gradient: Gradient(colors: [
+                                Color.white,
+                                Color.twillyTeal,
+                                Color.twillyCyan
+                            ]),
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .shadow(color: Color.twillyCyan.opacity(0.6), radius: 8, x: 0, y: 2)
             }
             
             if !currentChannel.description.isEmpty {
                 Text(currentChannel.description)
-                    .font(.body)
-                    .foregroundColor(.white.opacity(0.8))
+                    .font(.system(size: 16, weight: .medium, design: .rounded))
+                    .foregroundStyle(
+                        LinearGradient(
+                            gradient: Gradient(colors: [
+                                Color.white.opacity(0.95),
+                                Color.white.opacity(0.7)
+                            ]),
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .lineSpacing(4)
                     .padding(.top, currentChannel.channelName.lowercased() == "twilly tv" ? 0 : 4)
             }
             
@@ -3207,27 +3464,50 @@ struct ChannelDetailView: View {
             VStack(alignment: .leading, spacing: 8) {
                 // Collaborator badge - Show above Stream button for all collaborators (admin and non-admin)
                 if canStream {
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.caption2)
-                        Text("Collaborator")
-                            .font(.caption)
-                            .fontWeight(.semibold)
+                    HStack(spacing: 6) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.twillyCyan.opacity(0.3))
+                                .frame(width: 20, height: 20)
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(.twillyCyan)
+                        }
+                        Text("COLLABORATOR")
+                            .font(.system(size: 11, weight: .black, design: .rounded))
+                            .tracking(1.5)
                     }
                     .foregroundColor(.twillyCyan)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
                     .background(
-                        LinearGradient(
-                            gradient: Gradient(colors: [
-                                Color.twillyTeal.opacity(0.3),
-                                Color.twillyCyan.opacity(0.2)
-                            ]),
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(
+                                LinearGradient(
+                                    gradient: Gradient(colors: [
+                                        Color.twillyTeal.opacity(0.25),
+                                        Color.twillyCyan.opacity(0.15)
+                                    ]),
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(
+                                        LinearGradient(
+                                            gradient: Gradient(colors: [
+                                                Color.twillyTeal.opacity(0.6),
+                                                Color.twillyCyan.opacity(0.4)
+                                            ]),
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        ),
+                                        lineWidth: 1
+                                    )
+                            )
                     )
-                    .cornerRadius(8)
+                    .shadow(color: Color.twillyCyan.opacity(0.3), radius: 6, x: 0, y: 2)
                 }
                 
                 // Stream button - Show for all authenticated users who can stream
@@ -3243,27 +3523,53 @@ struct ChannelDetailView: View {
                             ]
                         )
                     }) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "video.fill")
-                                .font(.system(size: 16, weight: .semibold))
-                            Text("Stream")
-                                .font(.system(size: 16, weight: .semibold))
+                        HStack(spacing: 10) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.white.opacity(0.2))
+                                    .frame(width: 32, height: 32)
+                                Image(systemName: "video.fill")
+                                    .font(.system(size: 16, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
+                            
+                            Text("STREAM")
+                                .font(.system(size: 17, weight: .black, design: .rounded))
+                                .tracking(2)
                         }
                         .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 16)
                         .background(
-                            LinearGradient(
-                                gradient: Gradient(colors: [
-                                    Color.twillyTeal,
-                                    Color.twillyCyan
-                                ]),
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(
+                                    LinearGradient(
+                                        gradient: Gradient(colors: [
+                                            Color.twillyTeal,
+                                            Color.twillyCyan,
+                                            Color.twillyTeal
+                                        ]),
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16)
+                                        .stroke(
+                                            LinearGradient(
+                                                gradient: Gradient(colors: [
+                                                    Color.white.opacity(0.3),
+                                                    Color.clear
+                                                ]),
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            ),
+                                            lineWidth: 1
+                                        )
+                                )
                         )
-                        .cornerRadius(12)
-                        .shadow(color: Color.twillyCyan.opacity(0.4), radius: 8, x: 0, y: 4)
+                        .shadow(color: Color.twillyCyan.opacity(0.5), radius: 12, x: 0, y: 6)
+                        .shadow(color: Color.black.opacity(0.3), radius: 8, x: 0, y: 3)
                     }
                 }
                 
