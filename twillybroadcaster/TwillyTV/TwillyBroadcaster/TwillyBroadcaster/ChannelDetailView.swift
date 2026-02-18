@@ -2763,17 +2763,28 @@ struct ChannelDetailView: View {
                 print("      Error type: \(type(of: error))")
                 print("      Error description: \(error.localizedDescription)")
                 
-                let errorMessageText = error.localizedDescription
+                // Extract error message properly from ChannelServiceError
+                var errorMessageText = error.localizedDescription
+                if let channelError = error as? ChannelServiceError {
+                    print("      ChannelServiceError: \(channelError)")
+                    switch channelError {
+                    case .serverError(let message):
+                        errorMessageText = message
+                        print("      Extracted server error message: \(message)")
+                    default:
+                        break
+                    }
+                }
+                
                 let isAlreadyPending = errorMessageText.lowercased().contains("already pending")
                 let isAlreadyAccepted = errorMessageText.lowercased().contains("already accepted")
                 let isUserNotFound = errorMessageText.lowercased().contains("user not found") || 
                                     errorMessageText.lowercased().contains("channel name")
                 let isTimeout = errorMessageText.lowercased().contains("timeout") ||
                                errorMessageText.lowercased().contains("timed out")
-                
-                if let channelError = error as? ChannelServiceError {
-                    print("      ChannelServiceError: \(channelError)")
-                }
+                let isServerError = errorMessageText.lowercased().contains("server error") ||
+                                   errorMessageText.lowercased().contains("http 500") ||
+                                   errorMessageText.lowercased().contains("assignment to constant variable")
                 
                 await MainActor.run {
                     // Remove from adding set on error (use same key format as insertion)
@@ -2794,10 +2805,12 @@ struct ChannelDetailView: View {
                         return
                     }
                     
-                    // For timeouts or other errors on private requests, still update UI optimistically
-                    // The request might have actually succeeded on the backend
-                    if isPrivate && (isTimeout || (!isUserNotFound && !isAlreadyPending && !isAlreadyAccepted)) {
-                        print("   ⚠️ Error occurred but updating UI optimistically for private request (might have succeeded)")
+                    // CRITICAL: For private requests, ALWAYS update UI optimistically on ANY error
+                    // (except "User not found") because the request might have succeeded on the backend
+                    // This includes timeouts, HTTP 500 errors, and other server errors
+                    if isPrivate && !isUserNotFound {
+                        print("   ⚠️ Error occurred for private request - updating UI optimistically (request may have succeeded)")
+                        print("      Error type: \(isTimeout ? "timeout" : isServerError ? "server error" : "other")")
                         let streamerEmail = email ?? usernameSearchResults.first(where: { $0.username.lowercased() == cleanUsername.lowercased() })?.email ?? ""
                         let newSentRequest = SentFollowRequest(
                             requestedUserEmail: streamerEmail,
@@ -2808,15 +2821,21 @@ struct ChannelDetailView: View {
                         )
                         
                         if let existingIndex = sentFollowRequests.firstIndex(where: { $0.requestedUsername.lowercased() == cleanUsername.lowercased() }) {
+                            print("   🔄 Updating existing request in sentFollowRequests")
                             sentFollowRequests[existingIndex] = newSentRequest
                         } else {
+                            print("   ➕ Adding new request to sentFollowRequests")
                             sentFollowRequests.append(newSentRequest)
                         }
-                        print("   ✅ Optimistically updated UI despite error - button should show 'Requested'")
+                        print("   ✅ Optimistically updated UI - button should show 'Requested'")
+                        print("   📊 Current sentFollowRequests count: \(sentFollowRequests.count)")
+                        print("   📋 Contains '\(cleanUsername)': \(sentFollowRequests.contains(where: { $0.requestedUsername.lowercased() == cleanUsername.lowercased() }))")
                         
-                        // Show a warning message but don't block the UI
-                        if isTimeout {
-                            errorMessage = "Request may have timed out, but request was sent. Please check your connection."
+                        // Show a warning message for server errors but don't block the UI
+                        if isServerError || isTimeout {
+                            errorMessage = isServerError ? 
+                                "Request may have encountered an error, but was sent. Please check your connection." :
+                                "Request may have timed out, but request was sent. Please check your connection."
                             Task {
                                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                                 await MainActor.run {
