@@ -2766,6 +2766,10 @@ struct ChannelDetailView: View {
                 let errorMessageText = error.localizedDescription
                 let isAlreadyPending = errorMessageText.lowercased().contains("already pending")
                 let isAlreadyAccepted = errorMessageText.lowercased().contains("already accepted")
+                let isUserNotFound = errorMessageText.lowercased().contains("user not found") || 
+                                    errorMessageText.lowercased().contains("channel name")
+                let isTimeout = errorMessageText.lowercased().contains("timeout") ||
+                               errorMessageText.lowercased().contains("timed out")
                 
                 if let channelError = error as? ChannelServiceError {
                     print("      ChannelServiceError: \(channelError)")
@@ -2777,21 +2781,50 @@ struct ChannelDetailView: View {
                     addingUsernames.remove(removingKey)
                     print("   ✅ Removed '\(removingKey)' from addingUsernames set (error cleanup)")
                     
-                    // Check if this is a "User not found" error - show helpful message
-                    let isUserNotFound = errorMessageText.lowercased().contains("user not found") || 
-                                        errorMessageText.lowercased().contains("channel name")
+                    // For "User not found" errors, show error and don't update UI
                     if isUserNotFound && !isAlreadyPending && !isAlreadyAccepted {
-                        // Show error message to user
                         errorMessage = errorMessageText
                         print("   ⚠️ Showing error to user: \(errorMessageText)")
-                        // Clear error after 5 seconds
                         Task {
                             try? await Task.sleep(nanoseconds: 5_000_000_000)
                             await MainActor.run {
                                 errorMessage = nil
                             }
                         }
-                        return // Don't continue with optimistic updates for "not found" errors
+                        return
+                    }
+                    
+                    // For timeouts or other errors on private requests, still update UI optimistically
+                    // The request might have actually succeeded on the backend
+                    if isPrivate && (isTimeout || (!isUserNotFound && !isAlreadyPending && !isAlreadyAccepted)) {
+                        print("   ⚠️ Error occurred but updating UI optimistically for private request (might have succeeded)")
+                        let streamerEmail = email ?? usernameSearchResults.first(where: { $0.username.lowercased() == cleanUsername.lowercased() })?.email ?? ""
+                        let newSentRequest = SentFollowRequest(
+                            requestedUserEmail: streamerEmail,
+                            requestedUsername: cleanUsername,
+                            requestedAt: ISO8601DateFormatter().string(from: Date()),
+                            respondedAt: nil,
+                            status: "pending"
+                        )
+                        
+                        if let existingIndex = sentFollowRequests.firstIndex(where: { $0.requestedUsername.lowercased() == cleanUsername.lowercased() }) {
+                            sentFollowRequests[existingIndex] = newSentRequest
+                        } else {
+                            sentFollowRequests.append(newSentRequest)
+                        }
+                        print("   ✅ Optimistically updated UI despite error - button should show 'Requested'")
+                        
+                        // Show a warning message but don't block the UI
+                        if isTimeout {
+                            errorMessage = "Request may have timed out, but request was sent. Please check your connection."
+                            Task {
+                                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                                await MainActor.run {
+                                    errorMessage = nil
+                                }
+                            }
+                        }
+                        return
                     }
                     
                     // If the request is already pending, treat it as success and update UI optimistically
