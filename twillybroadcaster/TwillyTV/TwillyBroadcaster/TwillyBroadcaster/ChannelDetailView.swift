@@ -69,6 +69,8 @@ struct ChannelDetailView: View {
     @State private var userPostAutomatically = false // Whether current user has post automatically enabled
     @State private var showOnlyOwnContent = false // Filter to show only user's own content
     @State private var showPrivateContent = false // Filter to show private content (default: show public)
+    @State private var showFavoritesOnly = false // Filter to show only favorited content
+    @State private var favoriteContentIds: Set<String> = [] // Set of favorited content SK IDs
     @State private var isFilteringContent = false // Loading state when filtering content
     @State private var hasConfirmedNoContent = false // Only show "no content" after confirming there's truly none
     @State private var previousContentBeforeFilter: [ChannelContent] = [] // Keep previous content visible during filter
@@ -245,6 +247,9 @@ struct ChannelDetailView: View {
                 
                 // Load cached search results from UserDefaults for instant results
                 loadSearchCacheFromUserDefaults()
+                
+                // Load favorites from UserDefaults
+                loadFavoritesFromUserDefaults()
                 
                 // Load user's schedule and post automatically status (for admin stream button visibility)
                 if isAdminUser {
@@ -486,102 +491,32 @@ struct ChannelDetailView: View {
     // MARK: - View Components
     
     // MARK: - Navigation Title
+    @ViewBuilder
     private var navigationTitleView: some View {
-        Group {
-            if currentChannel.channelName.lowercased() == "twilly tv" {
-                twillyTVTitleView
-            } else {
-                Text(currentChannel.channelName)
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundColor(.white)
-            }
+        // For Twilly TV, show empty title since it's on the poster
+        // For other channels, show channel name
+        if currentChannel.channelName.lowercased() == "twilly tv" {
+            EmptyView()
+        } else {
+            Text(currentChannel.channelName)
+                .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.white)
         }
-    }
-    
-    private var twillyTVTitleView: some View {
-        HStack(spacing: 10) {
-            // Animated gradient orb
-            ZStack {
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            gradient: Gradient(colors: [
-                                Color.twillyCyan.opacity(0.9),
-                                Color.twillyTeal.opacity(0.7),
-                                Color.twillyCyan.opacity(0.5)
-                            ]),
-                            center: .center,
-                            startRadius: 2,
-                            endRadius: 8
-                        )
-                    )
-                    .frame(width: 10, height: 10)
-                    .shadow(color: Color.twillyCyan.opacity(0.8), radius: 6)
-                
-                Circle()
-                    .stroke(Color.white.opacity(0.4), lineWidth: 1.5)
-                    .frame(width: 10, height: 10)
-            }
-            
-            Text("TWILLY TV")
-                .font(.system(size: 20, weight: .black, design: .rounded))
-                .tracking(3)
-                .foregroundStyle(
-                    LinearGradient(
-                        gradient: Gradient(colors: [
-                            Color.white,
-                            Color.twillyTeal,
-                            Color.twillyCyan,
-                            Color.white
-                        ]),
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-                .shadow(color: Color.twillyCyan.opacity(0.9), radius: 8, x: 0, y: 2)
-                .shadow(color: Color.black.opacity(0.5), radius: 4, x: 0, y: 1)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(titleBackgroundView)
-    }
-    
-    private var titleBackgroundView: some View {
-        RoundedRectangle(cornerRadius: 16)
-            .fill(
-                LinearGradient(
-                    gradient: Gradient(colors: [
-                        Color.black.opacity(0.6),
-                        Color.black.opacity(0.4)
-                    ]),
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(
-                        LinearGradient(
-                            gradient: Gradient(colors: [
-                                Color.twillyTeal.opacity(0.8),
-                                Color.twillyCyan.opacity(0.6),
-                                Color.twillyTeal.opacity(0.8)
-                            ]),
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1.5
-                    )
-            )
-            .shadow(color: Color.twillyCyan.opacity(0.3), radius: 12, x: 0, y: 4)
     }
     
     // MARK: - Toolbar Items
     @ViewBuilder
     private var leadingToolbarItems: some View {
-        // Private/Public toggle - only show for Twilly TV channel
+        // Twilly TV specific toolbar items
         if currentChannel.channelName.lowercased() == "twilly tv" {
+            // Private/Public toggle
             privateToggleButton
+            
+            // Twilly logo button to toggle filter (my content vs all content)
+            twillyLogoFilterButton
+            
+            // Favorites star button
+            favoritesButton
         }
     }
     
@@ -619,10 +554,52 @@ struct ChannelDetailView: View {
         }
     }
     
+    private var twillyLogoFilterButton: some View {
+        Button(action: handleFilterToggle) {
+            HStack(spacing: 4) {
+                // Filter label
+                Text(showOnlyOwnContent ? "My" : "All")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .foregroundColor(showOnlyOwnContent ? .twillyCyan : .white.opacity(0.8))
+                
+                // Filter indicator icon
+                Image(systemName: showOnlyOwnContent ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(showOnlyOwnContent ? .twillyCyan : .white.opacity(0.7))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(showOnlyOwnContent ? Color.twillyCyan.opacity(0.2) : Color.white.opacity(0.1))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(
+                        showOnlyOwnContent ? Color.twillyCyan.opacity(0.5) : Color.white.opacity(0.2),
+                        lineWidth: 1
+                    )
+            )
+        }
+    }
+    
     private var filterButton: some View {
         Button(action: handleFilterToggle) {
             Image(systemName: showOnlyOwnContent ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
                 .foregroundColor(showOnlyOwnContent ? .twillyCyan : .white)
+        }
+    }
+    
+    private var favoritesButton: some View {
+        Button(action: handleFavoritesToggle) {
+            Image(systemName: showFavoritesOnly ? "star.fill" : "star")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(showFavoritesOnly ? .yellow : .white.opacity(0.8))
+                .padding(8)
+                .background(
+                    Circle()
+                        .fill(showFavoritesOnly ? Color.yellow.opacity(0.2) : Color.white.opacity(0.1))
+                )
         }
     }
     
@@ -721,7 +698,15 @@ struct ChannelDetailView: View {
             }
             
             content = filtered
-            print("🔍 [ChannelDetailView] Filtered content (own only\(showPrivateContent ? " + private" : "")): \(content.count) items")
+            
+            // Apply favorites filter if active
+            if showFavoritesOnly {
+                content = content.filter { item in
+                    favoriteContentIds.contains(item.SK)
+                }
+            }
+            
+            print("🔍 [ChannelDetailView] Filtered content (own only\(showPrivateContent ? " + private" : "")\(showFavoritesOnly ? " + favorites" : "")): \(content.count) items")
         } else if wasFiltered {
             // Restore from cache instead of reloading from server
             if !cachedUnfilteredContent.isEmpty {
@@ -737,6 +722,14 @@ struct ChannelDetailView: View {
                 }
                 nextToken = cachedNextToken
                 hasMoreContent = cachedHasMoreContent
+                
+                // Apply favorites filter if active
+                if showFavoritesOnly {
+                    content = content.filter { item in
+                        favoriteContentIds.contains(item.SK)
+                    }
+                }
+                
                 print("💾 [ChannelDetailView] Restored unfiltered content from cache: \(content.count) items")
             } else {
                 // Fallback: reload if cache is empty
@@ -768,7 +761,15 @@ struct ChannelDetailView: View {
                 hasMoreContent = privateHasMore
                 // Also update the cache to remove any public items that shouldn't be there
                 privateContent = strictlyPrivate
-                print("⚡ [ChannelDetailView] Instantly switched to private view - \(strictlyPrivate.count) items (strictly filtered)")
+                
+                // Apply favorites filter if active
+                if showFavoritesOnly {
+                    content = content.filter { item in
+                        favoriteContentIds.contains(item.SK)
+                    }
+                }
+                
+                print("⚡ [ChannelDetailView] Instantly switched to private view - \(content.count) items (strictly filtered\(showFavoritesOnly ? " + favorites" : ""))")
             } else {
                 // CRITICAL SECURITY: Strictly filter publicContent to ensure ONLY public items
                 let strictlyPublic = publicContent.filter { item in
@@ -783,7 +784,15 @@ struct ChannelDetailView: View {
                 hasMoreContent = publicHasMore
                 // Also update the cache to remove any private items that shouldn't be there
                 publicContent = strictlyPublic
-                print("⚡ [ChannelDetailView] Instantly switched to public view - \(strictlyPublic.count) items (strictly filtered)")
+                
+                // Apply favorites filter if active
+                if showFavoritesOnly {
+                    content = content.filter { item in
+                        favoriteContentIds.contains(item.SK)
+                    }
+                }
+                
+                print("⚡ [ChannelDetailView] Instantly switched to public view - \(content.count) items (strictly filtered\(showFavoritesOnly ? " + favorites" : ""))")
             }
         } else {
             // Fallback to filtering if both views aren't loaded yet
@@ -797,6 +806,133 @@ struct ChannelDetailView: View {
         
         // Trigger scroll to top immediately - this ensures we always start at top when toggling
         scrollToTopTrigger = UUID()
+    }
+    
+    // MARK: - Favorites Functionality
+    
+    private func handleFavoritesToggle() {
+        withAnimation {
+            showFavoritesOnly.toggle()
+        }
+        
+        // Apply favorites filter
+        applyFavoritesFilter()
+        
+        // Trigger scroll to top
+        scrollToTopTrigger = UUID()
+    }
+    
+    private func applyFavoritesFilter() {
+        if showFavoritesOnly {
+            // Filter to show only favorites based on current view (public or private)
+            let sourceContent: [ChannelContent]
+            if bothViewsLoaded && currentChannel.channelName.lowercased() == "twilly tv" {
+                // Use cached content for instant filtering
+                sourceContent = showPrivateContent ? privateContent : publicContent
+            } else {
+                // Fallback to current content
+                sourceContent = content
+            }
+            
+            var filtered = sourceContent.filter { item in
+                favoriteContentIds.contains(item.SK)
+            }
+            
+            // Also apply "my content" filter if active
+            if showOnlyOwnContent, let username = authService.username {
+                filtered = filtered.filter { item in
+                    item.creatorUsername?.lowercased() == username.lowercased()
+                }
+            }
+            
+            content = filtered
+            print("⭐ [ChannelDetailView] Filtered to favorites\(showOnlyOwnContent ? " + own" : ""): \(filtered.count) items")
+        } else {
+            // Restore content based on current filters
+            if bothViewsLoaded && currentChannel.channelName.lowercased() == "twilly tv" {
+                // Use cached content
+                if showPrivateContent {
+                    content = privateContent
+                    nextToken = privateNextToken
+                    hasMoreContent = privateHasMore
+                } else {
+                    content = publicContent
+                    nextToken = publicNextToken
+                    hasMoreContent = publicHasMore
+                }
+                
+                // Apply "my content" filter if active
+                if showOnlyOwnContent, let username = authService.username {
+                    content = content.filter { item in
+                        item.creatorUsername?.lowercased() == username.lowercased()
+                    }
+                }
+            } else {
+                // Fallback: reload if cache not available
+                Task {
+                    try? await refreshChannelContent()
+                }
+            }
+            print("⭐ [ChannelDetailView] Removed favorites filter, showing all content: \(content.count) items")
+        }
+    }
+    
+    private func toggleFavorite(for item: ChannelContent) {
+        if favoriteContentIds.contains(item.SK) {
+            favoriteContentIds.remove(item.SK)
+            print("⭐ [ChannelDetailView] Removed from favorites: \(item.fileName)")
+        } else {
+            favoriteContentIds.insert(item.SK)
+            print("⭐ [ChannelDetailView] Added to favorites: \(item.fileName)")
+        }
+        
+        // Save favorites to UserDefaults
+        saveFavoritesToUserDefaults()
+        
+        // If favorites filter is active, update the displayed content
+        if showFavoritesOnly {
+            applyFavoritesFilter()
+        }
+    }
+    
+    private func isFavorite(_ item: ChannelContent) -> Bool {
+        return favoriteContentIds.contains(item.SK)
+    }
+    
+    private func favoritesKey(for userEmail: String) -> String {
+        return "favorites_\(userEmail)"
+    }
+    
+    private func loadFavoritesFromUserDefaults() {
+        guard let userEmail = authService.userEmail else {
+            print("⚠️ [ChannelDetailView] Cannot load favorites - no user email")
+            return
+        }
+        
+        let key = favoritesKey(for: userEmail)
+        if let data = UserDefaults.standard.data(forKey: key),
+           let favorites = try? JSONDecoder().decode(Set<String>.self, from: data) {
+            favoriteContentIds = favorites
+            print("✅ [ChannelDetailView] Loaded \(favorites.count) favorites from UserDefaults")
+        } else {
+            favoriteContentIds = []
+            print("ℹ️ [ChannelDetailView] No favorites found in UserDefaults")
+        }
+    }
+    
+    private func saveFavoritesToUserDefaults() {
+        guard let userEmail = authService.userEmail else {
+            print("⚠️ [ChannelDetailView] Cannot save favorites - no user email")
+            return
+        }
+        
+        let key = favoritesKey(for: userEmail)
+        if let data = try? JSONEncoder().encode(favoriteContentIds) {
+            UserDefaults.standard.set(data, forKey: key)
+            print("✅ [ChannelDetailView] Saved \(favoriteContentIds.count) favorites to UserDefaults")
+        } else {
+            print("❌ [ChannelDetailView] Failed to encode favorites")
+        }
     }
     
     private var backgroundGradient: some View {
@@ -4354,10 +4490,12 @@ struct ChannelDetailView: View {
                 // Open title page when edit button is clicked - show text field immediately
                 managingContent = item
                 editingTitle = item.title ?? ""
-                showingTitleField = true // Show title field immediately
-                showingContentManagementPopup = true
             } : nil,
-            isOwnContent: isOwnContent
+            isOwnContent: isOwnContent,
+            isFavorite: isFavorite(item),
+            onFavorite: {
+                toggleFavorite(for: item)
+            }
         )
         .onAppear {
             handleContentCardAppear(item)
@@ -7102,6 +7240,8 @@ struct ContentCard: View {
     let showEditButton: Bool // Whether to show edit button
     let onEdit: (() -> Void)? // Edit callback
     let isOwnContent: Bool // Whether this is the user's own content (for "MINE" badge)
+    let isFavorite: Bool // Whether this content is favorited
+    let onFavorite: (() -> Void)? // Favorite toggle callback
     
     @State private var videoDuration: TimeInterval? = nil
     @State private var isLoadingDuration = false
@@ -7148,7 +7288,7 @@ struct ContentCard: View {
         return formatter.date(from: dateString)
     }
     
-    init(content: ChannelContent, onTap: @escaping () -> Void, onPlay: (() -> Void)? = nil, isLocalVideo: Bool = false, isUploadComplete: Bool = false, isPollingForThumbnail: Bool = false, channelCreatorUsername: String = "", channelCreatorEmail: String = "", isLatestContent: Bool = false, airScheduleLabel: String? = nil, showDeleteButton: Bool = false, onDelete: (() -> Void)? = nil, showEditButton: Bool = false, onEdit: (() -> Void)? = nil, isOwnContent: Bool = false) {
+    init(content: ChannelContent, onTap: @escaping () -> Void, onPlay: (() -> Void)? = nil, isLocalVideo: Bool = false, isUploadComplete: Bool = false, isPollingForThumbnail: Bool = false, channelCreatorUsername: String = "", channelCreatorEmail: String = "", isLatestContent: Bool = false, airScheduleLabel: String? = nil, showDeleteButton: Bool = false, onDelete: (() -> Void)? = nil, showEditButton: Bool = false, onEdit: (() -> Void)? = nil, isOwnContent: Bool = false, isFavorite: Bool = false, onFavorite: (() -> Void)? = nil) {
         self.content = content
         self.onTap = onTap
         self.onPlay = onPlay
@@ -7164,6 +7304,8 @@ struct ContentCard: View {
         self.showEditButton = showEditButton
         self.onEdit = onEdit
         self.isOwnContent = isOwnContent
+        self.isFavorite = isFavorite
+        self.onFavorite = onFavorite
     }
     
     
@@ -7370,23 +7512,42 @@ struct ContentCard: View {
                 .padding(8)
             }
             .overlay(alignment: .topTrailing) {
-                // Scheduled date badge
-                if isScheduled, let date = scheduledDate {
-                    HStack(spacing: 4) {
-                        Image(systemName: "clock.fill")
-                            .font(.system(size: 9))
-                        Text(formatScheduledDate(date))
-                            .font(.system(size: 10, weight: .semibold))
+                VStack(alignment: .trailing, spacing: 4) {
+                    // Favorite button - always visible
+                    if let onFavorite = onFavorite {
+                        Button(action: {
+                            onFavorite()
+                        }) {
+                            Image(systemName: isFavorite ? "star.fill" : "star")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundColor(isFavorite ? .yellow : .white.opacity(0.7))
+                                .padding(6)
+                                .background(
+                                    Circle()
+                                        .fill(isFavorite ? Color.yellow.opacity(0.2) : Color.black.opacity(0.5))
+                                )
+                        }
+                        .buttonStyle(PlainButtonStyle())
                     }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule()
-                            .fill(Color.blue.opacity(0.8))
-                    )
-                    .padding(8)
+                    
+                    // Scheduled date badge
+                    if isScheduled, let date = scheduledDate {
+                        HStack(spacing: 4) {
+                            Image(systemName: "clock.fill")
+                                .font(.system(size: 9))
+                            Text(formatScheduledDate(date))
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(Color.blue.opacity(0.8))
+                        )
+                    }
                 }
+                .padding(8)
             }
             .overlay {
                 // Overlay for scheduled content (like Netflix - prevents interaction)
