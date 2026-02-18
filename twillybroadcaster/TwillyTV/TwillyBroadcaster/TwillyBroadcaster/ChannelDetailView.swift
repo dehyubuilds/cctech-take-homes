@@ -24,7 +24,7 @@ struct ChannelDetailView: View {
     
     @State private var currentChannel: DiscoverableChannel // Mutable channel for live updates
     @State private var content: [ChannelContent] = []
-    @State private var isLoading = false
+    @State private var isLoading = true // Start as true to show loading immediately on first render
     @State private var isLoadingMore = false // Loading more items (pagination)
     @State private var errorMessage: String?
     @State private var selectedContent: ChannelContent?
@@ -267,6 +267,8 @@ struct ChannelDetailView: View {
                     loadAddedUsernames()
                     // Auto-add user's own username to see their own content
                     autoAddOwnUsername()
+                    // Load sent follow requests to track request status (for button states)
+                    loadSentFollowRequests(mergeWithExisting: false)
                     // Load received follow requests to show badge count
                     loadReceivedFollowRequests()
                 }
@@ -300,11 +302,43 @@ struct ChannelDetailView: View {
                     globalLocalVideoInfo = nil
                 }
                 
-                // Always load server content if not already loaded or if forceRefresh
-                if !hasLoaded || forceRefresh {
-                    print("🔄 [ChannelDetailView] Loading server content... (forceRefresh: \(forceRefresh), hasLocalVideo: \(localVideoContent != nil))")
+                // Show cached content immediately if available
+                let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
+                let hasCachedContent = isTwillyTV ? (!publicContent.isEmpty || !privateContent.isEmpty) : !content.isEmpty
+                
+                if hasCachedContent {
+                    // We have cached content - show it immediately
+                    if isTwillyTV {
+                        // Restore from cached arrays
+                        if showPrivateContent {
+                            content = privateContent
+                            nextToken = privateNextToken
+                            hasMoreContent = privateHasMore
+                        } else {
+                            content = publicContent
+                            nextToken = publicNextToken
+                            hasMoreContent = publicHasMore
+                        }
+                        bothViewsLoaded = true
+                        hasLoaded = true
+                        isLoading = false
+                        print("⚡ [ChannelDetailView] Showing cached content immediately - \(content.count) items")
+                    } else {
+                        // Non-Twilly TV - content array should already have data
+                        hasLoaded = true
+                        isLoading = false
+                        print("⚡ [ChannelDetailView] Showing cached content immediately - \(content.count) items")
+                    }
+                }
+                
+                // Always fetch new content in background (unless forceRefresh, then show loading)
+                let needsBothViewsReload = isTwillyTV && (!bothViewsLoaded || (publicContent.isEmpty && privateContent.isEmpty))
+                let needsReload = content.isEmpty && !isLoading
+                
+                if !hasCachedContent && (!hasLoaded || forceRefresh || needsBothViewsReload || needsReload) {
+                    print("🔄 [ChannelDetailView] Loading server content... (forceRefresh: \(forceRefresh), hasCachedContent: \(hasCachedContent))")
                     if localVideoContent == nil {
-                        // No local video - show loading spinner
+                        // Only show loading if we have no cached content
                         isLoading = true
                         if forceRefresh {
                             content = [] // Clear content on force refresh
@@ -312,6 +346,64 @@ struct ChannelDetailView: View {
                         errorMessage = nil
                     }
                     loadContent()
+                } else if hasCachedContent {
+                    // We have cached content - fetch new content in background silently
+                    print("🔄 [ChannelDetailView] Fetching new content in background (cached content shown)")
+                    Task {
+                        do {
+                            if isTwillyTV {
+                                // Fetch both views in background
+                                let viewerEmail = authService.userEmail
+                                let bothViews = try await channelService.fetchBothViewsContent(
+                                    channelName: currentChannel.channelName,
+                                    creatorEmail: currentChannel.creatorEmail,
+                                    viewerEmail: viewerEmail,
+                                    limit: 20,
+                                    forceRefresh: false
+                                )
+                                
+                                await MainActor.run {
+                                    // Update cached arrays silently
+                                    let strictlyPublic = bothViews.publicContent.filter { $0.isPrivateUsername != true }
+                                    let strictlyPrivate = bothViews.privateContent.filter { $0.isPrivateUsername == true }
+                                    
+                                    publicContent = strictlyPublic
+                                    privateContent = strictlyPrivate
+                                    publicNextToken = bothViews.publicNextToken
+                                    privateNextToken = bothViews.privateNextToken
+                                    publicHasMore = bothViews.publicHasMore
+                                    privateHasMore = bothViews.privateHasMore
+                                    bothViewsLoaded = true
+                                    
+                                    // Update current view if needed
+                                    if showPrivateContent {
+                                        content = strictlyPrivate
+                                        nextToken = privateNextToken
+                                        hasMoreContent = privateHasMore
+                                    } else {
+                                        content = strictlyPublic
+                                        nextToken = publicNextToken
+                                        hasMoreContent = publicHasMore
+                                    }
+                                    
+                                    cachedUnfilteredContent = publicContent + privateContent
+                                    print("✅ [ChannelDetailView] Background refresh complete - public: \(publicContent.count), private: \(privateContent.count)")
+                                }
+                            } else {
+                                // Non-Twilly TV - use single view refresh
+                                if let result = try? await refreshChannelContent() {
+                                    await MainActor.run {
+                                        updateContentWith(result.content, replaceLocal: false)
+                                        nextToken = result.nextToken
+                                        hasMoreContent = result.hasMore
+                                        print("✅ [ChannelDetailView] Background refresh complete - \(result.content.count) items")
+                                    }
+                                }
+                            }
+                        } catch {
+                            print("⚠️ [ChannelDetailView] Background refresh failed (non-critical): \(error.localizedDescription)")
+                        }
+                    }
                 } else {
                     print("✅ [ChannelDetailView] Already loaded and not forcing refresh, skipping load")
                 }
@@ -690,9 +782,13 @@ struct ChannelDetailView: View {
     private func handlePrivateToggle() {
         // Determine new state before toggling
         let willBePrivate = !showPrivateContent
+        let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
         
         // Switch between pre-loaded public and private content for instant toggle
-        if bothViewsLoaded && currentChannel.channelName.lowercased() == "twilly tv" {
+        // Use cached content if available, even if bothViewsLoaded is false (might have been set before navigation)
+        let hasCachedContent = isTwillyTV && (!publicContent.isEmpty || !privateContent.isEmpty)
+        
+        if (bothViewsLoaded || hasCachedContent) && isTwillyTV {
             if willBePrivate {
                 // CRITICAL SECURITY: Strictly filter privateContent to ensure ONLY private items
                 let strictlyPrivate = privateContent.filter { item in
@@ -713,6 +809,11 @@ struct ChannelDetailView: View {
                     content = content.filter { item in
                         favoriteContentIds.contains(item.SK)
                     }
+                }
+                
+                // Ensure we don't show empty state if content is empty but we're still loading
+                if content.isEmpty && !bothViewsLoaded {
+                    isLoading = true
                 }
                 
                 print("⚡ [ChannelDetailView] Instantly switched to private view - \(content.count) items (strictly filtered\(showFavoritesOnly ? " + favorites" : ""))")
@@ -738,11 +839,39 @@ struct ChannelDetailView: View {
                     }
                 }
                 
+                // Ensure we don't show empty state if content is empty but we're still loading
+                if content.isEmpty && !bothViewsLoaded {
+                    isLoading = true
+                }
+                
                 print("⚡ [ChannelDetailView] Instantly switched to public view - \(content.count) items (strictly filtered\(showFavoritesOnly ? " + favorites" : ""))")
+            }
+            
+            // If we successfully used cached content, mark bothViewsLoaded as true
+            if !bothViewsLoaded && hasCachedContent {
+                bothViewsLoaded = true
+                print("✅ [ChannelDetailView] Marked bothViewsLoaded = true after using cached content")
             }
         } else {
             // Fallback to filtering if both views aren't loaded yet
+            // Set loading state BEFORE filtering to prevent empty state flash
+            // Only set loading if we don't have cached content to filter from
+            let hasCachedToFilter = !cachedUnfilteredContent.isEmpty || !content.isEmpty
+            if !hasCachedToFilter {
+                isLoading = true
+                // If we don't have cached content and this is Twilly TV, trigger reload of both views
+                if isTwillyTV {
+                    print("🔄 [ChannelDetailView] No cached content for toggle - reloading both views...")
+                    loadContent()
+                }
+            }
             applyVisibilityFilterInstantly()
+            // After filtering, if content is still empty and we don't have previous content, keep loading
+            if content.isEmpty && previousContentBeforeFilter.isEmpty && !hasCachedToFilter {
+                isLoading = true
+            } else if !content.isEmpty {
+                isLoading = false
+            }
         }
         
         // Toggle the state
@@ -2481,15 +2610,16 @@ struct ChannelDetailView: View {
         print("   🧹 Clean username: '\(cleanUsername)'")
         print("   🔒 Is private: \(isPrivate)")
         
-        // For private requests, check if request already exists - if so, skip API call
+        // For private requests, check if request already exists (any status) - if so, skip API call
         if isPrivate {
             let usernameLower = cleanUsername.lowercased()
             let alreadyRequested = sentFollowRequests.contains(where: { 
-                $0.requestedUsername.lowercased() == usernameLower && $0.status == "pending"
+                $0.requestedUsername.lowercased() == usernameLower && 
+                ($0.status.lowercased() == "pending" || $0.status.lowercased() == "accepted" || $0.status.lowercased() == "declined")
             })
             if alreadyRequested {
                 print("   ℹ️ Request already exists for private user: \(cleanUsername) - skipping API call")
-                // UI should already be showing "Requested" - don't reload to avoid flicker
+                // UI should already be showing correct state - don't reload to avoid flicker
                 return
             }
         }
@@ -2922,21 +3052,39 @@ struct ChannelDetailView: View {
     
     // Check if a follow request was already sent for this username
     // Returns true if there's any request record (pending, accepted, or active)
+    // CRITICAL: One-way flow - once "Requested", can't go back to "Request"
+    // Standard lifecycle (like Instagram/Snapchat):
+    // Request → Requested (pending/declined) → Approved (accepted) → Rejected (if removed)
+    // CRITICAL: Once "Requested", can't go back to "Request" (one-way flow)
+    // If declined, requester still sees "Requested" (can't request again)
     private func isFollowRequestSent(_ username: String) -> Bool {
         // Remove 🔒 from username for comparison
         let usernameLower = username.lowercased().replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces)
         let isSent = sentFollowRequests.contains(where: { 
             let requestedLower = $0.requestedUsername.lowercased()
             let status = $0.status.lowercased()
-            // Show "Requested" for pending, accepted, or active status
-            // Don't show for rejected or cancelled
+            // Show "Requested" for:
+            // - pending: request sent, waiting for response
+            // - declined: request declined, but requester still sees "Requested" (can't request again)
+            // - accepted: request approved (but also check if in addedUsernames for "Approved" button)
+            // Don't show for rejected (was approved then removed)
             return requestedLower == usernameLower && 
-                   (status == "pending" || status == "accepted" || status == "active")
+                   (status == "pending" || status == "declined" || status == "accepted")
         })
         if isSent {
             print("✅ [ChannelDetailView] Follow request already sent for: \(username)")
         }
         return isSent
+    }
+    
+    // Check if a follow request was approved (accepted status)
+    // If approved, user should see "Approved" with remove option
+    private func isFollowRequestApproved(_ username: String) -> Bool {
+        let usernameLower = username.lowercased().replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces)
+        return sentFollowRequests.contains(where: { 
+            $0.requestedUsername.lowercased() == usernameLower && 
+            $0.status.lowercased() == "accepted"
+        })
     }
     
     // Load sent follow requests
@@ -2946,21 +3094,25 @@ struct ChannelDetailView: View {
         isLoadingSentRequests = true
         Task {
             do {
-                // Fetch "pending", "active", and "accepted" requests to track all states
+                // Fetch all request states to track lifecycle
+                // Standard lifecycle: pending (requested) → accepted (approved) OR declined (still shows "Requested")
                 // "accepted" means the request was accepted and user can now see private content
+                // "declined" means request was declined, but requester still sees "Requested" (can't request again)
                 async let pendingResponse = ChannelService.shared.getSentFollowRequests(requesterEmail: userEmail, status: "pending")
                 async let activeResponse = ChannelService.shared.getSentFollowRequests(requesterEmail: userEmail, status: "active")
                 async let acceptedResponse = ChannelService.shared.getSentFollowRequests(requesterEmail: userEmail, status: "accepted")
+                async let declinedResponse = ChannelService.shared.getSentFollowRequests(requesterEmail: userEmail, status: "declined")
                 
-                let (pendingResult, activeResult, acceptedResult) = try await (pendingResponse, activeResponse, acceptedResponse)
+                let (pendingResult, activeResult, acceptedResult, declinedResult) = try await (pendingResponse, activeResponse, acceptedResponse, declinedResponse)
                 
                 await MainActor.run {
                     // CRITICAL: Filter out removed usernames from server responses
                     let allPendingRequests = (pendingResult.requests ?? []).filter { !$0.requestedUsername.trimmingCharacters(in: .whitespaces).isEmpty }
                     let allActiveRequests = (activeResult.requests ?? []).filter { !$0.requestedUsername.trimmingCharacters(in: .whitespaces).isEmpty }
                     let allAcceptedRequests = (acceptedResult.requests ?? []).filter { !$0.requestedUsername.trimmingCharacters(in: .whitespaces).isEmpty }
+                    let allDeclinedRequests = (declinedResult.requests ?? []).filter { !$0.requestedUsername.trimmingCharacters(in: .whitespaces).isEmpty }
                     
-                    print("🔍 [DEBUG] loadSentFollowRequests - Server returned \(allPendingRequests.count) pending + \(allActiveRequests.count) active + \(allAcceptedRequests.count) accepted")
+                    print("🔍 [DEBUG] loadSentFollowRequests - Server returned \(allPendingRequests.count) pending + \(allActiveRequests.count) active + \(allAcceptedRequests.count) accepted + \(allDeclinedRequests.count) declined")
                     print("🔍 [DEBUG] Current removedUsernames: \(removedUsernames.map { $0 }.joined(separator: ", "))")
                     
                     // Filter out removed usernames
@@ -2991,7 +3143,17 @@ struct ChannelDetailView: View {
                         return !isRemoved
                     }
                     
-                    // Merge all requests (avoid duplicates by username, prioritize accepted > active > pending)
+                    let declinedRequests = allDeclinedRequests.filter { request in
+                        let lowercased = request.requestedUsername.lowercased()
+                        let isRemoved = removedUsernames.contains(lowercased)
+                        if isRemoved {
+                            print("🚫 [DEBUG] Filtering out removed username from declined requests: '\(request.requestedUsername)' (lowercased: '\(lowercased)')")
+                        }
+                        return !isRemoved
+                    }
+                    
+                    // Merge all requests (avoid duplicates by username, prioritize accepted > active > pending > declined)
+                    // Declined requests should still show as "Requested" from requester's perspective
                     var allUsernames = Set(serverRequests.map { $0.requestedUsername.lowercased() })
                     for activeRequest in activeRequests {
                         if !allUsernames.contains(activeRequest.requestedUsername.lowercased()) {
@@ -3008,6 +3170,15 @@ struct ChannelDetailView: View {
                         } else {
                             serverRequests.append(acceptedRequest)
                             print("✅ [ChannelDetailView] Added accepted request: \(acceptedRequest.requestedUsername)")
+                        }
+                    }
+                    
+                    for declinedRequest in declinedRequests {
+                        // For declined requests, add them (they show as "Requested" from requester's perspective)
+                        if !allUsernames.contains(declinedRequest.requestedUsername.lowercased()) {
+                            serverRequests.append(declinedRequest)
+                            allUsernames.insert(declinedRequest.requestedUsername.lowercased())
+                            print("✅ [ChannelDetailView] Added declined request (shows as 'Requested'): \(declinedRequest.requestedUsername)")
                         }
                     }
                     
@@ -3029,7 +3200,8 @@ struct ChannelDetailView: View {
                             let existingUsername = existingRequest.requestedUsername.lowercased()
                             let hasValidStatus = existingRequest.status.lowercased() == "pending" || 
                                                  existingRequest.status.lowercased() == "active" || 
-                                                 existingRequest.status.lowercased() == "accepted"
+                                                 existingRequest.status.lowercased() == "accepted" ||
+                                                 existingRequest.status.lowercased() == "declined"
                             
                             if !serverUsernames.contains(existingUsername) && hasValidStatus {
                                 // This is an optimistic update not yet on server - keep it
@@ -3414,6 +3586,20 @@ struct ChannelDetailView: View {
                     addedUsernames.removeAll { $0.streamerUsername.lowercased() == username.lowercased() }
                     showAddedUsernamesDropdown = false
                     
+                    // CRITICAL: Update sentFollowRequests status to "rejected" if it was "accepted"
+                    // This maintains the lifecycle: Request → Requested → Approved → Rejected (if removed)
+                    if let index = sentFollowRequests.firstIndex(where: { 
+                        $0.requestedUsername.lowercased() == username.lowercased() && 
+                        $0.status.lowercased() == "accepted"
+                    }) {
+                        // Update status to rejected (backend already did this, but update local state)
+                        var updatedRequest = sentFollowRequests[index]
+                        // Note: SentFollowRequest is immutable, so we need to reload from server
+                        print("🔄 [ChannelDetailView] Request was approved, now removed - status should be 'rejected'")
+                        // Reload sent requests to get updated status
+                        loadSentFollowRequests(mergeWithExisting: false)
+                    }
+                    
                     // Save to UserDefaults immediately
                     saveAddedUsernamesToUserDefaults()
                     
@@ -3645,6 +3831,8 @@ struct ChannelDetailView: View {
     // Deselect requested username - reverts "Requested" back to "Request🔒"
     // CRITICAL: This should ONLY affect sentFollowRequests, NEVER touch addedUsernames
     private func deselectRequestedUsername(_ username: String, email: String?) {
+        // CRITICAL: This function should only be called for pending requests (not approved)
+        // Once approved, use removeUsername() which handles the "rejected" status
         guard let userEmail = authService.userEmail else {
             print("⚠️ [ChannelDetailView] Cannot deselect - userEmail is nil")
             return
@@ -3653,12 +3841,12 @@ struct ChannelDetailView: View {
         let cleanUsername = username.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces)
         
         // Find the SentFollowRequest object to get the email
-        // Check for any status (pending, active, accepted) - not just pending
+        // Only allow deselection for pending requests (not approved - those use removeUsername)
         guard let sentRequest = sentFollowRequests.first(where: { 
             $0.requestedUsername.lowercased() == cleanUsername.lowercased() && 
-            ($0.status.lowercased() == "pending" || $0.status.lowercased() == "active" || $0.status.lowercased() == "accepted")
+            $0.status.lowercased() == "pending"
         }) else {
-            print("⚠️ [ChannelDetailView] Could not find follow request for username: \(cleanUsername)")
+            print("⚠️ [ChannelDetailView] Could not find pending follow request for username: \(cleanUsername)")
             return
         }
         
@@ -4171,19 +4359,19 @@ struct ChannelDetailView: View {
             .padding(.top, 8)
             .padding(.bottom, 20)
         } else {
-            // Show "no content" message if there's truly no content (after loading completes)
-            if content.isEmpty && hasConfirmedNoContent {
-                // Show empty state after confirming there's truly no content
-                emptyStateView
-            } else if content.isEmpty && !isLoading && hasLoaded {
-                // If we've loaded and have no content, show empty state
-                emptyStateView
-            } else if content.isEmpty && isLoading {
+            // Show "no content" message ONLY if we've confirmed there's truly no content
+            // CRITICAL: Never show empty state unless hasConfirmedNoContent is explicitly true
+            // Always show loading if we're loading, haven't loaded yet, or haven't confirmed no content
+            if isLoading {
                 // Still loading - show loading indicator
                 loadingView
-            } else if content.isEmpty {
-                // Fallback: show empty state
+            } else if content.isEmpty && hasConfirmedNoContent {
+                // Show empty state ONLY after explicitly confirming there's truly no content
                 emptyStateView
+            } else {
+                // Fallback: show loading (don't assume empty until we've confirmed)
+                // This handles: content.isEmpty && !hasConfirmedNoContent
+                loadingView
             }
         }
     }
@@ -4236,6 +4424,15 @@ struct ChannelDetailView: View {
                 ForEach(Array(groupedResults.keys.sorted()), id: \.self) { baseUsernameKey in
                     searchResultRow(for: baseUsernameKey, in: groupedResults)
                 }
+            }
+        }
+        .onAppear {
+            // CRITICAL: Ensure sentFollowRequests and addedUsernames are loaded when search results appear
+            // This ensures button states (Approved/Requested) are correct
+            if sentFollowRequests.isEmpty || addedUsernames.isEmpty {
+                print("🔄 [ChannelDetailView] Loading sentFollowRequests and addedUsernames for search results...")
+                loadSentFollowRequests(mergeWithExisting: true)
+                loadAddedUsernames(mergeWithExisting: true)
             }
         }
         .frame(maxHeight: 300) // Maximum height for scrollable dropdown
@@ -4374,23 +4571,71 @@ struct ChannelDetailView: View {
     private func privateAccountButton(for result: UsernameSearchResult) -> some View {
         let cleanPrivateUsername = result.username.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces)
         
-        // Priority order: Requested > Being Added (spinner) > Request🔒 button
-        // Private button always shows "Requested" after click, never "Added"
-        if isFollowRequestSent(result.username) {
-            // Check for pending request FIRST - allow deselection
+        // Priority order: Approved (with remove) > Requested > Being Added (spinner) > Request🔒 button
+        // Standard lifecycle (like Instagram/Snapchat):
+        // Request → Requested (pending/declined) → Approved (accepted, in addedUsernames) → Rejected (if removed)
+        // CRITICAL: Once "Requested", can't go back to "Request" (one-way flow)
+        // If declined, requester still sees "Requested" (can't request again)
+        
+        // Check if request was approved AND user is in addedUsernames (has access)
+        let isApproved = isFollowRequestApproved(result.username)
+        let isInAddedUsernames = addedUsernames.contains(where: { 
+            $0.streamerUsername.lowercased() == cleanPrivateUsername.lowercased() 
+        })
+        
+        // DEBUG: Log button state determination
+        print("🔍 [ChannelDetailView] Button state for '\(cleanPrivateUsername)':")
+        print("   isApproved: \(isApproved)")
+        print("   isInAddedUsernames: \(isInAddedUsernames)")
+        print("   sentFollowRequests count: \(sentFollowRequests.count)")
+        print("   addedUsernames count: \(addedUsernames.count)")
+        if isApproved {
+            let approvedRequest = sentFollowRequests.first(where: { 
+                $0.requestedUsername.lowercased() == cleanPrivateUsername.lowercased() && 
+                $0.status.lowercased() == "accepted"
+            })
+            print("   Approved request found: \(approvedRequest != nil ? "YES" : "NO")")
+            if let req = approvedRequest {
+                print("   Request details: username=\(req.requestedUsername), status=\(req.status)")
+            }
+        }
+        if !isInAddedUsernames {
+            let matchingAdded = addedUsernames.filter { 
+                $0.streamerUsername.lowercased() == cleanPrivateUsername.lowercased() 
+            }
+            print("   Matching addedUsernames: \(matchingAdded.count)")
+            print("   All addedUsernames: \(addedUsernames.map { $0.streamerUsername }.joined(separator: ", "))")
+        }
+        
+        if isApproved && isInAddedUsernames {
+            // Request was approved - show "Approved" with remove option
+            // User is in addedUsernames, can remove which sets status to "rejected"
             Button(action: {
-                print("🟡 [ChannelDetailView] REQUESTED BUTTON TAPPED - deselecting")
-                deselectRequestedUsername(result.username, email: result.email)
+                print("🟡 [ChannelDetailView] APPROVED BUTTON TAPPED - removing")
+                removeUsername(cleanPrivateUsername)
             }) {
-                Text("Requested")
+                Text("Approved")
                     .font(.caption)
                     .fontWeight(.semibold)
-                    .foregroundColor(.orange)
+                    .foregroundColor(.green)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                    .background(Color.orange.opacity(0.2))
+                    .background(Color.green.opacity(0.2))
                     .cornerRadius(6)
             }
+        } else if isFollowRequestSent(result.username) {
+            // Request was sent but not yet approved (or declined) - show "Requested" (one-way, can't go back)
+            // CRITICAL: Once "Requested", button should NOT allow deselection (one-way flow)
+            // This includes: pending (waiting), declined (still shows "Requested" from requester's perspective)
+            // Only show "Requested" - no action button (can't cancel once requested)
+            Text("Requested")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundColor(.orange)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.orange.opacity(0.2))
+                .cornerRadius(6)
         } else {
             // Check if THIS SPECIFIC private button is being added (not public)
             // Only show spinner for private button if it's the private key being added
@@ -5113,13 +5358,12 @@ struct ChannelDetailView: View {
         // Load creator's air schedule for label display
         loadCreatorAirSchedule()
         
-        // Don't set isLoading here if we already have content (local video case)
-        // Only set it if we don't have content yet
-        if content.isEmpty {
-            Task { @MainActor in
-                isLoading = true
-                errorMessage = nil
-            }
+        // CRITICAL: Set isLoading synchronously to prevent "No content available" flash
+        // ALWAYS set isLoading = true when starting to load (unless we have local video)
+        // This ensures loading view shows immediately, even before async work starts
+        if localVideoContent == nil {
+            isLoading = true
+            errorMessage = nil
         }
         
         Task {
@@ -5241,38 +5485,32 @@ struct ChannelDetailView: View {
                         let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
                         
                         if isTwillyTV && bothViewsLoaded {
-                            // Reload both views simultaneously
-                            async let publicResult = channelService.fetchChannelContent(
-                                channelName: currentChannel.channelName,
-                                creatorEmail: currentChannel.creatorEmail,
-                                viewerEmail: viewerEmail,
-                                limit: 20,
-                                nextToken: nil,
-                                forceRefresh: true,
-                                showPrivateContent: false
-                            )
-                            async let privateResult = channelService.fetchChannelContent(
-                                channelName: currentChannel.channelName,
-                                creatorEmail: currentChannel.creatorEmail,
-                                viewerEmail: viewerEmail,
-                                limit: 20,
-                                nextToken: nil,
-                                forceRefresh: true,
-                                showPrivateContent: true
-                            )
+                            // Reload both views in a single request
+                            // CRITICAL: Set isLoading immediately to prevent "No content available" flash
+                            await MainActor.run {
+                                isLoading = true
+                                errorMessage = nil
+                            }
                             
                             do {
-                                let (publicData, privateData) = try await (publicResult, privateResult)
+                                let bothViews = try await channelService.fetchBothViewsContent(
+                                    channelName: currentChannel.channelName,
+                                    creatorEmail: currentChannel.creatorEmail,
+                                    viewerEmail: viewerEmail,
+                                    limit: 20,
+                                    forceRefresh: true
+                                )
+                                
                                 await MainActor.run {
                                     // CRITICAL SECURITY: Strictly filter server responses - server might return wrong items
-                                    let strictlyPublic = publicData.content.filter { item in
+                                    let strictlyPublic = bothViews.publicContent.filter { item in
                                         let isPrivate = item.isPrivateUsername == true
                                         if isPrivate {
                                             print("🚫 [ChannelDetailView] CRITICAL SECURITY: Server returned private item in public response - filtering: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"))")
                                         }
                                         return !isPrivate
                                     }
-                                    let strictlyPrivate = privateData.content.filter { item in
+                                    let strictlyPrivate = bothViews.privateContent.filter { item in
                                         let isPrivate = item.isPrivateUsername == true
                                         if !isPrivate {
                                             print("🚫 [ChannelDetailView] CRITICAL SECURITY: Server returned public item in private response - filtering: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"))")
@@ -5282,10 +5520,10 @@ struct ChannelDetailView: View {
                                     
                                     publicContent = strictlyPublic
                                     privateContent = strictlyPrivate
-                                    publicNextToken = publicData.nextToken
-                                    privateNextToken = privateData.nextToken
-                                    publicHasMore = publicData.hasMore
-                                    privateHasMore = privateData.hasMore
+                                    publicNextToken = bothViews.publicNextToken
+                                    privateNextToken = bothViews.privateNextToken
+                                    publicHasMore = bothViews.publicHasMore
+                                    privateHasMore = bothViews.privateHasMore
                                     
                                     // Update current view - use strictly filtered arrays
                                     if showPrivateContent {
@@ -5301,7 +5539,7 @@ struct ChannelDetailView: View {
                                     cachedUnfilteredContent = publicContent + privateContent
                                     isLoading = false
                                     hasLoaded = true
-                                    print("✅ [ChannelDetailView] Both views reloaded - public: \(publicContent.count), private: \(privateContent.count)")
+                                    print("✅ [ChannelDetailView] Both views reloaded in single request - public: \(publicContent.count), private: \(privateContent.count)")
                                 }
                             } catch {
                                 print("❌ [ChannelDetailView] Error reloading both views: \(error.localizedDescription)")
@@ -5353,54 +5591,50 @@ struct ChannelDetailView: View {
                     let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
                     
                     if isTwillyTV && !bothViewsLoaded {
-                        // Load both public and private content simultaneously for instant toggle
-                        print("🔄 [ChannelDetailView] Loading both public and private content simultaneously...")
-                        async let publicResult = channelService.fetchChannelContent(
-                            channelName: currentChannel.channelName,
-                            creatorEmail: currentChannel.creatorEmail,
-                            viewerEmail: viewerEmail,
-                            limit: 20,
-                            nextToken: nil,
-                            forceRefresh: forceRefresh,
-                            showPrivateContent: false // Public content
-                        )
-                        async let privateResult = channelService.fetchChannelContent(
-                            channelName: currentChannel.channelName,
-                            creatorEmail: currentChannel.creatorEmail,
-                            viewerEmail: viewerEmail,
-                            limit: 20,
-                            nextToken: nil,
-                            forceRefresh: forceRefresh,
-                            showPrivateContent: true // Private content
-                        )
+                        // Load both public and private content in a single request for instant toggle
+                        print("🔄 [ChannelDetailView] Loading both views in single request...")
+                        
+                        // isLoading already set synchronously in loadContent() - no need to set again
                         
                         do {
-                            let (publicData, privateData) = try await (publicResult, privateResult)
+                            let bothViews = try await channelService.fetchBothViewsContent(
+                                channelName: currentChannel.channelName,
+                                creatorEmail: currentChannel.creatorEmail,
+                                viewerEmail: viewerEmail,
+                                limit: 20,
+                                forceRefresh: forceRefresh
+                            )
                             
-                            await MainActor.run {
-                                // CRITICAL SECURITY: Strictly filter server responses - server might return wrong items
-                                let strictlyPublic = publicData.content.filter { item in
+                            // Filter on background thread for performance, then update UI incrementally
+                            let strictlyPublic = await Task.detached(priority: .userInitiated) {
+                                bothViews.publicContent.filter { item in
                                     let isPrivate = item.isPrivateUsername == true
                                     if isPrivate {
                                         print("🚫 [ChannelDetailView] CRITICAL SECURITY: Server returned private item in public response - filtering: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"))")
                                     }
                                     return !isPrivate
                                 }
-                                let strictlyPrivate = privateData.content.filter { item in
+                            }.value
+                            
+                            let strictlyPrivate = await Task.detached(priority: .userInitiated) {
+                                bothViews.privateContent.filter { item in
                                     let isPrivate = item.isPrivateUsername == true
                                     if !isPrivate {
                                         print("🚫 [ChannelDetailView] CRITICAL SECURITY: Server returned public item in private response - filtering: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"))")
                                     }
                                     return isPrivate
                                 }
-                                
+                            }.value
+                            
+                            // Update UI immediately with filtered content
+                            await MainActor.run {
                                 // Store both separately - use strictly filtered arrays
                                 publicContent = strictlyPublic
                                 privateContent = strictlyPrivate
-                                publicNextToken = publicData.nextToken
-                                privateNextToken = privateData.nextToken
-                                publicHasMore = publicData.hasMore
-                                privateHasMore = privateData.hasMore
+                                publicNextToken = bothViews.publicNextToken
+                                privateNextToken = bothViews.privateNextToken
+                                publicHasMore = bothViews.publicHasMore
+                                privateHasMore = bothViews.privateHasMore
                                 bothViewsLoaded = true
                                 
                                 // Set current content based on showPrivateContent - use strictly filtered arrays
@@ -5419,12 +5653,12 @@ struct ChannelDetailView: View {
                                 
                                 isLoading = false
                                 hasLoaded = true
-                                print("✅ [ChannelDetailView] Both views loaded - public: \(publicContent.count), private: \(privateContent.count), showing: \(showPrivateContent ? "private" : "public")")
-                                
-                                // Check and delete short videos after content is loaded
-                                Task {
-                                    await checkAndDeleteShortVideos()
-                                }
+                                print("✅ [ChannelDetailView] Both views loaded in single request - public: \(publicContent.count), private: \(privateContent.count), showing: \(showPrivateContent ? "private" : "public")")
+                            }
+                            
+                            // Check and delete short videos after content is loaded (background task)
+                            Task.detached(priority: .utility) {
+                                await checkAndDeleteShortVideos()
                             }
                         } catch {
                             print("❌ [ChannelDetailView] Error loading both views: \(error.localizedDescription)")
@@ -5503,20 +5737,24 @@ struct ChannelDetailView: View {
     }
     
     private func updateContentWith(_ fetchedContent: [ChannelContent], replaceLocal: Bool = false) {
-        // CRITICAL: Optimize to prevent UI freeze - reduce logging and use Task.yield for heavy operations
-        print("🔄 [ChannelDetailView] Updating with \(fetchedContent.count) items")
+        // CRITICAL: Optimize for speed - process efficiently, update UI immediately
+        let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
         
         // For Twilly TV, split content into public and private arrays for instant toggle
-        let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
         if isTwillyTV {
             // CRITICAL: Strict separation - public content must NEVER be in private array and vice versa
-            // Only items where isPrivateUsername is EXPLICITLY true go to private
-            // All others (false, nil, undefined) go to public
-            // CRITICAL: Reduce logging in filters to prevent UI freeze - only log summary
-            let publicItems = fetchedContent.filter { $0.isPrivateUsername != true }
-            let privateItems = fetchedContent.filter { $0.isPrivateUsername == true }
-            if publicItems.count + privateItems.count != fetchedContent.count {
-                print("🚫 [ChannelDetailView] SECURITY: Filtered items during split")
+            // Process filtering efficiently in one pass
+            var publicItems: [ChannelContent] = []
+            var privateItems: [ChannelContent] = []
+            publicItems.reserveCapacity(fetchedContent.count)
+            privateItems.reserveCapacity(fetchedContent.count)
+            
+            for item in fetchedContent {
+                if item.isPrivateUsername == true {
+                    privateItems.append(item)
+                } else {
+                    publicItems.append(item)
+                }
             }
             
             // Update public and private arrays
@@ -5524,50 +5762,27 @@ struct ChannelDetailView: View {
                 publicContent = publicItems
                 privateContent = privateItems
             } else {
-                // Merge with existing, removing duplicates
-                var mergedPublic = publicContent
-                var mergedPrivate = privateContent
+                // Merge with existing, removing duplicates using Set for O(1) lookup
                 var seenPublicSKs = Set(publicContent.map { $0.SK })
                 var seenPrivateSKs = Set(privateContent.map { $0.SK })
                 
-                for item in publicItems {
-                    if !seenPublicSKs.contains(item.SK) {
-                        mergedPublic.append(item)
-                        seenPublicSKs.insert(item.SK)
-                    }
+                // Add new items efficiently
+                for item in publicItems where !seenPublicSKs.contains(item.SK) {
+                    publicContent.append(item)
+                    seenPublicSKs.insert(item.SK)
                 }
-                for item in privateItems {
-                    if !seenPrivateSKs.contains(item.SK) {
-                        mergedPrivate.append(item)
-                        seenPrivateSKs.insert(item.SK)
-                    }
+                for item in privateItems where !seenPrivateSKs.contains(item.SK) {
+                    privateContent.append(item)
+                    seenPrivateSKs.insert(item.SK)
                 }
-                
-                // CRITICAL SECURITY: Re-filter merged arrays to ensure no contamination (reduced logging)
-                let reFilteredPublic = mergedPublic.filter { $0.isPrivateUsername != true }
-                let reFilteredPrivate = mergedPrivate.filter { $0.isPrivateUsername == true }
-                if reFilteredPublic.count != mergedPublic.count || reFilteredPrivate.count != mergedPrivate.count {
-                    print("🚫 [ChannelDetailView] SECURITY: Re-filtered merged arrays")
-                }
-                
-                publicContent = reFilteredPublic
-                privateContent = reFilteredPrivate
             }
             
-            // CRITICAL SECURITY: Also filter the currently displayed content if it doesn't match the view (reduced logging)
+            // Update current view content immediately
             if showPrivateContent {
-                let strictlyPrivate = content.filter { $0.isPrivateUsername == true }
-                if strictlyPrivate.count != content.count {
-                    content = strictlyPrivate
-                }
+                content = privateContent
             } else {
-                let strictlyPublic = content.filter { $0.isPrivateUsername != true }
-                if strictlyPublic.count != content.count {
-                    content = strictlyPublic
-                }
+                content = publicContent
             }
-            
-            print("💾 [ChannelDetailView] Updated arrays - public: \(publicContent.count), private: \(privateContent.count)")
         }
         
         // Populate cache with unfiltered content when content is updated
@@ -6504,7 +6719,13 @@ struct ChannelDetailView: View {
                         if content.isEmpty && publicContent.isEmpty && privateContent.isEmpty {
                             isLoading = false
                             hasLoaded = true
-                            hasConfirmedNoContent = true
+                            // For Twilly TV, only confirm no content if both views are loaded and both are empty
+                            let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
+                            if isTwillyTV && bothViewsLoaded {
+                                hasConfirmedNoContent = true
+                            } else if !isTwillyTV {
+                                hasConfirmedNoContent = true
+                            }
                         } else {
                             // Refresh content
                             Task {
@@ -6514,7 +6735,11 @@ struct ChannelDetailView: View {
                                         if result?.content.isEmpty == true {
                                             isLoading = false
                                             hasLoaded = true
-                                            hasConfirmedNoContent = true
+                                            // For Twilly TV, never confirm "no content" unless both views are checked
+                                            let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
+                                            if !isTwillyTV {
+                                                hasConfirmedNoContent = true
+                                            }
                                         }
                                     }
                                 } catch {
