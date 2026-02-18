@@ -3304,21 +3304,26 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
     
     // MARK: - Follow Requests
     
-    func requestFollow(requesterEmail: String, requestedUsername: String) async throws -> FollowRequestResponse {
+    func requestFollow(requesterEmail: String, requestedUsername: String, requesterUsername: String? = nil) async throws -> FollowRequestResponse {
         guard let url = URL(string: "\(baseURL)/users/request-follow") else {
             throw ChannelServiceError.invalidURL
         }
         
-        print("📤 [ChannelService] requestFollow: requesterEmail=\(requesterEmail), requestedUsername=\(requestedUsername)")
+        print("📤 [ChannelService] requestFollow: requesterEmail=\(requesterEmail), requestedUsername=\(requestedUsername), requesterUsername=\(requesterUsername ?? "nil")")
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "requesterEmail": requesterEmail,
             "requestedUsername": requestedUsername
         ]
+        
+        // Include requesterUsername if provided (frontend already knows it)
+        if let requesterUsername = requesterUsername, !requesterUsername.isEmpty {
+            body["requesterUsername"] = requesterUsername
+        }
         
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
@@ -3902,6 +3907,7 @@ struct FollowRequestResponse: Codable {
     let message: String?
     let status: String?
     let autoAccepted: Bool?
+    let deletedType: String? // 'ADDED_USERNAME', 'FOLLOW_REQUEST', 'BOTH', or null
 }
 
 struct FollowRequestsResponse: Codable {

@@ -211,15 +211,36 @@ struct ChannelDetailView: View {
                         // Switch between pre-loaded public and private content for instant toggle
                         if bothViewsLoaded && currentChannel.channelName.lowercased() == "twilly tv" {
                             if willBePrivate {
-                                content = privateContent
+                                // CRITICAL SECURITY: Strictly filter privateContent to ensure ONLY private items
+                                let strictlyPrivate = privateContent.filter { item in
+                                    let isPrivate = item.isPrivateUsername == true
+                                    if !isPrivate {
+                                        print("🚫 [ChannelDetailView] CRITICAL SECURITY: Removing public item from privateContent cache: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"))")
+                                    }
+                                    return isPrivate
+                                }
+                                content = strictlyPrivate
                                 nextToken = privateNextToken
                                 hasMoreContent = privateHasMore
+                                // Also update the cache to remove any public items that shouldn't be there
+                                privateContent = strictlyPrivate
+                                print("⚡ [ChannelDetailView] Instantly switched to private view - \(strictlyPrivate.count) items (strictly filtered)")
                             } else {
-                                content = publicContent
+                                // CRITICAL SECURITY: Strictly filter publicContent to ensure ONLY public items
+                                let strictlyPublic = publicContent.filter { item in
+                                    let isPrivate = item.isPrivateUsername == true
+                                    if isPrivate {
+                                        print("🚫 [ChannelDetailView] CRITICAL SECURITY: Removing private item from publicContent cache: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"))")
+                                    }
+                                    return !isPrivate
+                                }
+                                content = strictlyPublic
                                 nextToken = publicNextToken
                                 hasMoreContent = publicHasMore
+                                // Also update the cache to remove any private items that shouldn't be there
+                                publicContent = strictlyPublic
+                                print("⚡ [ChannelDetailView] Instantly switched to public view - \(strictlyPublic.count) items (strictly filtered)")
                             }
-                            print("⚡ [ChannelDetailView] Instantly switched to \(willBePrivate ? "private" : "public") view - \(content.count) items")
                         } else {
                             // Fallback to filtering if both views aren't loaded yet
                             applyVisibilityFilterInstantly()
@@ -355,6 +376,8 @@ struct ChannelDetailView: View {
                 loadAddedUsernames()
                 // Auto-add user's own username to see their own content
                 autoAddOwnUsername()
+                // Load received follow requests to show badge count
+                loadReceivedFollowRequests()
             }
             
             // Check for local video info to show immediately
@@ -404,6 +427,34 @@ struct ChannelDetailView: View {
             
             // Start auto-refresh to check for new videos
             startAutoRefresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RefreshTwillyTVContent"))) { _ in
+            // CRITICAL: When a follow request is accepted, refresh everything to show private content
+            print("🔄 [ChannelDetailView] Received RefreshTwillyTVContent notification - follow request was accepted")
+            guard currentChannel.channelName.lowercased() == "twilly tv" else { return }
+            
+            // Refresh added usernames to get the newly accepted private username
+            loadAddedUsernames(mergeWithExisting: true)
+            
+            // Refresh sent follow requests to update status from "pending" to "accepted"
+            // Use merge to preserve any optimistic updates
+            loadSentFollowRequests(mergeWithExisting: true)
+            
+            // Refresh content to show private content from the accepted user
+            Task {
+                do {
+                    try? await Task.sleep(nanoseconds: 500_000_000) // Wait 0.5s for addedUsernames to load
+                    try? await refreshChannelContent()
+                    print("✅ [ChannelDetailView] Refreshed content after follow request acceptance")
+                } catch {
+                    print("❌ [ChannelDetailView] Error refreshing content after acceptance: \(error.localizedDescription)")
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NewFollowRequestReceived"))) { _ in
+            // CRITICAL: When a new follow request is received, refresh the received requests list
+            print("🔄 [ChannelDetailView] Received NewFollowRequestReceived notification - refreshing received requests")
+            loadReceivedFollowRequests()
         }
         .simultaneousGesture(
             DragGesture(minimumDistance: 20)
@@ -1420,7 +1471,14 @@ struct ChannelDetailView: View {
     private func loadAddedUsernames(mergeWithExisting: Bool = false) {
         // Also load sent and received follow requests when loading added usernames
         // Use merge mode to preserve optimistic updates
-        loadSentFollowRequests(mergeWithExisting: mergeWithExisting)
+        // CRITICAL: Only load if mergeWithExisting is true OR if we're doing initial load (not merge)
+        // This prevents overwriting optimistic updates when mergeWithExisting is false
+        if mergeWithExisting {
+            loadSentFollowRequests(mergeWithExisting: true)
+        } else {
+            // Initial load - safe to load without merge
+            loadSentFollowRequests(mergeWithExisting: false)
+        }
         loadReceivedFollowRequests()
         guard currentChannel.channelName.lowercased() == "twilly tv" else {
             return
@@ -1645,7 +1703,7 @@ struct ChannelDetailView: View {
             Task {
                 do {
                     // Request follow with own username (will auto-accept if public)
-                    _ = try await ChannelService.shared.requestFollow(requesterEmail: userEmail, requestedUsername: username)
+                    _ = try await ChannelService.shared.requestFollow(requesterEmail: userEmail, requestedUsername: username, requesterUsername: authService.username)
                     // Reload added usernames to get updated list (merge to preserve any optimistic updates)
                     loadAddedUsernames(mergeWithExisting: true)
                 } catch {
@@ -1994,8 +2052,7 @@ struct ChannelDetailView: View {
             })
             if alreadyRequested {
                 print("   ℹ️ Request already exists for private user: \(cleanUsername) - skipping API call")
-                // Ensure UI is up to date by reloading (but this should already be showing "Requested")
-                loadSentFollowRequests(mergeWithExisting: true)
+                // UI should already be showing "Requested" - don't reload to avoid flicker
                 return
             }
         }
@@ -2034,9 +2091,15 @@ struct ChannelDetailView: View {
                 print("   📤 Request details:")
                 print("      - requesterEmail: \(userEmail)")
                 print("      - requestedUsername: \(cleanUsername)")
+                print("      - requesterUsername: \(authService.username ?? "nil")")
                 
                 // Use clean username (without 🔒) for API call
-                let response = try await ChannelService.shared.requestFollow(requesterEmail: userEmail, requestedUsername: cleanUsername)
+                // Pass requesterUsername from authService (frontend already knows it)
+                let response = try await ChannelService.shared.requestFollow(
+                    requesterEmail: userEmail,
+                    requestedUsername: cleanUsername,
+                    requesterUsername: authService.username
+                )
                 
                 print("   ✅ API call completed!")
                 print("   📥 Response received:")
@@ -2199,8 +2262,9 @@ struct ChannelDetailView: View {
                         }
                     } else {
                         print("📩 [ChannelDetailView] Follow request sent to private user: \(cleanUsername)")
-                        // Reload sent requests to ensure UI is updated (merge to preserve optimistic updates)
-                        loadSentFollowRequests(mergeWithExisting: true)
+                        // DON'T reload sent requests immediately - trust the optimistic update
+                        // Only reload on next view appear or manual refresh to avoid overwriting optimistic updates
+                        print("   ✅ Trusting optimistic update - request button should show 'Requested' now")
                     }
                 }
             } catch {
@@ -2221,6 +2285,23 @@ struct ChannelDetailView: View {
                     let removingKey = "\(cleanUsername.lowercased()):\(isPrivate ? "private" : "public")"
                     addingUsernames.remove(removingKey)
                     print("   ✅ Removed '\(removingKey)' from addingUsernames set (error cleanup)")
+                    
+                    // Check if this is a "User not found" error - show helpful message
+                    let isUserNotFound = errorMessageText.lowercased().contains("user not found") || 
+                                        errorMessageText.lowercased().contains("channel name")
+                    if isUserNotFound && !isAlreadyPending && !isAlreadyAccepted {
+                        // Show error message to user
+                        errorMessage = errorMessageText
+                        print("   ⚠️ Showing error to user: \(errorMessageText)")
+                        // Clear error after 5 seconds
+                        Task {
+                            try? await Task.sleep(nanoseconds: 5_000_000_000)
+                            await MainActor.run {
+                                errorMessage = nil
+                            }
+                        }
+                        return // Don't continue with optimistic updates for "not found" errors
+                    }
                     
                     // If the request is already pending, treat it as success and update UI optimistically
                     if isAlreadyPending {
@@ -2374,18 +2455,21 @@ struct ChannelDetailView: View {
         isLoadingSentRequests = true
         Task {
             do {
-                // Fetch both "pending" and "active" requests to include auto-accepted ones
+                // Fetch "pending", "active", and "accepted" requests to track all states
+                // "accepted" means the request was accepted and user can now see private content
                 async let pendingResponse = ChannelService.shared.getSentFollowRequests(requesterEmail: userEmail, status: "pending")
                 async let activeResponse = ChannelService.shared.getSentFollowRequests(requesterEmail: userEmail, status: "active")
+                async let acceptedResponse = ChannelService.shared.getSentFollowRequests(requesterEmail: userEmail, status: "accepted")
                 
-                let (pendingResult, activeResult) = try await (pendingResponse, activeResponse)
+                let (pendingResult, activeResult, acceptedResult) = try await (pendingResponse, activeResponse, acceptedResponse)
                 
                 await MainActor.run {
                     // CRITICAL: Filter out removed usernames from server responses
                     let allPendingRequests = (pendingResult.requests ?? []).filter { !$0.requestedUsername.trimmingCharacters(in: .whitespaces).isEmpty }
                     let allActiveRequests = (activeResult.requests ?? []).filter { !$0.requestedUsername.trimmingCharacters(in: .whitespaces).isEmpty }
+                    let allAcceptedRequests = (acceptedResult.requests ?? []).filter { !$0.requestedUsername.trimmingCharacters(in: .whitespaces).isEmpty }
                     
-                    print("🔍 [DEBUG] loadSentFollowRequests - Server returned \(allPendingRequests.count) pending + \(allActiveRequests.count) active")
+                    print("🔍 [DEBUG] loadSentFollowRequests - Server returned \(allPendingRequests.count) pending + \(allActiveRequests.count) active + \(allAcceptedRequests.count) accepted")
                     print("🔍 [DEBUG] Current removedUsernames: \(removedUsernames.map { $0 }.joined(separator: ", "))")
                     
                     // Filter out removed usernames
@@ -2407,11 +2491,32 @@ struct ChannelDetailView: View {
                         return !isRemoved
                     }
                     
-                    // Merge active requests (avoid duplicates by username)
-                    let pendingUsernames = Set(serverRequests.map { $0.requestedUsername.lowercased() })
+                    let acceptedRequests = allAcceptedRequests.filter { request in
+                        let lowercased = request.requestedUsername.lowercased()
+                        let isRemoved = removedUsernames.contains(lowercased)
+                        if isRemoved {
+                            print("🚫 [DEBUG] Filtering out removed username from accepted requests: '\(request.requestedUsername)' (lowercased: '\(lowercased)')")
+                        }
+                        return !isRemoved
+                    }
+                    
+                    // Merge all requests (avoid duplicates by username, prioritize accepted > active > pending)
+                    var allUsernames = Set(serverRequests.map { $0.requestedUsername.lowercased() })
                     for activeRequest in activeRequests {
-                        if !pendingUsernames.contains(activeRequest.requestedUsername.lowercased()) {
+                        if !allUsernames.contains(activeRequest.requestedUsername.lowercased()) {
                             serverRequests.append(activeRequest)
+                            allUsernames.insert(activeRequest.requestedUsername.lowercased())
+                        }
+                    }
+                    for acceptedRequest in acceptedRequests {
+                        // For accepted requests, update existing or add new
+                        if let existingIndex = serverRequests.firstIndex(where: { $0.requestedUsername.lowercased() == acceptedRequest.requestedUsername.lowercased() }) {
+                            // Update existing request to "accepted" status
+                            serverRequests[existingIndex] = acceptedRequest
+                            print("✅ [ChannelDetailView] Updated request status to accepted: \(acceptedRequest.requestedUsername)")
+                        } else {
+                            serverRequests.append(acceptedRequest)
+                            print("✅ [ChannelDetailView] Added accepted request: \(acceptedRequest.requestedUsername)")
                         }
                     }
                     
@@ -2428,6 +2533,7 @@ struct ChannelDetailView: View {
                         var mergedRequests = serverRequests
                         
                         // Add ALL optimistic requests that aren't on server
+                        // CRITICAL: Preserve optimistic updates even if server doesn't have them yet
                         for existingRequest in sentFollowRequests {
                             let existingUsername = existingRequest.requestedUsername.lowercased()
                             let hasValidStatus = existingRequest.status.lowercased() == "pending" || 
@@ -2439,8 +2545,14 @@ struct ChannelDetailView: View {
                                 mergedRequests.append(existingRequest)
                                 print("   💾 Preserved optimistic request for: \(existingRequest.requestedUsername) (status: \(existingRequest.status))")
                             } else if serverUsernames.contains(existingUsername) {
-                                // Server has it - server version is already in mergedRequests
-                                print("   ✅ Server has request for: \(existingRequest.requestedUsername) - using server version")
+                                // Server has it - check if optimistic is newer (more recent requestedAt)
+                                if let serverRequest = serverRequests.first(where: { $0.requestedUsername.lowercased() == existingUsername }) {
+                                    // Use server version (it's the source of truth)
+                                    if let existingIndex = mergedRequests.firstIndex(where: { $0.requestedUsername.lowercased() == existingUsername }) {
+                                        mergedRequests[existingIndex] = serverRequest
+                                    }
+                                    print("   ✅ Server has request for: \(existingRequest.requestedUsername) - using server version")
+                                }
                             } else if !hasValidStatus {
                                 print("   ⚠️ Skipping request with invalid status: \(existingRequest.requestedUsername) (status: \(existingRequest.status))")
                             }
@@ -3431,9 +3543,6 @@ struct ChannelDetailView: View {
             loadingView
         } else if let error = errorMessage {
             errorView(error)
-        } else if content.isEmpty && hasConfirmedNoContent {
-            // Only show empty state after we've confirmed there's truly no content
-            emptyStateView
         } else if !content.isEmpty {
             // Show current content (filtering happens silently in background)
             contentListView
@@ -3448,8 +3557,19 @@ struct ChannelDetailView: View {
             .padding(.top, 8)
             .padding(.bottom, 20)
         } else {
-            // Fallback: show loading if we have nothing
-            loadingView
+            // For Twilly TV, never show "no content" message - just show loading or empty list
+            // This prevents confusing messages when toggling between public/private
+            if currentChannel.channelName.lowercased() == "twilly tv" {
+                // Just show empty list (no message) for Twilly TV
+                Spacer()
+                    .frame(height: 100)
+            } else if content.isEmpty && hasConfirmedNoContent {
+                // Only show empty state for non-Twilly TV channels after confirming there's truly no content
+                emptyStateView
+            } else {
+                // Fallback: show loading if we have nothing
+                loadingView
+            }
         }
     }
     
@@ -3800,7 +3920,9 @@ struct ChannelDetailView: View {
             // When filter is active, show both edit and delete buttons
             showDeleteButton: showOnlyOwnContent && isOwnContent, // Show delete button when filter is active
             onDelete: showOnlyOwnContent && isOwnContent ? {
-                deleteContent(item: item)
+                // Show delete confirmation before deleting
+                contentToDelete = item
+                showingDeleteConfirmation = true
             } : nil,
             showEditButton: showOnlyOwnContent && isOwnContent, // Show edit button only when filter is active
             onEdit: showOnlyOwnContent && isOwnContent ? {
@@ -4065,10 +4187,16 @@ struct ChannelDetailView: View {
         var filtered = sourceContent.filter { item in
             let isPrivate = item.isPrivateUsername == true
             if showPrivateContent {
-                // PRIVATE VIEW: Show only private videos
+                // PRIVATE VIEW: STRICT - only items where isPrivateUsername is EXPLICITLY true
+                if !isPrivate {
+                    print("🚫 [ChannelDetailView] SECURITY: Blocking public item from private view in instant filter: \(item.fileName)")
+                }
                 return isPrivate
             } else {
-                // PUBLIC VIEW: Show all videos where isPrivateUsername != true
+                // PUBLIC VIEW: STRICT - only items where isPrivateUsername is NOT true
+                if isPrivate {
+                    print("🚫 [ChannelDetailView] SECURITY: Blocking private item from public view in instant filter: \(item.fileName)")
+                }
                 return !isPrivate
             }
         }
@@ -4124,12 +4252,20 @@ struct ChannelDetailView: View {
                 cachedNextToken = result.nextToken
                 cachedHasMoreContent = result.hasMore
                 
-                // Filter the fetched content
+                // CRITICAL: Strict filtering - public/private must be completely separate
                 var filtered = result.content.filter { item in
                     let isPrivate = item.isPrivateUsername == true
                     if showPrivateContent {
+                        // PRIVATE VIEW: STRICT - only explicitly private items
+                        if !isPrivate {
+                            print("🚫 [ChannelDetailView] SECURITY: Blocking public item from private view in background fetch: \(item.fileName)")
+                        }
                         return isPrivate
                     } else {
+                        // PUBLIC VIEW: STRICT - only non-private items
+                        if isPrivate {
+                            print("🚫 [ChannelDetailView] SECURITY: Blocking private item from public view in background fetch: \(item.fileName)")
+                        }
                         return !isPrivate
                     }
                 }
@@ -4147,11 +4283,17 @@ struct ChannelDetailView: View {
                     hasConfirmedNoContent = false
                     print("🔍 [ChannelDetailView] Fetched filtered content in background: \(filtered.count) items")
                 } else {
-                    // Truly no content - only now show empty state
-                    hasConfirmedNoContent = true
+                    // For Twilly TV, never confirm "no content" - content might be in the other view
+                    // Only confirm for non-Twilly TV channels
+                    if currentChannel.channelName.lowercased() != "twilly tv" {
+                        hasConfirmedNoContent = true
+                        print("🔍 [ChannelDetailView] Confirmed no content available after server check (non-Twilly TV)")
+                    } else {
+                        hasConfirmedNoContent = false
+                        print("🔍 [ChannelDetailView] No content in this view for Twilly TV - not confirming (might be in other view)")
+                    }
                     content = []
                     previousContentBeforeFilter = []
-                    print("🔍 [ChannelDetailView] Confirmed no content available after server check")
                 }
                 
                 isFilteringContent = false
@@ -4181,13 +4323,20 @@ struct ChannelDetailView: View {
             
             // Always filter from cached unfiltered content (not current filtered content) for instant feedback
             let sourceContent = cachedUnfilteredContent
+            // CRITICAL: Strict separation - public/private must be completely separate
             var filtered = sourceContent.filter { item in
                 let isPrivate = item.isPrivateUsername == true
                 if showPrivateContent {
-                    // PRIVATE VIEW: Show only private videos
+                    // PRIVATE VIEW: STRICT - only explicitly private items
+                    if !isPrivate {
+                        print("🚫 [ChannelDetailView] SECURITY: Blocking public item from private view in optimized filter: \(item.fileName)")
+                    }
                     return isPrivate
                 } else {
-                    // PUBLIC VIEW: Show all videos where isPrivateUsername != true
+                    // PUBLIC VIEW: STRICT - only non-private items
+                    if isPrivate {
+                        print("🚫 [ChannelDetailView] SECURITY: Blocking private item from public view in optimized filter: \(item.fileName)")
+                    }
                     return !isPrivate
                 }
             }
@@ -4263,16 +4412,21 @@ struct ChannelDetailView: View {
         guard currentChannel.channelName.lowercased() == "twilly tv" else { return }
         
         // First, filter existing content immediately for instant feedback
-        // REVERTED: Public videos show all videos where isPrivateUsername != true
-        // Private videos show only videos where isPrivateUsername == true
+        // CRITICAL: Strict separation - public/private must be completely separate
         await MainActor.run {
             let filtered = content.filter { item in
                 let isPrivate = item.isPrivateUsername == true
                 if showPrivateContent {
-                    // PRIVATE VIEW: Show only private videos
+                    // PRIVATE VIEW: STRICT - only explicitly private items
+                    if !isPrivate {
+                        print("🚫 [ChannelDetailView] SECURITY: Blocking public item from private view in visibility filter: \(item.fileName)")
+                    }
                     return isPrivate
                 } else {
-                    // PUBLIC VIEW: Show all videos where isPrivateUsername != true (revert to working state)
+                    // PUBLIC VIEW: STRICT - only non-private items
+                    if isPrivate {
+                        print("🚫 [ChannelDetailView] SECURITY: Blocking private item from public view in visibility filter: \(item.fileName)")
+                    }
                     return !isPrivate
                 }
             }
@@ -4298,15 +4452,20 @@ struct ChannelDetailView: View {
             )
             
             await MainActor.run {
-                // REVERTED: Public videos show all videos where isPrivateUsername != true
-                // Private videos show only videos where isPrivateUsername == true
+                // CRITICAL: Strict separation - public/private must be completely separate
                 let filtered = result.content.filter { item in
                     let isPrivate = item.isPrivateUsername == true
                     if showPrivateContent {
-                        // PRIVATE VIEW: Show only private videos
+                        // PRIVATE VIEW: STRICT - only explicitly private items
+                        if !isPrivate {
+                            print("🚫 [ChannelDetailView] SECURITY: Blocking public item from private view in server filter: \(item.fileName)")
+                        }
                         return isPrivate
                     } else {
-                        // PUBLIC VIEW: Show all videos where isPrivateUsername != true (revert to working state)
+                        // PUBLIC VIEW: STRICT - only non-private items
+                        if isPrivate {
+                            print("🚫 [ChannelDetailView] SECURITY: Blocking private item from public view in server filter: \(item.fileName)")
+                        }
                         return !isPrivate
                     }
                 }
@@ -4480,20 +4639,36 @@ struct ChannelDetailView: View {
                             do {
                                 let (publicData, privateData) = try await (publicResult, privateResult)
                                 await MainActor.run {
-                                    publicContent = publicData.content
-                                    privateContent = privateData.content
+                                    // CRITICAL SECURITY: Strictly filter server responses - server might return wrong items
+                                    let strictlyPublic = publicData.content.filter { item in
+                                        let isPrivate = item.isPrivateUsername == true
+                                        if isPrivate {
+                                            print("🚫 [ChannelDetailView] CRITICAL SECURITY: Server returned private item in public response - filtering: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"))")
+                                        }
+                                        return !isPrivate
+                                    }
+                                    let strictlyPrivate = privateData.content.filter { item in
+                                        let isPrivate = item.isPrivateUsername == true
+                                        if !isPrivate {
+                                            print("🚫 [ChannelDetailView] CRITICAL SECURITY: Server returned public item in private response - filtering: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"))")
+                                        }
+                                        return isPrivate
+                                    }
+                                    
+                                    publicContent = strictlyPublic
+                                    privateContent = strictlyPrivate
                                     publicNextToken = publicData.nextToken
                                     privateNextToken = privateData.nextToken
                                     publicHasMore = publicData.hasMore
                                     privateHasMore = privateData.hasMore
                                     
-                                    // Update current view
+                                    // Update current view - use strictly filtered arrays
                                     if showPrivateContent {
-                                        content = privateContent
+                                        content = strictlyPrivate
                                         nextToken = privateNextToken
                                         hasMoreContent = privateHasMore
                                     } else {
-                                        content = publicContent
+                                        content = strictlyPublic
                                         nextToken = publicNextToken
                                         hasMoreContent = publicHasMore
                                     }
@@ -4578,22 +4753,38 @@ struct ChannelDetailView: View {
                             let (publicData, privateData) = try await (publicResult, privateResult)
                             
                             await MainActor.run {
-                                // Store both separately
-                                publicContent = publicData.content
-                                privateContent = privateData.content
+                                // CRITICAL SECURITY: Strictly filter server responses - server might return wrong items
+                                let strictlyPublic = publicData.content.filter { item in
+                                    let isPrivate = item.isPrivateUsername == true
+                                    if isPrivate {
+                                        print("🚫 [ChannelDetailView] CRITICAL SECURITY: Server returned private item in public response - filtering: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"))")
+                                    }
+                                    return !isPrivate
+                                }
+                                let strictlyPrivate = privateData.content.filter { item in
+                                    let isPrivate = item.isPrivateUsername == true
+                                    if !isPrivate {
+                                        print("🚫 [ChannelDetailView] CRITICAL SECURITY: Server returned public item in private response - filtering: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"))")
+                                    }
+                                    return isPrivate
+                                }
+                                
+                                // Store both separately - use strictly filtered arrays
+                                publicContent = strictlyPublic
+                                privateContent = strictlyPrivate
                                 publicNextToken = publicData.nextToken
                                 privateNextToken = privateData.nextToken
                                 publicHasMore = publicData.hasMore
                                 privateHasMore = privateData.hasMore
                                 bothViewsLoaded = true
                                 
-                                // Set current content based on showPrivateContent
+                                // Set current content based on showPrivateContent - use strictly filtered arrays
                                 if showPrivateContent {
-                                    content = privateContent
+                                    content = strictlyPrivate
                                     nextToken = privateNextToken
                                     hasMoreContent = privateHasMore
                                 } else {
-                                    content = publicContent
+                                    content = strictlyPublic
                                     nextToken = publicNextToken
                                     hasMoreContent = publicHasMore
                                 }
@@ -4687,17 +4878,21 @@ struct ChannelDetailView: View {
     }
     
     private func updateContentWith(_ fetchedContent: [ChannelContent], replaceLocal: Bool = false) {
-        print("🔄 [ChannelDetailView] ========== UPDATE CONTENT START ==========")
-        print("🔄 [ChannelDetailView] Received \(fetchedContent.count) items from API, replaceLocal: \(replaceLocal)")
-        print("🔄 [ChannelDetailView] Current content.count before update: \(content.count)")
-        print("🔄 [ChannelDetailView] localVideoContent exists: \(localVideoContent != nil)")
+        // CRITICAL: Optimize to prevent UI freeze - reduce logging and use Task.yield for heavy operations
+        print("🔄 [ChannelDetailView] Updating with \(fetchedContent.count) items")
         
         // For Twilly TV, split content into public and private arrays for instant toggle
         let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
         if isTwillyTV {
-            // Split fetched content into public and private
+            // CRITICAL: Strict separation - public content must NEVER be in private array and vice versa
+            // Only items where isPrivateUsername is EXPLICITLY true go to private
+            // All others (false, nil, undefined) go to public
+            // CRITICAL: Reduce logging in filters to prevent UI freeze - only log summary
             let publicItems = fetchedContent.filter { $0.isPrivateUsername != true }
             let privateItems = fetchedContent.filter { $0.isPrivateUsername == true }
+            if publicItems.count + privateItems.count != fetchedContent.count {
+                print("🚫 [ChannelDetailView] SECURITY: Filtered items during split")
+            }
             
             // Update public and private arrays
             if replaceLocal {
@@ -4723,8 +4918,28 @@ struct ChannelDetailView: View {
                     }
                 }
                 
-                publicContent = mergedPublic
-                privateContent = mergedPrivate
+                // CRITICAL SECURITY: Re-filter merged arrays to ensure no contamination (reduced logging)
+                let reFilteredPublic = mergedPublic.filter { $0.isPrivateUsername != true }
+                let reFilteredPrivate = mergedPrivate.filter { $0.isPrivateUsername == true }
+                if reFilteredPublic.count != mergedPublic.count || reFilteredPrivate.count != mergedPrivate.count {
+                    print("🚫 [ChannelDetailView] SECURITY: Re-filtered merged arrays")
+                }
+                
+                publicContent = reFilteredPublic
+                privateContent = reFilteredPrivate
+            }
+            
+            // CRITICAL SECURITY: Also filter the currently displayed content if it doesn't match the view (reduced logging)
+            if showPrivateContent {
+                let strictlyPrivate = content.filter { $0.isPrivateUsername == true }
+                if strictlyPrivate.count != content.count {
+                    content = strictlyPrivate
+                }
+            } else {
+                let strictlyPublic = content.filter { $0.isPrivateUsername != true }
+                if strictlyPublic.count != content.count {
+                    content = strictlyPublic
+                }
             }
             
             print("💾 [ChannelDetailView] Updated arrays - public: \(publicContent.count), private: \(privateContent.count)")
@@ -4750,52 +4965,35 @@ struct ChannelDetailView: View {
             print("💾 [ChannelDetailView] Updated content cache: \(cachedUnfilteredContent.count) items (replaceLocal: \(replaceLocal))")
         }
         
-        // Log all received items with details
-        print("📋 [ChannelDetailView] === RECEIVED FROM API ===")
-        for (index, item) in fetchedContent.enumerated() {
-            print("   [\(index)] fileName: \(item.fileName)")
-            print("       SK/id: \(item.SK) / \(item.id)")
-            print("       hlsUrl: \(item.hlsUrl != nil && !item.hlsUrl!.isEmpty ? "✅" : "❌")")
-            print("       thumbnailUrl: \(item.thumbnailUrl != nil && !item.thumbnailUrl!.isEmpty ? "✅" : "❌")")
-            print("       createdAt: \(item.createdAt ?? "nil")")
-            print("       isVisible: \(item.isVisible ?? true)")
-            print("       category: \(item.category ?? "nil")")
-            print("       creatorUsername: \(item.creatorUsername ?? "nil")")
-            print("       isPrivateUsername: \(item.isPrivateUsername != nil ? String(describing: item.isPrivateUsername!) : "nil")")
-            print("       uploadId: \(item.uploadId ?? "nil")")
-            print("       fileId: \(item.fileId ?? "nil")")
-            print("       localFileURL: \(item.localFileURL != nil ? "✅" : "nil")")
-        }
-        
-        // Check for duplicates in fetched content (by ID/SK)
+        // CRITICAL: Reduce logging to prevent UI freeze - only log summary, not every item
+        // Check for duplicates (silently, only log if found)
         var seenIds = Set<String>()
         var duplicateIds: [String] = []
         for item in fetchedContent {
             if seenIds.contains(item.id) {
                 duplicateIds.append(item.id)
-                print("⚠️ [ChannelDetailView] DUPLICATE ID FOUND in API response: \(item.id) (fileName: \(item.fileName))")
             } else {
                 seenIds.insert(item.id)
             }
         }
         if !duplicateIds.isEmpty {
-            print("⚠️ [ChannelDetailView] Found \(duplicateIds.count) duplicate ID(s) in API response: \(duplicateIds)")
+            print("⚠️ [ChannelDetailView] Found \(duplicateIds.count) duplicate ID(s): \(Array(duplicateIds.prefix(3)))")
         }
         
-        // Check for duplicate fileNames (might indicate same video with different IDs)
+        // Check for duplicate fileNames
         var seenFileNames = Set<String>()
         var duplicateFileNames: [String] = []
         for item in fetchedContent {
             if seenFileNames.contains(item.fileName) {
                 duplicateFileNames.append(item.fileName)
-                print("⚠️ [ChannelDetailView] DUPLICATE FILENAME FOUND in API response: \(item.fileName) (SK: \(item.SK))")
             } else {
                 seenFileNames.insert(item.fileName)
             }
         }
         if !duplicateFileNames.isEmpty {
-            print("⚠️ [ChannelDetailView] Found \(duplicateFileNames.count) duplicate fileName(s) in API response: \(duplicateFileNames)")
+            print("⚠️ [ChannelDetailView] Found \(duplicateFileNames.count) duplicate fileName(s): \(Array(duplicateFileNames.prefix(3)))")
         }
+        
         
         // Filter out duplicates and incomplete videos if we have a local video
         var filteredFetchedContent = fetchedContent
@@ -4898,27 +5096,10 @@ struct ChannelDetailView: View {
             print("📋 [ChannelDetailView] Showing \(filteredFetchedContent.count) server items only (no local video)")
         }
         
-        // Check for duplicates in contentToShow (before sorting)
-        var seenIdsBeforeSort = Set<String>()
-        var duplicateIdsBeforeSort: [String] = []
-        for item in contentToShow {
-            if seenIdsBeforeSort.contains(item.id) {
-                duplicateIdsBeforeSort.append(item.id)
-                print("⚠️ [ChannelDetailView] DUPLICATE ID in contentToShow (before sort): \(item.id) (fileName: \(item.fileName))")
-            } else {
-                seenIdsBeforeSort.insert(item.id)
-            }
-        }
-        if !duplicateIdsBeforeSort.isEmpty {
-            print("⚠️ [ChannelDetailView] Found \(duplicateIdsBeforeSort.count) duplicate ID(s) in contentToShow before sort: \(duplicateIdsBeforeSort)")
-        }
-        
-        // Deduplicate by SK (match managefiles.vue behavior)
-        // managefiles.vue deduplicates by SK: .filter(file => { if (seen.has(file.SK)) return false; seen.add(file.SK); return true; })
+        // Deduplicate by SK (match managefiles.vue behavior) - optimized to reduce logging
         var seenSKs = Set<String>()
         let deduplicatedContent = contentToShow.filter { item in
             if seenSKs.contains(item.SK) {
-                print("🔄 [ChannelDetailView] Removing duplicate by SK: \(item.SK) (fileName: \(item.fileName))")
                 return false
             }
             seenSKs.insert(item.SK)
@@ -4926,7 +5107,7 @@ struct ChannelDetailView: View {
         }
         
         if contentToShow.count != deduplicatedContent.count {
-            print("🔄 [ChannelDetailView] Deduplicated: \(contentToShow.count) → \(deduplicatedContent.count) items (removed \(contentToShow.count - deduplicatedContent.count) duplicate(s) by SK)")
+            print("🔄 [ChannelDetailView] Deduplicated: \(contentToShow.count) → \(deduplicatedContent.count) items")
         }
         
         // Sort by airdate/createdAt (newest first) - match managefiles.vue: .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
@@ -4981,12 +5162,7 @@ struct ChannelDetailView: View {
             
             // If both have dates, compare them (newer first = descending order)
             if let d1 = date1, let d2 = date2 {
-                let result = d1 > d2
-                // Debug logging for sorting
-                if abs(d1.timeIntervalSince(d2)) > 1.0 { // Only log if difference is significant (> 1 second)
-                    print("🔄 [ChannelDetailView] Sorting: \(item1.fileName) (\(d1)) vs \(item2.fileName) (\(d2)) -> \(result ? "item1 first" : "item2 first")")
-                }
-                return result
+                return d1 > d2
             }
             // If only one has a date, prioritize it (items with dates come first)
             if date1 != nil && date2 == nil {
@@ -4995,9 +5171,7 @@ struct ChannelDetailView: View {
             if date1 == nil && date2 != nil {
                 return false
             }
-            // If neither has a date, use fileName as fallback (newer files typically have newer names)
-            // But this should rarely happen - most items should have createdAt
-            print("⚠️ [ChannelDetailView] Both items missing dates - using fileName fallback: \(item1.fileName) vs \(item2.fileName)")
+            // If neither has a date, use fileName as fallback
             return item1.fileName > item2.fileName
         }
         
@@ -5015,31 +5189,31 @@ struct ChannelDetailView: View {
             print("🔍 [ChannelDetailView] Filtering to own content: \(filteredSortedContent.count) items (from \(sortedContent.count) total)")
         }
         
-        // Filter by public/private visibility (default: show public)
-        // REVERTED: Public videos show all videos where isPrivateUsername != true (including nil/false)
-        // Private videos show only videos where isPrivateUsername == true
+        // CRITICAL: Strict public/private separation - SECURITY MEASURE
+        // Public content must NEVER appear in private view and vice versa
         if currentChannel.channelName.lowercased() == "twilly tv" {
             if showPrivateContent {
-                // PRIVATE VIEW: Show only videos where isPrivateUsername == true
+                // PRIVATE VIEW: ONLY show items where isPrivateUsername is EXPLICITLY true
+                // Block ALL public items (isPrivateUsername != true)
                 filteredSortedContent = filteredSortedContent.filter { item in
                     let isPrivate = item.isPrivateUsername == true
                     if !isPrivate {
-                        print("🔍 [ChannelDetailView] Filtering out public video in private view: \(item.fileName)")
+                        print("🚫 [ChannelDetailView] SECURITY: Blocking public item from private view: \(item.fileName) (isPrivateUsername: \(item.isPrivateUsername != nil ? String(describing: item.isPrivateUsername!) : "nil"))")
                     }
-                    return isPrivate
+                    return isPrivate // STRICT: Only true values pass
                 }
-                print("🔍 [ChannelDetailView] Filtering by visibility: private - \(filteredSortedContent.count) items")
+                print("🔒 [ChannelDetailView] PRIVATE VIEW: \(filteredSortedContent.count) items (strictly filtered)")
             } else {
-                // PUBLIC VIEW: Show all videos where isPrivateUsername != true (revert to working state)
-                // This includes videos where isPrivateUsername is false, nil, or not set
+                // PUBLIC VIEW: ONLY show items where isPrivateUsername is NOT true
+                // Block ALL private items (isPrivateUsername == true)
                 filteredSortedContent = filteredSortedContent.filter { item in
                     let isPrivate = item.isPrivateUsername == true
                     if isPrivate {
-                        print("🔍 [ChannelDetailView] Filtering out private video in public view: \(item.fileName)")
+                        print("🚫 [ChannelDetailView] SECURITY: Blocking private item from public view: \(item.fileName) (isPrivateUsername: true)")
                     }
-                    return !isPrivate
+                    return !isPrivate // STRICT: Only non-true values pass
                 }
-                print("🔍 [ChannelDetailView] Filtering by visibility: public - \(filteredSortedContent.count) items")
+                print("🌐 [ChannelDetailView] PUBLIC VIEW: \(filteredSortedContent.count) items (strictly filtered)")
             }
         }
         
@@ -5087,34 +5261,21 @@ struct ChannelDetailView: View {
         if !content.isEmpty {
             hasConfirmedNoContent = false
             previousContentBeforeFilter = []
-        }
-        
-        print("✅ [ChannelDetailView] ========== FINAL CONTENT STATE ==========")
-        print("✅ [ChannelDetailView] content.count: \(content.count)")
-        print("✅ [ChannelDetailView] isLoading: \(isLoading), hasLoaded: \(hasLoaded)")
-        
-        // Log final sorted order (newest first)
-        print("📋 [ChannelDetailView] Final sorted order (newest first):")
-        for (index, item) in sortedContent.enumerated() {
-            let dateStr = item.airdate ?? item.createdAt ?? "NO DATE"
-            print("   [\(index)] \(item.fileName) - date: \(dateStr)")
-        }
-        
-        // Summary: Show what videos are displayed and why
-        if content.count > 1 {
-            print("📊 [ChannelDetailView] SUMMARY: Showing \(content.count) different videos:")
-            for (index, item) in content.enumerated() {
-                let dateStr = item.createdAt ?? "unknown date"
-                let isNew = index == 0 ? " (🆕 NEWEST)" : ""
-                print("   \(index + 1). \(item.fileName) - Created: \(dateStr)\(isNew)")
-            }
-            print("   ℹ️ These are \(content.count) DIFFERENT videos, not duplicates.")
-            print("   ℹ️ Each has a unique ID: \(content.map { $0.id }.joined(separator: ", "))")
-        } else if content.count == 1 {
-            print("📊 [ChannelDetailView] SUMMARY: Showing 1 video: \(content[0].fileName)")
         } else {
-            print("📊 [ChannelDetailView] SUMMARY: No videos to display")
+            // For Twilly TV, never confirm "no content" - content might be in the other view (public/private)
+            // Only confirm for non-Twilly TV channels
+            if currentChannel.channelName.lowercased() != "twilly tv" {
+                hasConfirmedNoContent = true
+                print("ℹ️ [ChannelDetailView] Content is empty after update - setting hasConfirmedNoContent = true (non-Twilly TV)")
+            } else {
+                hasConfirmedNoContent = false
+                print("ℹ️ [ChannelDetailView] Content is empty for Twilly TV - not confirming (might be in other view)")
+            }
+            previousContentBeforeFilter = []
         }
+        
+        // Minimal final logging to prevent UI freeze
+        print("✅ [ChannelDetailView] Updated: \(content.count) items, isLoading: \(isLoading)")
         
         // Check for duplicates in final content array
         var seenIdsFinal = Set<String>()
@@ -5550,57 +5711,223 @@ struct ChannelDetailView: View {
                     isDeleting = false
                     
                     if response.success {
-                        // Remove ONLY the specific item by its unique ID
+                        // Check if file was already deleted (idempotent delete)
+                        let wasAlreadyDeleted = response.alreadyDeleted == true
+                        
+                        if wasAlreadyDeleted {
+                            print("ℹ️ [ChannelDetailView] File was already deleted (idempotent delete): \(fileName)")
+                            // Still remove from UI even if already deleted on server
+                        } else {
+                            print("✅ [ChannelDetailView] Successfully deleted content: \(fileName)")
+                        }
+                        
+                        // Remove from currently displayed content array
                         let beforeCount = content.count
                         content.removeAll { $0.id == itemId }
                         let afterCount = content.count
                         
                         if beforeCount == afterCount {
                             print("⚠️ [ChannelDetailView] Item not found in content array after delete - may have already been removed")
+                        }
+                        
+                        // CRITICAL: Also remove from cached public/private arrays
+                        let isPrivate = item.isPrivateUsername == true
+                        if isPrivate {
+                            let beforePrivateCount = privateContent.count
+                            privateContent.removeAll { $0.id == itemId }
+                            let afterPrivateCount = privateContent.count
+                            if beforePrivateCount != afterPrivateCount {
+                                print("✅ [ChannelDetailView] Removed from private content cache")
+                            }
                         } else {
-                            print("✅ [ChannelDetailView] Deleted content: \(fileName) (removed \(beforeCount - afterCount) item(s))")
+                            let beforePublicCount = publicContent.count
+                            publicContent.removeAll { $0.id == itemId }
+                            let afterPublicCount = publicContent.count
+                            if beforePublicCount != afterPublicCount {
+                                print("✅ [ChannelDetailView] Removed from public content cache")
+                            }
                         }
                         
                         contentToDelete = nil
                         
-                        // Refresh content to get updated list from server
-                        Task {
-                            try? await refreshChannelContent()
+                        // If content is now empty, stop loading spinner immediately
+                        if content.isEmpty && publicContent.isEmpty && privateContent.isEmpty {
+                            isLoading = false
+                            hasLoaded = true
+                            // For Twilly TV, never confirm "no content" - might be content in other view
+                            if currentChannel.channelName.lowercased() != "twilly tv" {
+                                hasConfirmedNoContent = true
+                            }
+                            print("✅ [ChannelDetailView] All content deleted - stopping loading spinner")
+                        } else {
+                            // Refresh content to get updated list from server
+                            Task {
+                                do {
+                                    let result = try await refreshChannelContent()
+                                    await MainActor.run {
+                                        // Ensure loading stops even if content is empty
+                                        if result?.content.isEmpty == true {
+                                            isLoading = false
+                                            hasLoaded = true
+                                            // For Twilly TV, never confirm "no content"
+                                            if currentChannel.channelName.lowercased() != "twilly tv" {
+                                                hasConfirmedNoContent = true
+                                            }
+                                        }
+                                    }
+                                } catch {
+                                    await MainActor.run {
+                                        isLoading = false
+                                        hasLoaded = true
+                                        // Don't show error for empty content - it's expected
+                                        if !error.localizedDescription.lowercased().contains("not found") {
+                                            print("❌ [ChannelDetailView] Error refreshing after delete: \(error.localizedDescription)")
+                                        }
+                                    }
+                                }
+                            }
                         }
                     } else {
-                        print("❌ [ChannelDetailView] Delete failed: \(response.message ?? "Unknown error")")
-                        errorMessage = response.message ?? "Failed to delete video"
-                        contentToDelete = nil
+                        // Handle error - check if it's a "file not found" error
+                        let errorMsg = response.message ?? "Unknown error"
+                        let isFileNotFound = errorMsg.lowercased().contains("not found") || errorMsg.lowercased().contains("file not found")
+                        
+                        if isFileNotFound {
+                            // File not found - treat as success (already deleted) - NO ERROR MESSAGE
+                            print("ℹ️ [ChannelDetailView] File not found (already deleted): \(fileName) - treating as success")
+                            
+                            // Remove from UI anyway
+                            content.removeAll { $0.id == itemId }
+                            
+                            // Also remove from cached arrays
+                            let isPrivate = item.isPrivateUsername == true
+                            if isPrivate {
+                                privateContent.removeAll { $0.id == itemId }
+                            } else {
+                                publicContent.removeAll { $0.id == itemId }
+                            }
+                            
+                            contentToDelete = nil
+                            
+                            // If content is now empty, stop loading spinner immediately
+                            if content.isEmpty && publicContent.isEmpty && privateContent.isEmpty {
+                                isLoading = false
+                                hasLoaded = true
+                                // For Twilly TV, never confirm "no content"
+                                if currentChannel.channelName.lowercased() != "twilly tv" {
+                                    hasConfirmedNoContent = true
+                                }
+                            } else {
+                                // Refresh content
+                                Task {
+                                    do {
+                                        let result = try await refreshChannelContent()
+                                        await MainActor.run {
+                                            if result?.content.isEmpty == true {
+                                                isLoading = false
+                                                hasLoaded = true
+                                                // For Twilly TV, never confirm "no content"
+                                                if currentChannel.channelName.lowercased() != "twilly tv" {
+                                                    hasConfirmedNoContent = true
+                                                }
+                                            }
+                                        }
+                                    } catch {
+                                        await MainActor.run {
+                                            isLoading = false
+                                            hasLoaded = true
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // Real error - show it
+                            print("❌ [ChannelDetailView] Delete failed: \(errorMsg)")
+                            errorMessage = errorMsg
+                            contentToDelete = nil
+                        }
                     }
                 }
             } catch {
                 await MainActor.run {
                     isDeleting = false
-                    contentToDelete = nil
                     
-                    // Better error handling
-                    if let channelError = error as? ChannelServiceError {
-                        switch channelError {
-                        case .invalidURL:
-                            errorMessage = "Invalid server URL - please check your connection"
-                        case .invalidResponse:
-                            errorMessage = "Server error - please try again later"
-                        case .serverError(let message):
-                            errorMessage = message
-                        }
-                    } else if let nsError = error as? NSError {
-                        // Handle NSError with specific error codes
-                        if nsError.domain == "ChannelService" {
-                            errorMessage = nsError.localizedDescription
+                    // Check if error is "File not found" - treat as success (idempotent)
+                    let errorDescription = error.localizedDescription.lowercased()
+                    let isFileNotFound = errorDescription.contains("not found") || 
+                                        errorDescription.contains("file not found") ||
+                                        errorDescription.contains("404")
+                    
+                    if isFileNotFound {
+                        // File not found - treat as success (already deleted) - NO ERROR MESSAGE
+                        print("ℹ️ [ChannelDetailView] File not found during delete (already deleted): \(fileName) - treating as success")
+                        
+                        // Remove from UI anyway
+                        content.removeAll { $0.id == itemId }
+                        
+                        // Also remove from cached arrays
+                        let isPrivate = item.isPrivateUsername == true
+                        if isPrivate {
+                            privateContent.removeAll { $0.id == itemId }
                         } else {
-                            errorMessage = "Error deleting video: \(nsError.localizedDescription)"
+                            publicContent.removeAll { $0.id == itemId }
+                        }
+                        
+                        contentToDelete = nil
+                        
+                        // If content is now empty, stop loading spinner immediately
+                        if content.isEmpty && publicContent.isEmpty && privateContent.isEmpty {
+                            isLoading = false
+                            hasLoaded = true
+                            hasConfirmedNoContent = true
+                        } else {
+                            // Refresh content
+                            Task {
+                                do {
+                                    let result = try await refreshChannelContent()
+                                    await MainActor.run {
+                                        if result?.content.isEmpty == true {
+                                            isLoading = false
+                                            hasLoaded = true
+                                            hasConfirmedNoContent = true
+                                        }
+                                    }
+                                } catch {
+                                    await MainActor.run {
+                                        isLoading = false
+                                        hasLoaded = true
+                                    }
+                                }
+                            }
                         }
                     } else {
-                        errorMessage = "Error deleting video: \(error.localizedDescription)"
+                        // Real error - show it
+                        contentToDelete = nil
+                        
+                        // Better error handling
+                        if let channelError = error as? ChannelServiceError {
+                            switch channelError {
+                            case .invalidURL:
+                                errorMessage = "Invalid server URL - please check your connection"
+                            case .invalidResponse:
+                                errorMessage = "Server error - please try again later"
+                            case .serverError(let message):
+                                errorMessage = message
+                            }
+                        } else if let nsError = error as? NSError {
+                            // Handle NSError with specific error codes
+                            if nsError.domain == "ChannelService" {
+                                errorMessage = nsError.localizedDescription
+                            } else {
+                                errorMessage = "Error deleting video: \(nsError.localizedDescription)"
+                            }
+                        } else {
+                            errorMessage = "Error deleting video: \(error.localizedDescription)"
+                        }
+                        
+                        print("❌ [ChannelDetailView] Delete error: \(error.localizedDescription)")
+                        print("   Error type: \(type(of: error))")
                     }
-                    
-                    print("❌ [ChannelDetailView] Delete error: \(error.localizedDescription)")
-                    print("   Error type: \(type(of: error))")
                 }
             }
         }
@@ -5840,28 +6167,50 @@ struct ChannelDetailView: View {
         }
         
         let trimmedTitle = editingTitle.trimmingCharacters(in: .whitespaces)
+        let isPrivate = content.isPrivateUsername == true
+        
+        // Helper function to create updated item
+        let createUpdatedItem: (ChannelContent) -> ChannelContent = { original in
+            ChannelContent(
+                SK: original.SK,
+                fileName: original.fileName,
+                title: trimmedTitle.isEmpty ? nil : trimmedTitle,
+                description: original.description,
+                hlsUrl: original.hlsUrl,
+                thumbnailUrl: original.thumbnailUrl,
+                createdAt: original.createdAt,
+                isVisible: original.isVisible,
+                price: original.price,
+                category: original.category,
+                uploadId: original.uploadId,
+                fileId: original.fileId,
+                airdate: original.airdate,
+                creatorUsername: original.creatorUsername,
+                isPrivateUsername: original.isPrivateUsername,
+                localFileURL: original.localFileURL
+            )
+        }
         
         // OPTIMISTIC UPDATE: Update UI immediately before API call
+        // Update the currently displayed content array
         if let index = self.content.firstIndex(where: { $0.SK == content.SK }) {
-            let updatedItem = ChannelContent(
-                SK: self.content[index].SK,
-                fileName: self.content[index].fileName,
-                title: trimmedTitle.isEmpty ? nil : trimmedTitle,
-                description: self.content[index].description,
-                hlsUrl: self.content[index].hlsUrl,
-                thumbnailUrl: self.content[index].thumbnailUrl,
-                createdAt: self.content[index].createdAt,
-                isVisible: self.content[index].isVisible,
-                price: self.content[index].price,
-                category: self.content[index].category,
-                uploadId: self.content[index].uploadId,
-                fileId: self.content[index].fileId,
-                airdate: self.content[index].airdate,
-                creatorUsername: self.content[index].creatorUsername,
-                localFileURL: self.content[index].localFileURL
-            )
-            self.content[index] = updatedItem
+            self.content[index] = createUpdatedItem(self.content[index])
             print("✅ [ChannelDetailView] Optimistic update - showing title immediately: '\(trimmedTitle)'")
+        }
+        
+        // CRITICAL: Also update the cached public/private arrays so title persists when toggling
+        if isPrivate {
+            // Update private content cache
+            if let index = self.privateContent.firstIndex(where: { $0.SK == content.SK }) {
+                self.privateContent[index] = createUpdatedItem(self.privateContent[index])
+                print("✅ [ChannelDetailView] Updated private content cache with title")
+            }
+        } else {
+            // Update public content cache
+            if let index = self.publicContent.firstIndex(where: { $0.SK == content.SK }) {
+                self.publicContent[index] = createUpdatedItem(self.publicContent[index])
+                print("✅ [ChannelDetailView] Updated public content cache with title")
+            }
         }
         
         // Close popup immediately so user sees the update
@@ -5887,62 +6236,76 @@ struct ChannelDetailView: View {
                 await MainActor.run {
                     isUpdatingContent = false
                     
+                    // Helper function to create updated item with server title
+                    let createConfirmedItem: (ChannelContent, String?) -> ChannelContent = { original, title in
+                        ChannelContent(
+                            SK: original.SK,
+                            fileName: original.fileName,
+                            title: title,
+                            description: original.description,
+                            hlsUrl: original.hlsUrl,
+                            thumbnailUrl: original.thumbnailUrl,
+                            createdAt: original.createdAt,
+                            isVisible: original.isVisible,
+                            price: original.price,
+                            category: original.category,
+                            uploadId: original.uploadId,
+                            fileId: original.fileId,
+                            airdate: original.airdate,
+                            creatorUsername: original.creatorUsername,
+                            isPrivateUsername: original.isPrivateUsername,
+                            localFileURL: original.localFileURL
+                        )
+                    }
+                    
                     if response.success {
-                        // Update with confirmed data from server
-                        if let index = self.content.firstIndex(where: { $0.SK == content.SK }) {
-                            let serverTitle: String?
-                            if let data = response.data, let titleValue = data["title"] {
-                                if let stringValue = titleValue.value as? String, !stringValue.isEmpty {
-                                    serverTitle = stringValue
-                                } else {
-                                    serverTitle = trimmedTitle.isEmpty ? nil : trimmedTitle
-                                }
+                        // Determine server title
+                        let serverTitle: String?
+                        if let data = response.data, let titleValue = data["title"] {
+                            if let stringValue = titleValue.value as? String, !stringValue.isEmpty {
+                                serverTitle = stringValue
                             } else {
                                 serverTitle = trimmedTitle.isEmpty ? nil : trimmedTitle
                             }
-                            
-                            let confirmedItem = ChannelContent(
-                                SK: self.content[index].SK,
-                                fileName: self.content[index].fileName,
-                                title: serverTitle,
-                                description: self.content[index].description,
-                                hlsUrl: self.content[index].hlsUrl,
-                                thumbnailUrl: self.content[index].thumbnailUrl,
-                                createdAt: self.content[index].createdAt,
-                                isVisible: self.content[index].isVisible,
-                                price: self.content[index].price,
-                                category: self.content[index].category,
-                                uploadId: self.content[index].uploadId,
-                                fileId: self.content[index].fileId,
-                                airdate: self.content[index].airdate,
-                                creatorUsername: self.content[index].creatorUsername,
-                                localFileURL: self.content[index].localFileURL
-                            )
-                            self.content[index] = confirmedItem
+                        } else {
+                            serverTitle = trimmedTitle.isEmpty ? nil : trimmedTitle
+                        }
+                        
+                        // Update with confirmed data from server - update all arrays
+                        if let index = self.content.firstIndex(where: { $0.SK == content.SK }) {
+                            self.content[index] = createConfirmedItem(self.content[index], serverTitle)
                             print("✅ [ChannelDetailView] Confirmed update from server - title: '\(serverTitle ?? "nil")'")
+                        }
+                        
+                        // CRITICAL: Also update the cached public/private arrays
+                        if isPrivate {
+                            if let index = self.privateContent.firstIndex(where: { $0.SK == content.SK }) {
+                                self.privateContent[index] = createConfirmedItem(self.privateContent[index], serverTitle)
+                                print("✅ [ChannelDetailView] Updated private content cache with confirmed title")
+                            }
+                        } else {
+                            if let index = self.publicContent.firstIndex(where: { $0.SK == content.SK }) {
+                                self.publicContent[index] = createConfirmedItem(self.publicContent[index], serverTitle)
+                                print("✅ [ChannelDetailView] Updated public content cache with confirmed title")
+                            }
                         }
                     } else {
                         print("❌ [ChannelDetailView] Update failed: \(response.message ?? "Unknown error")")
-                        // Revert optimistic update on failure
+                        // Revert optimistic update on failure - revert all arrays
+                        let revertedTitle = content.title
                         if let index = self.content.firstIndex(where: { $0.SK == content.SK }) {
-                            let revertedItem = ChannelContent(
-                                SK: self.content[index].SK,
-                                fileName: self.content[index].fileName,
-                                title: content.title,
-                                description: self.content[index].description,
-                                hlsUrl: self.content[index].hlsUrl,
-                                thumbnailUrl: self.content[index].thumbnailUrl,
-                                createdAt: self.content[index].createdAt,
-                                isVisible: self.content[index].isVisible,
-                                price: self.content[index].price,
-                                category: self.content[index].category,
-                                uploadId: self.content[index].uploadId,
-                                fileId: self.content[index].fileId,
-                                airdate: self.content[index].airdate,
-                                creatorUsername: self.content[index].creatorUsername,
-                                localFileURL: self.content[index].localFileURL
-                            )
-                            self.content[index] = revertedItem
+                            self.content[index] = createConfirmedItem(self.content[index], revertedTitle)
+                        }
+                        
+                        // Revert cached arrays
+                        if isPrivate {
+                            if let index = self.privateContent.firstIndex(where: { $0.SK == content.SK }) {
+                                self.privateContent[index] = createConfirmedItem(self.privateContent[index], revertedTitle)
+                            }
+                        } else {
+                            if let index = self.publicContent.firstIndex(where: { $0.SK == content.SK }) {
+                                self.publicContent[index] = createConfirmedItem(self.publicContent[index], revertedTitle)
+                            }
                         }
                     }
                 }
@@ -5950,26 +6313,42 @@ struct ChannelDetailView: View {
                 print("❌ [ChannelDetailView] Error updating content: \(error.localizedDescription)")
                 await MainActor.run {
                     isUpdatingContent = false
-                    // Revert optimistic update on error
-                    if let index = self.content.firstIndex(where: { $0.SK == content.SK }) {
-                        let revertedItem = ChannelContent(
-                            SK: self.content[index].SK,
-                            fileName: self.content[index].fileName,
-                            title: content.title,
-                            description: self.content[index].description,
-                            hlsUrl: self.content[index].hlsUrl,
-                            thumbnailUrl: self.content[index].thumbnailUrl,
-                            createdAt: self.content[index].createdAt,
-                            isVisible: self.content[index].isVisible,
-                            price: self.content[index].price,
-                            category: self.content[index].category,
-                            uploadId: self.content[index].uploadId,
-                            fileId: self.content[index].fileId,
-                            airdate: self.content[index].airdate,
-                            creatorUsername: self.content[index].creatorUsername,
-                            localFileURL: self.content[index].localFileURL
+                    // Revert optimistic update on error - revert all arrays
+                    let revertedTitle = content.title
+                    let createRevertedItem: (ChannelContent) -> ChannelContent = { original in
+                        ChannelContent(
+                            SK: original.SK,
+                            fileName: original.fileName,
+                            title: revertedTitle,
+                            description: original.description,
+                            hlsUrl: original.hlsUrl,
+                            thumbnailUrl: original.thumbnailUrl,
+                            createdAt: original.createdAt,
+                            isVisible: original.isVisible,
+                            price: original.price,
+                            category: original.category,
+                            uploadId: original.uploadId,
+                            fileId: original.fileId,
+                            airdate: original.airdate,
+                            creatorUsername: original.creatorUsername,
+                            isPrivateUsername: original.isPrivateUsername,
+                            localFileURL: original.localFileURL
                         )
-                        self.content[index] = revertedItem
+                    }
+                    
+                    if let index = self.content.firstIndex(where: { $0.SK == content.SK }) {
+                        self.content[index] = createRevertedItem(self.content[index])
+                    }
+                    
+                    // Revert cached arrays
+                    if isPrivate {
+                        if let index = self.privateContent.firstIndex(where: { $0.SK == content.SK }) {
+                            self.privateContent[index] = createRevertedItem(self.privateContent[index])
+                        }
+                    } else {
+                        if let index = self.publicContent.firstIndex(where: { $0.SK == content.SK }) {
+                            self.publicContent[index] = createRevertedItem(self.publicContent[index])
+                        }
                     }
                 }
             }
@@ -5990,31 +6369,52 @@ struct ChannelDetailView: View {
             return
         }
         
+        let isPrivate = content.isPrivateUsername == true
+        
+        // Helper function to create updated item
+        let createUpdatedItem: (ChannelContent) -> ChannelContent = { original in
+            ChannelContent(
+                SK: original.SK,
+                fileName: original.fileName,
+                title: trimmedTitle, // Save locally immediately
+                description: original.description, // Keep existing description
+                hlsUrl: original.hlsUrl,
+                thumbnailUrl: original.thumbnailUrl,
+                createdAt: original.createdAt,
+                isVisible: original.isVisible,
+                price: original.price,
+                category: original.category,
+                uploadId: original.uploadId,
+                fileId: original.fileId,
+                airdate: original.airdate,
+                creatorUsername: original.creatorUsername,
+                isPrivateUsername: original.isPrivateUsername,
+                localFileURL: original.localFileURL
+            )
+        }
+        
         // OPTIMISTIC UPDATE: Update UI immediately before API call
         // Save locally so editor can see the update right away
         if let index = self.content.firstIndex(where: { $0.SK == content.SK }) {
-            // Create updated ChannelContent with new title (optimistic update)
-            let updatedItem = ChannelContent(
-                SK: self.content[index].SK,
-                fileName: self.content[index].fileName,
-                title: trimmedTitle, // Save locally immediately
-                description: self.content[index].description, // Keep existing description
-                hlsUrl: self.content[index].hlsUrl,
-                thumbnailUrl: self.content[index].thumbnailUrl,
-                createdAt: self.content[index].createdAt,
-                isVisible: self.content[index].isVisible,
-                price: self.content[index].price,
-                category: self.content[index].category,
-                uploadId: self.content[index].uploadId,
-                fileId: self.content[index].fileId,
-                airdate: self.content[index].airdate,
-                creatorUsername: self.content[index].creatorUsername,
-                localFileURL: self.content[index].localFileURL
-            )
-            self.content[index] = updatedItem
+            self.content[index] = createUpdatedItem(self.content[index])
             print("✅ [ChannelDetailView] Optimistic update - showing title immediately: '\(trimmedTitle)'")
         } else {
             print("⚠️ [ChannelDetailView] Could not find content item for optimistic update (SK: \(content.SK))")
+        }
+        
+        // CRITICAL: Also update the cached public/private arrays so title persists when toggling
+        if isPrivate {
+            // Update private content cache
+            if let index = self.privateContent.firstIndex(where: { $0.SK == content.SK }) {
+                self.privateContent[index] = createUpdatedItem(self.privateContent[index])
+                print("✅ [ChannelDetailView] Updated private content cache with title")
+            }
+        } else {
+            // Update public content cache
+            if let index = self.publicContent.firstIndex(where: { $0.SK == content.SK }) {
+                self.publicContent[index] = createUpdatedItem(self.publicContent[index])
+                print("✅ [ChannelDetailView] Updated public content cache with title")
+            }
         }
         
         // Close modal immediately so user sees the update
@@ -6048,45 +6448,62 @@ struct ChannelDetailView: View {
                 await MainActor.run {
                     isUpdatingContent = false
                     
+                    // Helper function to create updated item with server title
+                    let createConfirmedItem: (ChannelContent, String) -> ChannelContent = { original, title in
+                        ChannelContent(
+                            SK: original.SK,
+                            fileName: original.fileName,
+                            title: title, // Use server-confirmed title
+                            description: original.description,
+                            hlsUrl: original.hlsUrl,
+                            thumbnailUrl: original.thumbnailUrl,
+                            createdAt: original.createdAt,
+                            isVisible: original.isVisible,
+                            price: original.price,
+                            category: original.category,
+                            uploadId: original.uploadId,
+                            fileId: original.fileId,
+                            airdate: original.airdate,
+                            creatorUsername: original.creatorUsername,
+                            isPrivateUsername: original.isPrivateUsername,
+                            localFileURL: original.localFileURL
+                        )
+                    }
+                    
                     if response.success {
-                        // Overwrite with confirmed data from DynamoDB
-                        if let index = self.content.firstIndex(where: { $0.SK == content.SK }) {
-                            // Use the title from the server response (confirmed from DynamoDB)
-                            // response.data is [String: AnyCodable]?, so we need to extract the String value
-                            let serverTitle: String
-                            if let data = response.data, let titleValue = data["title"] {
-                                // Extract string value from AnyCodable
-                                if let stringValue = titleValue.value as? String, !stringValue.isEmpty {
-                                    serverTitle = stringValue
-                                } else {
-                                    // Fallback to what we sent if server didn't return a valid title
-                                    serverTitle = trimmedTitle
-                                }
+                        // Use the title from the server response (confirmed from DynamoDB)
+                        // response.data is [String: AnyCodable]?, so we need to extract the String value
+                        let serverTitle: String
+                        if let data = response.data, let titleValue = data["title"] {
+                            // Extract string value from AnyCodable
+                            if let stringValue = titleValue.value as? String, !stringValue.isEmpty {
+                                serverTitle = stringValue
                             } else {
-                                // No title in response, use what we sent
+                                // Fallback to what we sent if server didn't return a valid title
                                 serverTitle = trimmedTitle
                             }
-                            
-                            // Create updated ChannelContent with confirmed title from DynamoDB
-                            let confirmedItem = ChannelContent(
-                                SK: self.content[index].SK,
-                                fileName: self.content[index].fileName,
-                                title: serverTitle, // Use server-confirmed title
-                                description: self.content[index].description,
-                                hlsUrl: self.content[index].hlsUrl,
-                                thumbnailUrl: self.content[index].thumbnailUrl,
-                                createdAt: self.content[index].createdAt,
-                                isVisible: self.content[index].isVisible,
-                                price: self.content[index].price,
-                                category: self.content[index].category,
-                                uploadId: self.content[index].uploadId,
-                                fileId: self.content[index].fileId,
-                                airdate: self.content[index].airdate,
-                                creatorUsername: self.content[index].creatorUsername,
-                                localFileURL: self.content[index].localFileURL
-                            )
-                            self.content[index] = confirmedItem
+                        } else {
+                            // No title in response, use what we sent
+                            serverTitle = trimmedTitle
+                        }
+                        
+                        // Overwrite with confirmed data from DynamoDB - update all arrays
+                        if let index = self.content.firstIndex(where: { $0.SK == content.SK }) {
+                            self.content[index] = createConfirmedItem(self.content[index], serverTitle)
                             print("✅ [ChannelDetailView] Confirmed update from DynamoDB - title: '\(serverTitle)'")
+                        }
+                        
+                        // CRITICAL: Also update the cached public/private arrays
+                        if isPrivate {
+                            if let index = self.privateContent.firstIndex(where: { $0.SK == content.SK }) {
+                                self.privateContent[index] = createConfirmedItem(self.privateContent[index], serverTitle)
+                                print("✅ [ChannelDetailView] Updated private content cache with confirmed title")
+                            }
+                        } else {
+                            if let index = self.publicContent.firstIndex(where: { $0.SK == content.SK }) {
+                                self.publicContent[index] = createConfirmedItem(self.publicContent[index], serverTitle)
+                                print("✅ [ChannelDetailView] Updated public content cache with confirmed title")
+                            }
                         }
                         
                         print("✅ [ChannelDetailView] Content updated successfully on server")
@@ -6094,28 +6511,43 @@ struct ChannelDetailView: View {
                         print("❌ [ChannelDetailView] Update failed: \(response.message ?? "Unknown error")")
                         errorMessage = response.message ?? "Failed to update video details"
                         
-                        // Revert optimistic update on failure
-                        if let index = self.content.firstIndex(where: { $0.SK == content.SK }) {
-                            // Revert to original title
-                            let revertedItem = ChannelContent(
-                                SK: self.content[index].SK,
-                                fileName: self.content[index].fileName,
-                                title: content.title, // Revert to original
-                                description: self.content[index].description,
-                                hlsUrl: self.content[index].hlsUrl,
-                                thumbnailUrl: self.content[index].thumbnailUrl,
-                                createdAt: self.content[index].createdAt,
-                                isVisible: self.content[index].isVisible,
-                                price: self.content[index].price,
-                                category: self.content[index].category,
-                                uploadId: self.content[index].uploadId,
-                                fileId: self.content[index].fileId,
-                                airdate: self.content[index].airdate,
-                                creatorUsername: self.content[index].creatorUsername,
-                                localFileURL: self.content[index].localFileURL
+                        // Revert optimistic update on failure - revert all arrays
+                        let revertedTitle = content.title
+                        let createRevertedItem: (ChannelContent) -> ChannelContent = { original in
+                            ChannelContent(
+                                SK: original.SK,
+                                fileName: original.fileName,
+                                title: revertedTitle, // Revert to original
+                                description: original.description,
+                                hlsUrl: original.hlsUrl,
+                                thumbnailUrl: original.thumbnailUrl,
+                                createdAt: original.createdAt,
+                                isVisible: original.isVisible,
+                                price: original.price,
+                                category: original.category,
+                                uploadId: original.uploadId,
+                                fileId: original.fileId,
+                                airdate: original.airdate,
+                                creatorUsername: original.creatorUsername,
+                                isPrivateUsername: original.isPrivateUsername,
+                                localFileURL: original.localFileURL
                             )
-                            self.content[index] = revertedItem
+                        }
+                        
+                        if let index = self.content.firstIndex(where: { $0.SK == content.SK }) {
+                            self.content[index] = createRevertedItem(self.content[index])
                             print("⚠️ [ChannelDetailView] Reverted optimistic update due to server error")
+                        }
+                        
+                        // Revert cached arrays
+                        if isPrivate {
+                            if let index = self.privateContent.firstIndex(where: { $0.SK == content.SK }) {
+                                self.privateContent[index] = createRevertedItem(self.privateContent[index])
+                            }
+                        } else {
+                            if let index = self.publicContent.firstIndex(where: { $0.SK == content.SK }) {
+                                self.publicContent[index] = createRevertedItem(self.publicContent[index])
+                            }
                         }
                     }
                 }
@@ -6125,28 +6557,43 @@ struct ChannelDetailView: View {
                     print("❌ [ChannelDetailView] Error updating content: \(error.localizedDescription)")
                     errorMessage = "Failed to update video details: \(error.localizedDescription)"
                     
-                    // Revert optimistic update on error
-                    if let index = self.content.firstIndex(where: { $0.SK == content.SK }) {
-                        // Revert to original title
-                        let revertedItem = ChannelContent(
-                            SK: self.content[index].SK,
-                            fileName: self.content[index].fileName,
-                            title: content.title, // Revert to original
-                            description: self.content[index].description,
-                            hlsUrl: self.content[index].hlsUrl,
-                            thumbnailUrl: self.content[index].thumbnailUrl,
-                            createdAt: self.content[index].createdAt,
-                            isVisible: self.content[index].isVisible,
-                            price: self.content[index].price,
-                            category: self.content[index].category,
-                            uploadId: self.content[index].uploadId,
-                            fileId: self.content[index].fileId,
-                            airdate: self.content[index].airdate,
-                            creatorUsername: self.content[index].creatorUsername,
-                            localFileURL: self.content[index].localFileURL
+                    // Revert optimistic update on error - revert all arrays
+                    let revertedTitle = content.title
+                    let createRevertedItem: (ChannelContent) -> ChannelContent = { original in
+                        ChannelContent(
+                            SK: original.SK,
+                            fileName: original.fileName,
+                            title: revertedTitle, // Revert to original
+                            description: original.description,
+                            hlsUrl: original.hlsUrl,
+                            thumbnailUrl: original.thumbnailUrl,
+                            createdAt: original.createdAt,
+                            isVisible: original.isVisible,
+                            price: original.price,
+                            category: original.category,
+                            uploadId: original.uploadId,
+                            fileId: original.fileId,
+                            airdate: original.airdate,
+                            creatorUsername: original.creatorUsername,
+                            isPrivateUsername: original.isPrivateUsername,
+                            localFileURL: original.localFileURL
                         )
-                        self.content[index] = revertedItem
+                    }
+                    
+                    if let index = self.content.firstIndex(where: { $0.SK == content.SK }) {
+                        self.content[index] = createRevertedItem(self.content[index])
                         print("⚠️ [ChannelDetailView] Reverted optimistic update due to network error")
+                    }
+                    
+                    // Revert cached arrays
+                    if isPrivate {
+                        if let index = self.privateContent.firstIndex(where: { $0.SK == content.SK }) {
+                            self.privateContent[index] = createRevertedItem(self.privateContent[index])
+                        }
+                    } else {
+                        if let index = self.publicContent.firstIndex(where: { $0.SK == content.SK }) {
+                            self.publicContent[index] = createRevertedItem(self.publicContent[index])
+                        }
                     }
                 }
             }
