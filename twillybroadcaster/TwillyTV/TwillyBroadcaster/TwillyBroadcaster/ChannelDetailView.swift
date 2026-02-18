@@ -130,225 +130,270 @@ struct ChannelDetailView: View {
         }
     }
     
-    var body: some View {
+    // MARK: - Body View Helpers (Breaking up complex expression for compiler)
+    
+    private var baseContentView: some View {
         ZStack {
             backgroundGradient
             mainScrollView
         }
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.hidden, for: .navigationBar)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                navigationTitleView
-            }
+    }
+    
+    @ViewBuilder
+    private var viewWithNavigation: some View {
+        if #available(iOS 16.0, *) {
+            baseContentView
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(.hidden, for: .navigationBar)
+        } else {
+            baseContentView
+                .navigationBarTitleDisplayMode(.inline)
         }
-        .toolbar {
-            ToolbarItemGroup(placement: .navigationBarLeading) {
-                leadingToolbarItems
-            }
-            
-            ToolbarItemGroup(placement: .navigationBarTrailing) {
-                trailingToolbarItems
-            }
-        }
-        .sheet(isPresented: $showingSettings) {
-            StreamerSettingsView()
-        }
-        .sheet(isPresented: $showingUsernameSearch) {
-            UsernameSearchView(
-                channelName: currentChannel.channelName,
-                onUsernameAdded: {
-                    // Reload added usernames and refresh content (merge to preserve optimistic updates)
-                    loadAddedUsernames(mergeWithExisting: true)
-                    Task {
-                        try? await refreshChannelContent()
-                    }
-                }
-            )
-        }
-        .onDisappear {
-            // CRITICAL: Clean up all background tasks when view disappears
-            // Stop polling when view disappears
-            stopThumbnailPolling()
-            
-            // Stop auto-refresh task
-            stopAutoRefresh()
-            
-            // Cancel any pending content loading tasks
-            // (Tasks are automatically cancelled when view disappears, but explicit cancellation is safer)
-        }
-        .alert("Delete Video", isPresented: $showingDeleteConfirmation, presenting: contentToDelete) { item in
-            Button("Cancel", role: .cancel) {
-                contentToDelete = nil
-            }
-            Button("Delete", role: .destructive) {
-                // Prevent multiple taps
-                guard !isDeleting else {
-                    print("⚠️ [ChannelDetailView] Delete already in progress, ignoring tap")
-                    return
-                }
-                deleteContent(item: item)
-            }
-        } message: { item in
-            // Never show raw m3u8 filename - show cleaned title or fallback
-            let displayName = (item.title?.trimmingCharacters(in: .whitespaces).isEmpty == false) 
-                ? ContentCard.cleanTitle(item.title ?? "") 
-                : "this video"
-            Text("Are you sure you want to delete \"\(displayName)\"? This action cannot be undone.")
-        }
-        .sheet(isPresented: $showingEditModal) {
-            editContentModal
-        }
-        .sheet(isPresented: $showingContentManagementPopup) {
-            contentManagementPopup
-        }
-        .sheet(isPresented: $showingFollowRequests) {
-            followRequestsSheet
-        }
-        .onAppear {
-            print("👁️ [ChannelDetailView] onAppear called - hasLoaded: \(hasLoaded), content.count: \(content.count), isLoading: \(isLoading), forceRefresh: \(forceRefresh)")
-            print("   Channel: \(currentChannel.channelName)")
-            print("   Poster URL at onAppear: \(currentChannel.posterUrl.isEmpty ? "EMPTY" : currentChannel.posterUrl)")
-            
-            // Load cached search results from UserDefaults for instant results
-            loadSearchCacheFromUserDefaults()
-            
-            // Load user's schedule and post automatically status (for admin stream button visibility)
-            if isAdminUser {
-                loadUserScheduleStatus()
-                loadUserPostAutomatically()
-            }
-            
-            // Load added usernames for Twilly TV and auto-add own username
-            if currentChannel.channelName.lowercased() == "twilly tv" {
-                loadAddedUsernames()
-                // Auto-add user's own username to see their own content
-                autoAddOwnUsername()
-                // Load received follow requests to show badge count
-                loadReceivedFollowRequests()
-            }
-            
-            // Check for local video info to show immediately
-            if let localInfo = globalLocalVideoInfo, localInfo.channelName == currentChannel.channelName {
-                print("📹 [ChannelDetailView] Found local video for this channel - showing immediately")
-                let localContent = ChannelContent(
-                    SK: "local-\(UUID().uuidString)",
-                    fileName: localInfo.url.lastPathComponent,
-                    title: localInfo.title,
-                    description: localInfo.description,
-                    hlsUrl: nil,
-                    thumbnailUrl: nil,
-                    createdAt: Date().ISO8601Format(),
-                    isVisible: true,
-                    price: localInfo.price,
-                    category: "Videos",
-                    creatorUsername: authService.username,
-                    localFileURL: localInfo.url
-                )
-                localVideoContent = localContent
-                content = [localContent] // Show local video immediately
-                isLoading = false // Don't show loading spinner - we have content
-                print("✅ [ChannelDetailView] Local video added to content list - content.count: \(content.count)")
-                
-                // Start polling for thumbnail immediately
-                startThumbnailPolling()
-                
-                // Clear global info after using it
-                globalLocalVideoInfo = nil
-            }
-            
-            // Always load server content if not already loaded or if forceRefresh
-            if !hasLoaded || forceRefresh {
-                print("🔄 [ChannelDetailView] Loading server content... (forceRefresh: \(forceRefresh), hasLocalVideo: \(localVideoContent != nil))")
-                if localVideoContent == nil {
-                    // No local video - show loading spinner
-                    isLoading = true
-                    if forceRefresh {
-                        content = [] // Clear content on force refresh
-                    }
-                    errorMessage = nil
-                }
-                loadContent()
-            } else {
-                print("✅ [ChannelDetailView] Already loaded and not forcing refresh, skipping load")
-            }
-            
-            // Start auto-refresh to check for new videos
-            startAutoRefresh()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RefreshTwillyTVContent"))) { _ in
-            // CRITICAL: When a follow request is accepted, refresh everything to show private content
-            print("🔄 [ChannelDetailView] Received RefreshTwillyTVContent notification - follow request was accepted")
-            guard currentChannel.channelName.lowercased() == "twilly tv" else { return }
-            
-            // Refresh added usernames to get the newly accepted private username
-            loadAddedUsernames(mergeWithExisting: true)
-            
-            // Refresh sent follow requests to update status from "pending" to "accepted"
-            // Use merge to preserve any optimistic updates
-            loadSentFollowRequests(mergeWithExisting: true)
-            
-            // Refresh content to show private content from the accepted user
-            Task {
-                do {
-                    try? await Task.sleep(nanoseconds: 500_000_000) // Wait 0.5s for addedUsernames to load
-                    try? await refreshChannelContent()
-                    print("✅ [ChannelDetailView] Refreshed content after follow request acceptance")
-                } catch {
-                    print("❌ [ChannelDetailView] Error refreshing content after acceptance: \(error.localizedDescription)")
+    }
+    
+    private var viewWithPrincipalToolbar: some View {
+        viewWithNavigation
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    navigationTitleView
                 }
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NewFollowRequestReceived"))) { _ in
-            // CRITICAL: When a new follow request is received, refresh the received requests list
-            print("🔄 [ChannelDetailView] Received NewFollowRequestReceived notification - refreshing received requests")
-            loadReceivedFollowRequests()
-        }
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 20)
-                .onEnded { value in
-                    let horizontalMovement = abs(value.translation.width)
-                    let verticalMovement = abs(value.translation.height)
-                    
-                    // Swipe down to dismiss
-                    if value.translation.height > 100 || value.predictedEndTranslation.height > 200 {
-                        dismiss()
-                        return
-                    }
-                    
-                    // Swipe RIGHT (from left to right, positive width) to go to stream screen
-                    // Only process as swipe if horizontal movement is significant and greater than vertical
-                    if horizontalMovement > 50 && horizontalMovement > verticalMovement {
-                        if value.translation.width > 80 || value.predictedEndTranslation.width > 150 {
-                            // Post notification to show stream screen
-                            print("✅ [ChannelDetailView] Swipe RIGHT detected → Going to Stream screen")
-                            NotificationCenter.default.post(
-                                name: NSNotification.Name("ShowStreamScreen"),
-                                object: nil
-                            )
-                            // Dismiss channel view to show stream screen
-                            dismiss()
+    }
+    
+    private var viewWithLeadingToolbar: some View {
+        viewWithPrincipalToolbar
+            .toolbar {
+                ToolbarItemGroup(placement: .navigationBarLeading) {
+                    leadingToolbarItems
+                }
+            }
+    }
+    
+    private var viewWithNavigationAndToolbar: some View {
+        viewWithLeadingToolbar
+            .toolbar {
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    trailingToolbarItems
+                }
+            }
+    }
+    
+    private var viewWithSheetsAndAlerts: some View {
+        viewWithNavigationAndToolbar
+            .sheet(isPresented: $showingSettings) {
+                StreamerSettingsView()
+            }
+            .sheet(isPresented: $showingUsernameSearch) {
+                UsernameSearchView(
+                    channelName: currentChannel.channelName,
+                    onUsernameAdded: {
+                        // Reload added usernames and refresh content (merge to preserve optimistic updates)
+                        loadAddedUsernames(mergeWithExisting: true)
+                        Task {
+                            try? await refreshChannelContent()
                         }
                     }
+                )
+            }
+            .alert("Delete Video", isPresented: $showingDeleteConfirmation, presenting: contentToDelete) { item in
+                Button("Cancel", role: .cancel) {
+                    contentToDelete = nil
                 }
-        )
-        .fullScreenCover(isPresented: $showingPlayer) {
-            Group {
-                let _ = print("🎬 [ChannelDetailView] ========== FULLSCREEN COVER OPENED ==========")
-                let _ = print("   - showingPlayer: \(showingPlayer)")
-                let _ = print("   - selectedContent: \(selectedContent?.fileName ?? "nil")")
-                let _ = print("   - selectedContent hlsUrl: \(selectedContent?.hlsUrl ?? "nil")")
-                let _ = print("   - selectedContent thumbnailUrl: \(selectedContent?.thumbnailUrl ?? "nil")")
+                Button("Delete", role: .destructive) {
+                    // Prevent multiple taps
+                    guard !isDeleting else {
+                        print("⚠️ [ChannelDetailView] Delete already in progress, ignoring tap")
+                        return
+                    }
+                    deleteContent(item: item)
+                }
+            } message: { item in
+                // Never show raw m3u8 filename - show cleaned title or fallback
+                let displayName = (item.title?.trimmingCharacters(in: .whitespaces).isEmpty == false) 
+                    ? ContentCard.cleanTitle(item.title ?? "") 
+                    : "this video"
+                Text("Are you sure you want to delete \"\(displayName)\"? This action cannot be undone.")
+            }
+            .sheet(isPresented: $showingEditModal) {
+                editContentModal
+            }
+            .sheet(isPresented: $showingContentManagementPopup) {
+                contentManagementPopup
+            }
+            .sheet(isPresented: $showingFollowRequests) {
+                followRequestsSheet
+            }
+    }
+    
+    private var viewWithLifecycleHandlers: some View {
+        viewWithSheetsAndAlerts
+            .onDisappear {
+                // CRITICAL: Clean up all background tasks when view disappears
+                // Stop polling when view disappears
+                stopThumbnailPolling()
                 
-                if let content = selectedContent {
-                    // Check for local file first, then HLS URL
-                    if let localURL = content.localFileURL {
-                        let _ = print("✅ [ChannelDetailView] Opening video player with LOCAL file: \(localURL.path)")
-                        VideoPlayerView(url: localURL, content: content)
-                    } else if let hlsUrl = content.hlsUrl, !hlsUrl.isEmpty, let url = URL(string: hlsUrl) {
-                        let _ = print("✅ [ChannelDetailView] Opening video player with HLS URL: \(hlsUrl)")
-                        let _ = print("   - Thumbnail URL: \(content.thumbnailUrl ?? "none")")
-                        VideoPlayerView(url: url, content: content)
+                // Stop auto-refresh task
+                stopAutoRefresh()
+                
+                // Cancel any pending content loading tasks
+                // (Tasks are automatically cancelled when view disappears, but explicit cancellation is safer)
+            }
+            .onAppear {
+                print("👁️ [ChannelDetailView] onAppear called - hasLoaded: \(hasLoaded), content.count: \(content.count), isLoading: \(isLoading), forceRefresh: \(forceRefresh)")
+                print("   Channel: \(currentChannel.channelName)")
+                print("   Poster URL at onAppear: \(currentChannel.posterUrl.isEmpty ? "EMPTY" : currentChannel.posterUrl)")
+                
+                // Load cached search results from UserDefaults for instant results
+                loadSearchCacheFromUserDefaults()
+                
+                // Load user's schedule and post automatically status (for admin stream button visibility)
+                if isAdminUser {
+                    loadUserScheduleStatus()
+                    loadUserPostAutomatically()
+                }
+                
+                // Load added usernames for Twilly TV and auto-add own username
+                if currentChannel.channelName.lowercased() == "twilly tv" {
+                    loadAddedUsernames()
+                    // Auto-add user's own username to see their own content
+                    autoAddOwnUsername()
+                    // Load received follow requests to show badge count
+                    loadReceivedFollowRequests()
+                }
+                
+                // Check for local video info to show immediately
+                if let localInfo = globalLocalVideoInfo, localInfo.channelName == currentChannel.channelName {
+                    print("📹 [ChannelDetailView] Found local video for this channel - showing immediately")
+                    let localContent = ChannelContent(
+                        SK: "local-\(UUID().uuidString)",
+                        fileName: localInfo.url.lastPathComponent,
+                        title: localInfo.title,
+                        description: localInfo.description,
+                        hlsUrl: nil,
+                        thumbnailUrl: nil,
+                        createdAt: Date().ISO8601Format(),
+                        isVisible: true,
+                        price: localInfo.price,
+                        category: "Videos",
+                        creatorUsername: authService.username,
+                        localFileURL: localInfo.url
+                    )
+                    localVideoContent = localContent
+                    content = [localContent] // Show local video immediately
+                    isLoading = false // Don't show loading spinner - we have content
+                    print("✅ [ChannelDetailView] Local video added to content list - content.count: \(content.count)")
+                    
+                    // Start polling for thumbnail immediately
+                    startThumbnailPolling()
+                    
+                    // Clear global info after using it
+                    globalLocalVideoInfo = nil
+                }
+                
+                // Always load server content if not already loaded or if forceRefresh
+                if !hasLoaded || forceRefresh {
+                    print("🔄 [ChannelDetailView] Loading server content... (forceRefresh: \(forceRefresh), hasLocalVideo: \(localVideoContent != nil))")
+                    if localVideoContent == nil {
+                        // No local video - show loading spinner
+                        isLoading = true
+                        if forceRefresh {
+                            content = [] // Clear content on force refresh
+                        }
+                        errorMessage = nil
+                    }
+                    loadContent()
+                } else {
+                    print("✅ [ChannelDetailView] Already loaded and not forcing refresh, skipping load")
+                }
+                
+                // Start auto-refresh to check for new videos
+                startAutoRefresh()
+            }
+            .onChange(of: showingPlayer) { newValue in
+                print("🔄 [ChannelDetailView] showingPlayer changed to: \(newValue)")
+                if newValue {
+                    print("   - selectedContent at change: \(selectedContent?.fileName ?? "nil")")
+                }
+            }
+    }
+    
+    private var viewWithNotificationsAndGestures: some View {
+        viewWithLifecycleHandlers
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RefreshTwillyTVContent"))) { _ in
+                // CRITICAL: When a follow request is accepted, refresh everything to show private content
+                print("🔄 [ChannelDetailView] Received RefreshTwillyTVContent notification - follow request was accepted")
+                guard currentChannel.channelName.lowercased() == "twilly tv" else { return }
+                
+                // Refresh added usernames to get the newly accepted private username
+                loadAddedUsernames(mergeWithExisting: true)
+                
+                // Refresh sent follow requests to update status from "pending" to "accepted"
+                // Use merge to preserve any optimistic updates
+                loadSentFollowRequests(mergeWithExisting: true)
+                
+                // Refresh content to show private content from the accepted user
+                Task {
+                    do {
+                        try? await Task.sleep(nanoseconds: 500_000_000) // Wait 0.5s for addedUsernames to load
+                        try? await refreshChannelContent()
+                        print("✅ [ChannelDetailView] Refreshed content after follow request acceptance")
+                    } catch {
+                        print("❌ [ChannelDetailView] Error refreshing content after acceptance: \(error.localizedDescription)")
+                    }
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NewFollowRequestReceived"))) { _ in
+                // CRITICAL: When a new follow request is received, refresh the received requests list
+                print("🔄 [ChannelDetailView] Received NewFollowRequestReceived notification - refreshing received requests")
+                loadReceivedFollowRequests()
+            }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 20)
+                    .onEnded { value in
+                        let horizontalMovement = abs(value.translation.width)
+                        let verticalMovement = abs(value.translation.height)
+                        
+                        // Swipe down to dismiss
+                        if value.translation.height > 100 || value.predictedEndTranslation.height > 200 {
+                            dismiss()
+                            return
+                        }
+                        
+                        // Swipe RIGHT (from left to right, positive width) to go to stream screen
+                        // Only process as swipe if horizontal movement is significant and greater than vertical
+                        if horizontalMovement > 50 && horizontalMovement > verticalMovement {
+                            if value.translation.width > 80 || value.predictedEndTranslation.width > 150 {
+                                // Post notification to show stream screen
+                                print("✅ [ChannelDetailView] Swipe RIGHT detected → Going to Stream screen")
+                                NotificationCenter.default.post(
+                                    name: NSNotification.Name("ShowStreamScreen"),
+                                    object: nil
+                                )
+                                // Dismiss channel view to show stream screen
+                                dismiss()
+                            }
+                        }
+                    }
+            )
+    }
+    
+    private var videoPlayerFullScreenCover: some View {
+        Group {
+            let _ = print("🎬 [ChannelDetailView] ========== FULLSCREEN COVER OPENED ==========")
+            let _ = print("   - showingPlayer: \(showingPlayer)")
+            let _ = print("   - selectedContent: \(selectedContent?.fileName ?? "nil")")
+            let _ = print("   - selectedContent hlsUrl: \(selectedContent?.hlsUrl ?? "nil")")
+            let _ = print("   - selectedContent thumbnailUrl: \(selectedContent?.thumbnailUrl ?? "nil")")
+            
+            if let content = selectedContent {
+                // Check for local file first, then HLS URL
+                if let localURL = content.localFileURL {
+                    let _ = print("✅ [ChannelDetailView] Opening video player with LOCAL file: \(localURL.path)")
+                    VideoPlayerView(url: localURL, content: content)
+                } else if let hlsUrl = content.hlsUrl, !hlsUrl.isEmpty, let url = URL(string: hlsUrl) {
+                    let _ = print("✅ [ChannelDetailView] Opening video player with HLS URL: \(hlsUrl)")
+                    let _ = print("   - Thumbnail URL: \(content.thumbnailUrl ?? "none")")
+                    VideoPlayerView(url: url, content: content)
                 } else {
                     let _ = print("❌ [ChannelDetailView] Cannot open video player - missing content or hlsUrl")
                     let _ = print("   - selectedContent exists: \(selectedContent != nil)")
@@ -415,27 +460,27 @@ struct ChannelDetailView: View {
                         .padding()
                     }
                 }
-                } else {
-                    // Fallback if selectedContent is nil
-                    ZStack {
-                        Color.black.ignoresSafeArea()
-                        VStack(spacing: 20) {
-                            Text("No video selected")
-                                .foregroundColor(.white)
-                            Button("Close") {
-                                showingPlayer = false
-                            }
+            } else {
+                // Fallback if selectedContent is nil
+                ZStack {
+                    Color.black.ignoresSafeArea()
+                    VStack(spacing: 20) {
+                        Text("No video selected")
+                            .foregroundColor(.white)
+                        Button("Close") {
+                            showingPlayer = false
                         }
                     }
                 }
             }
         }
-        .onChange(of: showingPlayer) { newValue in
-            print("🔄 [ChannelDetailView] showingPlayer changed to: \(newValue)")
-            if newValue {
-                print("   - selectedContent at change: \(selectedContent?.fileName ?? "nil")")
+    }
+    
+    var body: some View {
+        viewWithNotificationsAndGestures
+            .fullScreenCover(isPresented: $showingPlayer) {
+                videoPlayerFullScreenCover
             }
-        }
     }
     
     // MARK: - View Components
@@ -534,9 +579,8 @@ struct ChannelDetailView: View {
     // MARK: - Toolbar Items
     @ViewBuilder
     private var leadingToolbarItems: some View {
-        // Filter icon - only show for Twilly TV channel
+        // Private/Public toggle - only show for Twilly TV channel
         if currentChannel.channelName.lowercased() == "twilly tv" {
-            filterButton
             privateToggleButton
         }
     }
@@ -812,6 +856,7 @@ struct ChannelDetailView: View {
                         channelInfoFixed
                             .background(backgroundGradient)
                     }
+                    .background(Color.black) // Solid opaque background to completely hide scrolling content behind
                     .zIndex(1)
                     
                     // Scrollable: divider + content cards
@@ -1524,6 +1569,7 @@ struct ChannelDetailView: View {
                     }
             }
         }
+        .background(Color.black) // Solid opaque background to completely hide content behind poster
         .frame(maxWidth: .infinity)
         .frame(height: currentChannel.channelName.lowercased() == "twilly tv" ? 240 : 200) // Taller for Twilly TV
         .clipped()
