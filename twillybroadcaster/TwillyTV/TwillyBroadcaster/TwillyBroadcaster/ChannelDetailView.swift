@@ -7318,56 +7318,59 @@ struct ContentCard: View {
                 // Tappable area for card (everything except play button)
                 Button(action: onTap) {
                     HStack(spacing: 12) {
-                        // Thumbnail - maintain aspect ratio for portrait videos
-                        ZStack {
-                            AsyncImage(url: URL(string: content.thumbnailUrl ?? "")) { phase in
-                                switch phase {
-                                case .success(let image):
-                                    image
-                                        .resizable()
-                                        .aspectRatio(contentMode: .fill)
-                                case .failure(_), .empty:
-                                    ZStack {
+                        // Thumbnail with favorite button overlay
+                        ZStack(alignment: .topTrailing) {
+                            // Thumbnail - maintain aspect ratio for portrait videos
+                            ZStack {
+                                AsyncImage(url: URL(string: content.thumbnailUrl ?? "")) { phase in
+                                    switch phase {
+                                    case .success(let image):
+                                        image
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fill)
+                                    case .failure(_), .empty:
+                                        ZStack {
+                                            Color.gray.opacity(0.3)
+                                            Image(systemName: "play.circle.fill")
+                                                .font(.system(size: 40))
+                                                .foregroundColor(.white.opacity(0.5))
+                                        }
+                                    @unknown default:
                                         Color.gray.opacity(0.3)
-                                        Image(systemName: "play.circle.fill")
-                                            .font(.system(size: 40))
-                                            .foregroundColor(.white.opacity(0.5))
-                                    }
-                                @unknown default:
-                                    Color.gray.opacity(0.3)
-                                }
-                            }
-                            
-                            // Upload status indicators overlay
-                            if isLocalVideo && isUploadComplete {
-                                VStack {
-                                    Spacer()
-                                    HStack {
-                                        Spacer()
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .font(.system(size: 20))
-                                            .foregroundColor(.twillyCyan)
-                                            .background(Circle().fill(Color.black.opacity(0.7)))
-                                            .padding(4)
                                     }
                                 }
-                            } else if isLocalVideo && isPollingForThumbnail {
-                                VStack {
-                                    Spacer()
-                                    HStack {
+                                
+                                // Upload status indicators overlay
+                                if isLocalVideo && isUploadComplete {
+                                    VStack {
                                         Spacer()
-                                        ProgressView()
-                                            .tint(.twillyCyan)
-                                            .scaleEffect(0.8)
-                                            .padding(6)
-                                            .background(Circle().fill(Color.black.opacity(0.7)))
+                                        HStack {
+                                            Spacer()
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .font(.system(size: 20))
+                                                .foregroundColor(.twillyCyan)
+                                                .background(Circle().fill(Color.black.opacity(0.7)))
+                                                .padding(4)
+                                        }
+                                    }
+                                } else if isLocalVideo && isPollingForThumbnail {
+                                    VStack {
+                                        Spacer()
+                                        HStack {
+                                            Spacer()
+                                            ProgressView()
+                                                .tint(.twillyCyan)
+                                                .scaleEffect(0.8)
+                                                .padding(6)
+                                                .background(Circle().fill(Color.black.opacity(0.7)))
+                                        }
                                     }
                                 }
                             }
+                            .frame(width: 120, height: 120) // Square frame to accommodate both portrait and landscape
+                            .clipped()
+                            .cornerRadius(8)
                         }
-                        .frame(width: 120, height: 120) // Square frame to accommodate both portrait and landscape
-                        .clipped()
-                        .cornerRadius(8)
                         
                         // Content info - Title, username, and duration
                         VStack(alignment: .leading, spacing: 6) {
@@ -7425,6 +7428,19 @@ struct ContentCard: View {
                                         .font(.caption)
                                         .foregroundColor(.white.opacity(0.7))
                                 }
+                            }
+                            
+                            // Favorite star button - below video duration
+                            if let onFavorite = onFavorite {
+                                Button(action: {
+                                    onFavorite()
+                                }) {
+                                    Image(systemName: isFavorite ? "star.fill" : "star")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundColor(isFavorite ? .yellow : .white.opacity(0.6))
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                                .padding(.top, 2)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading) // Take available space, keep aligned left
@@ -7512,42 +7528,23 @@ struct ContentCard: View {
                 .padding(8)
             }
             .overlay(alignment: .topTrailing) {
-                VStack(alignment: .trailing, spacing: 4) {
-                    // Favorite button - always visible
-                    if let onFavorite = onFavorite {
-                        Button(action: {
-                            onFavorite()
-                        }) {
-                            Image(systemName: isFavorite ? "star.fill" : "star")
-                                .font(.system(size: 16, weight: .medium))
-                                .foregroundColor(isFavorite ? .yellow : .white.opacity(0.7))
-                                .padding(6)
-                                .background(
-                                    Circle()
-                                        .fill(isFavorite ? Color.yellow.opacity(0.2) : Color.black.opacity(0.5))
-                                )
-                        }
-                        .buttonStyle(PlainButtonStyle())
+                // Scheduled date badge
+                if isScheduled, let date = scheduledDate {
+                    HStack(spacing: 4) {
+                        Image(systemName: "clock.fill")
+                            .font(.system(size: 9))
+                        Text(formatScheduledDate(date))
+                            .font(.system(size: 10, weight: .semibold))
                     }
-                    
-                    // Scheduled date badge
-                    if isScheduled, let date = scheduledDate {
-                        HStack(spacing: 4) {
-                            Image(systemName: "clock.fill")
-                                .font(.system(size: 9))
-                            Text(formatScheduledDate(date))
-                                .font(.system(size: 10, weight: .semibold))
-                        }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(
-                            Capsule()
-                                .fill(Color.blue.opacity(0.8))
-                        )
-                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(Color.blue.opacity(0.8))
+                    )
+                    .padding(8)
                 }
-                .padding(8)
             }
             .overlay {
                 // Overlay for scheduled content (like Netflix - prevents interaction)
