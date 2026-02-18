@@ -716,11 +716,43 @@ struct ChannelDetailView: View {
     // MARK: - View Components
     
     private var backgroundGradient: some View {
-        LinearGradient(
-            gradient: Gradient(colors: [Color.black, Color(red: 0.1, green: 0.1, blue: 0.15)]),
-            startPoint: .top,
-            endPoint: .bottom
-        )
+        ZStack {
+            // Base gradient
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color.black,
+                    Color(red: 0.08, green: 0.08, blue: 0.12),
+                    Color(red: 0.1, green: 0.1, blue: 0.15)
+                ]),
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            
+            // Overlay gradient mesh for depth (only for Twilly TV)
+            if currentChannel.channelName.lowercased() == "twilly tv" {
+                LinearGradient(
+                    gradient: Gradient(colors: [
+                        Color.twillyTeal.opacity(0.08),
+                        Color.clear,
+                        Color.twillyCyan.opacity(0.06),
+                        Color.clear
+                    ]),
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                
+                // Secondary diagonal gradient
+                LinearGradient(
+                    gradient: Gradient(colors: [
+                        Color.clear,
+                        Color.twillyCyan.opacity(0.04),
+                        Color.clear
+                    ]),
+                    startPoint: .topTrailing,
+                    endPoint: .bottomLeading
+                )
+            }
+        }
         .ignoresSafeArea()
     }
     
