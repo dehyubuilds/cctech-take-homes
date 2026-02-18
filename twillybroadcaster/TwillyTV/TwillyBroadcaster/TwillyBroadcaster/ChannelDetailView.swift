@@ -4583,29 +4583,31 @@ struct ChannelDetailView: View {
             $0.streamerUsername.lowercased() == cleanPrivateUsername.lowercased() 
         })
         
-        // DEBUG: Log button state determination
-        print("🔍 [ChannelDetailView] Button state for '\(cleanPrivateUsername)':")
-        print("   isApproved: \(isApproved)")
-        print("   isInAddedUsernames: \(isInAddedUsernames)")
-        print("   sentFollowRequests count: \(sentFollowRequests.count)")
-        print("   addedUsernames count: \(addedUsernames.count)")
-        if isApproved {
-            let approvedRequest = sentFollowRequests.first(where: { 
-                $0.requestedUsername.lowercased() == cleanPrivateUsername.lowercased() && 
-                $0.status.lowercased() == "accepted"
-            })
-            print("   Approved request found: \(approvedRequest != nil ? "YES" : "NO")")
-            if let req = approvedRequest {
-                print("   Request details: username=\(req.requestedUsername), status=\(req.status)")
+        // DEBUG: Log button state determination (execute before ViewBuilder)
+        let _ = {
+            print("🔍 [ChannelDetailView] Button state for '\(cleanPrivateUsername)':")
+            print("   isApproved: \(isApproved)")
+            print("   isInAddedUsernames: \(isInAddedUsernames)")
+            print("   sentFollowRequests count: \(sentFollowRequests.count)")
+            print("   addedUsernames count: \(addedUsernames.count)")
+            if isApproved {
+                let approvedRequest = sentFollowRequests.first(where: { 
+                    $0.requestedUsername.lowercased() == cleanPrivateUsername.lowercased() && 
+                    $0.status.lowercased() == "accepted"
+                })
+                print("   Approved request found: \(approvedRequest != nil ? "YES" : "NO")")
+                if let req = approvedRequest {
+                    print("   Request details: username=\(req.requestedUsername), status=\(req.status)")
+                }
             }
-        }
-        if !isInAddedUsernames {
-            let matchingAdded = addedUsernames.filter { 
-                $0.streamerUsername.lowercased() == cleanPrivateUsername.lowercased() 
+            if !isInAddedUsernames {
+                let matchingAdded = addedUsernames.filter { 
+                    $0.streamerUsername.lowercased() == cleanPrivateUsername.lowercased() 
+                }
+                print("   Matching addedUsernames: \(matchingAdded.count)")
+                print("   All addedUsernames: \(addedUsernames.map { $0.streamerUsername }.joined(separator: ", "))")
             }
-            print("   Matching addedUsernames: \(matchingAdded.count)")
-            print("   All addedUsernames: \(addedUsernames.map { $0.streamerUsername }.joined(separator: ", "))")
-        }
+        }()
         
         if isApproved && isInAddedUsernames {
             // Request was approved - show "Approved" with remove option
