@@ -3307,11 +3307,65 @@ struct ChannelDetailView: View {
             .navigationTitle("Private Requests")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button(action: {
+                        // Refresh follow requests and notifications
+                        loadReceivedFollowRequests()
+                        // Also trigger notification fetch to get latest notifications
+                        if let userEmail = authService.userEmail {
+                            Task {
+                                // Fetch notifications which will post NewFollowRequestReceived if new requests found
+                                do {
+                                    let response = try await ChannelService.shared.getNotifications(userEmail: userEmail, limit: 50, unreadOnly: false)
+                                    // Check if there are new follow request notifications
+                                    let hasFollowRequest = (response.notifications ?? []).contains { $0.type == "follow_request" && !$0.isRead }
+                                    if hasFollowRequest {
+                                        // Trigger refresh
+                                        await MainActor.run {
+                                            NotificationCenter.default.post(
+                                                name: NSNotification.Name("NewFollowRequestReceived"),
+                                                object: nil
+                                            )
+                                        }
+                                    }
+                                } catch {
+                                    print("⚠️ [ChannelDetailView] Error fetching notifications for refresh: \(error.localizedDescription)")
+                                }
+                            }
+                        }
+                    }) {
+                        Image(systemName: "arrow.clockwise")
+                            .foregroundColor(.white)
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") {
                         showingFollowRequests = false
                     }
                     .foregroundColor(.white)
+                }
+            }
+            .onAppear {
+                // Refresh when sheet appears to get latest requests
+                loadReceivedFollowRequests()
+                // Also fetch notifications to trigger NewFollowRequestReceived if needed
+                if let userEmail = authService.userEmail {
+                    Task {
+                        do {
+                            let response = try await ChannelService.shared.getNotifications(userEmail: userEmail, limit: 50, unreadOnly: false)
+                            let hasFollowRequest = (response.notifications ?? []).contains { $0.type == "follow_request" && !$0.isRead }
+                            if hasFollowRequest {
+                                await MainActor.run {
+                                    NotificationCenter.default.post(
+                                        name: NSNotification.Name("NewFollowRequestReceived"),
+                                        object: nil
+                                    )
+                                }
+                            }
+                        } catch {
+                            print("⚠️ [ChannelDetailView] Error fetching notifications on appear: \(error.localizedDescription)")
+                        }
+                    }
                 }
             }
         }
