@@ -162,12 +162,14 @@ struct ChannelDetailView: View {
                         if currentChannel.channelName.lowercased() != "twilly tv" {
                             navigationTitleView
                         } else {
-                            // For Twilly TV, show centered toggle, filter, and favorites
+                            // For Twilly TV, show toggle, filter, and favorites shifted left
                             HStack(spacing: 12) {
                                 privateToggleButton
                                 twillyLogoFilterButton
                                 favoritesButton
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, 20)
                         }
                     }
                 }
