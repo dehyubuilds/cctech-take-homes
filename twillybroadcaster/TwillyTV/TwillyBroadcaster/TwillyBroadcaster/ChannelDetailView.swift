@@ -531,6 +531,230 @@ struct ChannelDetailView: View {
             .shadow(color: Color.twillyCyan.opacity(0.3), radius: 12, x: 0, y: 4)
     }
     
+    // MARK: - Toolbar Items
+    @ViewBuilder
+    private var leadingToolbarItems: some View {
+        // Filter icon - only show for Twilly TV channel
+        if currentChannel.channelName.lowercased() == "twilly tv" {
+            filterButton
+            privateToggleButton
+        }
+    }
+    
+    @ViewBuilder
+    private var trailingToolbarItems: some View {
+        // Follow requests button
+        Button(action: {
+            showingFollowRequests = true
+            loadReceivedFollowRequests()
+        }) {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "person.badge.plus")
+                    .foregroundColor(.white)
+                
+                // Badge with count of pending requests
+                if !receivedFollowRequests.isEmpty {
+                    Text("\(receivedFollowRequests.count)")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Color.red)
+                        .clipShape(Capsule())
+                        .offset(x: 8, y: -8)
+                }
+            }
+        }
+        
+        // Settings button
+        Button(action: {
+            showingSettings = true
+        }) {
+            Image(systemName: "gear")
+                .foregroundColor(.white)
+        }
+    }
+    
+    private var filterButton: some View {
+        Button(action: handleFilterToggle) {
+            Image(systemName: showOnlyOwnContent ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                .foregroundColor(showOnlyOwnContent ? .twillyCyan : .white)
+        }
+    }
+    
+    private var privateToggleButton: some View {
+        Button(action: handlePrivateToggle) {
+            privateToggleButtonContent
+        }
+    }
+    
+    private var privateToggleButtonContent: some View {
+        HStack(spacing: 6) {
+            ZStack {
+                Circle()
+                    .fill(showPrivateContent ? Color.orange.opacity(0.3) : Color.twillyCyan.opacity(0.3))
+                    .frame(width: 20, height: 20)
+                Image(systemName: showPrivateContent ? "lock.fill" : "lock.open.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(showPrivateContent ? .orange : .twillyCyan)
+            }
+            
+            Text(showPrivateContent ? "PRIVATE" : "PUBLIC")
+                .font(.system(size: 11, weight: .black, design: .rounded))
+                .tracking(1.5)
+        }
+        .foregroundColor(showPrivateContent ? .orange : .twillyCyan)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(privateToggleBackground)
+        .shadow(color: (showPrivateContent ? Color.orange : Color.twillyCyan).opacity(0.4), radius: 8, x: 0, y: 3)
+    }
+    
+    private var privateToggleBackground: some View {
+        RoundedRectangle(cornerRadius: 12)
+            .fill(
+                LinearGradient(
+                    gradient: Gradient(colors: showPrivateContent ? [
+                        Color.orange.opacity(0.25),
+                        Color.orange.opacity(0.15)
+                    ] : [
+                        Color.twillyTeal.opacity(0.25),
+                        Color.twillyCyan.opacity(0.15)
+                    ]),
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(
+                        LinearGradient(
+                            gradient: Gradient(colors: showPrivateContent ? [
+                                Color.orange.opacity(0.7),
+                                Color.orange.opacity(0.5)
+                            ] : [
+                                Color.twillyTeal.opacity(0.6),
+                                Color.twillyCyan.opacity(0.4)
+                            ]),
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        lineWidth: 1.5
+                    )
+            )
+    }
+    
+    // MARK: - Action Handlers
+    private func handleFilterToggle() {
+        let wasFiltered = showOnlyOwnContent
+        withAnimation {
+            showOnlyOwnContent.toggle()
+        }
+        // Always use cached unfiltered content for filtering to avoid server calls
+        if showOnlyOwnContent, let username = authService.username {
+            // Cache unfiltered content before filtering (if not already cached)
+            if cachedUnfilteredContent.isEmpty {
+                cachedUnfilteredContent = content
+                cachedNextToken = nextToken
+                cachedHasMoreContent = hasMoreContent
+                print("💾 [ChannelDetailView] Cached unfiltered content: \(cachedUnfilteredContent.count) items")
+            }
+            // Filter from cached unfiltered content (not current filtered content)
+            let sourceContent = cachedUnfilteredContent.isEmpty ? content : cachedUnfilteredContent
+            var filtered = sourceContent.filter { item in
+                item.creatorUsername?.lowercased() == username.lowercased()
+            }
+            
+            // Also apply visibility filter if active
+            if showPrivateContent {
+                filtered = filtered.filter { item in
+                    item.isPrivateUsername == true
+                }
+            } else {
+                filtered = filtered.filter { item in
+                    item.isPrivateUsername != true
+                }
+            }
+            
+            content = filtered
+            print("🔍 [ChannelDetailView] Filtered content (own only\(showPrivateContent ? " + private" : "")): \(content.count) items")
+        } else if wasFiltered {
+            // Restore from cache instead of reloading from server
+            if !cachedUnfilteredContent.isEmpty {
+                // Apply visibility filter if needed
+                if showPrivateContent {
+                    content = cachedUnfilteredContent.filter { item in
+                        item.isPrivateUsername == true
+                    }
+                } else {
+                    content = cachedUnfilteredContent.filter { item in
+                        item.isPrivateUsername != true
+                    }
+                }
+                nextToken = cachedNextToken
+                hasMoreContent = cachedHasMoreContent
+                print("💾 [ChannelDetailView] Restored unfiltered content from cache: \(content.count) items")
+            } else {
+                // Fallback: reload if cache is empty
+                print("⚠️ [ChannelDetailView] Cache empty, reloading from server")
+                Task {
+                    try? await refreshChannelContent()
+                }
+            }
+        }
+    }
+    
+    private func handlePrivateToggle() {
+        // Determine new state before toggling
+        let willBePrivate = !showPrivateContent
+        
+        // Switch between pre-loaded public and private content for instant toggle
+        if bothViewsLoaded && currentChannel.channelName.lowercased() == "twilly tv" {
+            if willBePrivate {
+                // CRITICAL SECURITY: Strictly filter privateContent to ensure ONLY private items
+                let strictlyPrivate = privateContent.filter { item in
+                    let isPrivate = item.isPrivateUsername == true
+                    if !isPrivate {
+                        print("🚫 [ChannelDetailView] CRITICAL SECURITY: Removing public item from privateContent cache: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"))")
+                    }
+                    return isPrivate
+                }
+                content = strictlyPrivate
+                nextToken = privateNextToken
+                hasMoreContent = privateHasMore
+                // Also update the cache to remove any public items that shouldn't be there
+                privateContent = strictlyPrivate
+                print("⚡ [ChannelDetailView] Instantly switched to private view - \(strictlyPrivate.count) items (strictly filtered)")
+            } else {
+                // CRITICAL SECURITY: Strictly filter publicContent to ensure ONLY public items
+                let strictlyPublic = publicContent.filter { item in
+                    let isPrivate = item.isPrivateUsername == true
+                    if isPrivate {
+                        print("🚫 [ChannelDetailView] CRITICAL SECURITY: Removing private item from publicContent cache: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"))")
+                    }
+                    return !isPrivate
+                }
+                content = strictlyPublic
+                nextToken = publicNextToken
+                hasMoreContent = publicHasMore
+                // Also update the cache to remove any private items that shouldn't be there
+                publicContent = strictlyPublic
+                print("⚡ [ChannelDetailView] Instantly switched to public view - \(strictlyPublic.count) items (strictly filtered)")
+            }
+        } else {
+            // Fallback to filtering if both views aren't loaded yet
+            applyVisibilityFilterInstantly()
+        }
+        
+        // Toggle the state
+        withAnimation {
+            showPrivateContent.toggle()
+        }
+        
+        // Trigger scroll to top immediately - this ensures we always start at top when toggling
+        scrollToTopTrigger = UUID()
+    }
+    
     private var backgroundGradient: some View {
         ZStack {
             // Base gradient
