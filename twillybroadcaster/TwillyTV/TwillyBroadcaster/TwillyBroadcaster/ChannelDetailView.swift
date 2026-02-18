@@ -157,7 +157,19 @@ struct ChannelDetailView: View {
         viewWithNavigation
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    navigationTitleView
+                    HStack {
+                        // Show navigation title for non-Twilly TV channels
+                        if currentChannel.channelName.lowercased() != "twilly tv" {
+                            navigationTitleView
+                        } else {
+                            // For Twilly TV, show centered toggle, filter, and favorites
+                            HStack(spacing: 12) {
+                                privateToggleButton
+                                twillyLogoFilterButton
+                                favoritesButton
+                            }
+                        }
+                    }
                 }
             }
     }
@@ -507,17 +519,9 @@ struct ChannelDetailView: View {
     // MARK: - Toolbar Items
     @ViewBuilder
     private var leadingToolbarItems: some View {
-        // Twilly TV specific toolbar items
-        if currentChannel.channelName.lowercased() == "twilly tv" {
-            // Private/Public toggle
-            privateToggleButton
-            
-            // Twilly logo button to toggle filter (my content vs all content)
-            twillyLogoFilterButton
-            
-            // Favorites star button
-            favoritesButton
-        }
+        // Empty for Twilly TV (items moved to center)
+        // For other channels, could add items here if needed
+        EmptyView()
     }
     
     @ViewBuilder
@@ -583,11 +587,6 @@ struct ChannelDetailView: View {
             Image(systemName: showFavoritesOnly ? "star.fill" : "star")
                 .font(.system(size: 16, weight: .medium))
                 .foregroundColor(showFavoritesOnly ? .yellow : .white.opacity(0.8))
-                .padding(8)
-                .background(
-                    Circle()
-                        .fill(showFavoritesOnly ? Color.yellow.opacity(0.2) : Color.white.opacity(0.1))
-                )
         }
     }
     
