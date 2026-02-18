@@ -585,7 +585,7 @@ struct ChannelDetailView: View {
     private var favoritesButton: some View {
         Button(action: handleFavoritesToggle) {
             Image(systemName: showFavoritesOnly ? "star.fill" : "star")
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(size: 14))
                 .foregroundColor(showFavoritesOnly ? .yellow : .white.opacity(0.8))
         }
     }
