@@ -3304,12 +3304,12 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
     
     // MARK: - Follow Requests
     
-    func requestFollow(requesterEmail: String, requestedUsername: String, requesterUsername: String? = nil) async throws -> FollowRequestResponse {
+    func requestFollow(requesterEmail: String, requestedUsername: String, requesterUsername: String? = nil, isPrivateStreamRequest: Bool = false) async throws -> FollowRequestResponse {
         guard let url = URL(string: "\(baseURL)/users/request-follow") else {
             throw ChannelServiceError.invalidURL
         }
         
-        print("📤 [ChannelService] requestFollow: requesterEmail=\(requesterEmail), requestedUsername=\(requestedUsername), requesterUsername=\(requesterUsername ?? "nil")")
+        print("📤 [ChannelService] requestFollow: requesterEmail=\(requesterEmail), requestedUsername=\(requestedUsername), requesterUsername=\(requesterUsername ?? "nil"), isPrivateStreamRequest=\(isPrivateStreamRequest)")
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -3317,7 +3317,8 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         
         var body: [String: Any] = [
             "requesterEmail": requesterEmail,
-            "requestedUsername": requestedUsername
+            "requestedUsername": requestedUsername,
+            "isPrivateStreamRequest": isPrivateStreamRequest
         ]
         
         // Include requesterUsername if provided (frontend already knows it)

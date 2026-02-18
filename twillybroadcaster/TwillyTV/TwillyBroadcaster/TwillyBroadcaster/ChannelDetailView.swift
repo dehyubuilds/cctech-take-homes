@@ -2586,10 +2586,12 @@ struct ChannelDetailView: View {
                 
                 // Use clean username (without 🔒) for API call
                 // Pass requesterUsername from authService (frontend already knows it)
+                // Pass isPrivateStreamRequest to indicate this is a private request
                 let response = try await ChannelService.shared.requestFollow(
                     requesterEmail: userEmail,
                     requestedUsername: cleanUsername,
-                    requesterUsername: authService.username
+                    requesterUsername: authService.username,
+                    isPrivateStreamRequest: isPrivate
                 )
                 
                 print("   ✅ API call completed!")
