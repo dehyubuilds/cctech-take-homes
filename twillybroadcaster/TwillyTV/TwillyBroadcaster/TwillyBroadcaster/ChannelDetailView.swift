@@ -145,8 +145,8 @@ struct ChannelDetailView: View {
     private var viewWithNavigation: some View {
         if #available(iOS 16.0, *) {
             baseContentView
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbarBackground(.hidden, for: .navigationBar)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
         } else {
             baseContentView
                 .navigationBarTitleDisplayMode(.inline)
@@ -155,81 +155,81 @@ struct ChannelDetailView: View {
     
     private var viewWithPrincipalToolbar: some View {
         viewWithNavigation
-            .toolbar {
-                ToolbarItem(placement: .principal) {
+        .toolbar {
+            ToolbarItem(placement: .principal) {
                     // Show navigation title for non-Twilly TV channels
                     if currentChannel.channelName.lowercased() != "twilly tv" {
-                        navigationTitleView
+                navigationTitleView
                     } else {
                         EmptyView()
-                    }
-                }
+            }
+        }
             }
     }
     
     private var viewWithLeadingToolbar: some View {
         viewWithPrincipalToolbar
-            .toolbar {
-                ToolbarItemGroup(placement: .navigationBarLeading) {
-                    leadingToolbarItems
+        .toolbar {
+            ToolbarItemGroup(placement: .navigationBarLeading) {
+                leadingToolbarItems
                 }
             }
-    }
-    
+            }
+            
     private var viewWithNavigationAndToolbar: some View {
         viewWithLeadingToolbar
             .toolbar {
-                ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    trailingToolbarItems
-                }
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                trailingToolbarItems
             }
+        }
     }
     
     private var viewWithSheetsAndAlerts: some View {
         viewWithNavigationAndToolbar
-            .sheet(isPresented: $showingSettings) {
-                StreamerSettingsView()
-            }
-            .sheet(isPresented: $showingUsernameSearch) {
-                UsernameSearchView(
-                    channelName: currentChannel.channelName,
-                    onUsernameAdded: {
-                        // Reload added usernames and refresh content (merge to preserve optimistic updates)
-                        loadAddedUsernames(mergeWithExisting: true)
-                        Task {
-                            try? await refreshChannelContent()
-                        }
+        .sheet(isPresented: $showingSettings) {
+            StreamerSettingsView()
+        }
+        .sheet(isPresented: $showingUsernameSearch) {
+            UsernameSearchView(
+                channelName: currentChannel.channelName,
+                onUsernameAdded: {
+                    // Reload added usernames and refresh content (merge to preserve optimistic updates)
+                    loadAddedUsernames(mergeWithExisting: true)
+                    Task {
+                        try? await refreshChannelContent()
                     }
-                )
-            }
-            .alert("Delete Video", isPresented: $showingDeleteConfirmation, presenting: contentToDelete) { item in
-                Button("Cancel", role: .cancel) {
-                    contentToDelete = nil
                 }
-                Button("Delete", role: .destructive) {
-                    // Prevent multiple taps
-                    guard !isDeleting else {
-                        print("⚠️ [ChannelDetailView] Delete already in progress, ignoring tap")
-                        return
-                    }
-                    deleteContent(item: item)
+            )
+        }
+        .alert("Delete Video", isPresented: $showingDeleteConfirmation, presenting: contentToDelete) { item in
+            Button("Cancel", role: .cancel) {
+                contentToDelete = nil
+            }
+            Button("Delete", role: .destructive) {
+                // Prevent multiple taps
+                guard !isDeleting else {
+                    print("⚠️ [ChannelDetailView] Delete already in progress, ignoring tap")
+                    return
                 }
-            } message: { item in
-                // Never show raw m3u8 filename - show cleaned title or fallback
-                let displayName = (item.title?.trimmingCharacters(in: .whitespaces).isEmpty == false) 
-                    ? ContentCard.cleanTitle(item.title ?? "") 
-                    : "this video"
-                Text("Are you sure you want to delete \"\(displayName)\"? This action cannot be undone.")
+                deleteContent(item: item)
             }
-            .sheet(isPresented: $showingEditModal) {
-                editContentModal
-            }
-            .sheet(isPresented: $showingContentManagementPopup) {
-                contentManagementPopup
-            }
-            .sheet(isPresented: $showingFollowRequests) {
-                followRequestsSheet
-            }
+        } message: { item in
+            // Never show raw m3u8 filename - show cleaned title or fallback
+            let displayName = (item.title?.trimmingCharacters(in: .whitespaces).isEmpty == false) 
+                ? ContentCard.cleanTitle(item.title ?? "") 
+                : "this video"
+            Text("Are you sure you want to delete \"\(displayName)\"? This action cannot be undone.")
+        }
+        .sheet(isPresented: $showingEditModal) {
+            editContentModal
+        }
+        .sheet(isPresented: $showingContentManagementPopup) {
+            contentManagementPopup
+        }
+        .sheet(isPresented: $showingFollowRequests) {
+            followRequestsSheet
+        }
     }
     
     private var viewWithLifecycleHandlers: some View {
@@ -245,63 +245,69 @@ struct ChannelDetailView: View {
                 // Cancel any pending content loading tasks
                 // (Tasks are automatically cancelled when view disappears, but explicit cancellation is safer)
             }
-            .onAppear {
-                print("👁️ [ChannelDetailView] onAppear called - hasLoaded: \(hasLoaded), content.count: \(content.count), isLoading: \(isLoading), forceRefresh: \(forceRefresh)")
-                print("   Channel: \(currentChannel.channelName)")
-                print("   Poster URL at onAppear: \(currentChannel.posterUrl.isEmpty ? "EMPTY" : currentChannel.posterUrl)")
-                
-                // Load cached search results from UserDefaults for instant results
-                loadSearchCacheFromUserDefaults()
+        .onAppear {
+            print("👁️ [ChannelDetailView] onAppear called - hasLoaded: \(hasLoaded), content.count: \(content.count), isLoading: \(isLoading), forceRefresh: \(forceRefresh)")
+            print("   Channel: \(currentChannel.channelName)")
+            print("   Poster URL at onAppear: \(currentChannel.posterUrl.isEmpty ? "EMPTY" : currentChannel.posterUrl)")
+            
+            // Load cached search results from UserDefaults for instant results
+            loadSearchCacheFromUserDefaults()
                 
                 // Load favorites from UserDefaults
                 loadFavoritesFromUserDefaults()
                 
-                // Load user's schedule and post automatically status (for admin stream button visibility)
-                if isAdminUser {
-                    loadUserScheduleStatus()
-                    loadUserPostAutomatically()
-                }
+                // CRITICAL: Load sent follow requests from UserDefaults to restore optimistic updates
+                // This ensures "Requested" state persists across view reloads
+                loadSentFollowRequestsFromUserDefaults()
+            
+            // Load user's schedule and post automatically status (for admin stream button visibility)
+            if isAdminUser {
+                loadUserScheduleStatus()
+                loadUserPostAutomatically()
+            }
+            
+            // Load added usernames for Twilly TV and auto-add own username
+            if currentChannel.channelName.lowercased() == "twilly tv" {
+                loadAddedUsernames()
+                // Auto-add user's own username to see their own content
+                autoAddOwnUsername()
+                    // CRITICAL: Load sent follow requests with merge=true to preserve optimistic updates
+                    // This ensures "Requested" state persists even if server hasn't processed the request yet
+                    // Public "Add" and private "Request" are COMPLETELY INDEPENDENT
+                    loadSentFollowRequests(mergeWithExisting: true) // Always merge to preserve optimistic updates
+                // Load received follow requests to show badge count
+                loadReceivedFollowRequests()
+            }
+            
+            // Check for local video info to show immediately
+            if let localInfo = globalLocalVideoInfo, localInfo.channelName == currentChannel.channelName {
+                print("📹 [ChannelDetailView] Found local video for this channel - showing immediately")
+                let localContent = ChannelContent(
+                    SK: "local-\(UUID().uuidString)",
+                    fileName: localInfo.url.lastPathComponent,
+                    title: localInfo.title,
+                    description: localInfo.description,
+                    hlsUrl: nil,
+                    thumbnailUrl: nil,
+                    createdAt: Date().ISO8601Format(),
+                    isVisible: true,
+                    price: localInfo.price,
+                    category: "Videos",
+                    creatorUsername: authService.username,
+                    localFileURL: localInfo.url
+                )
+                localVideoContent = localContent
+                content = [localContent] // Show local video immediately
+                isLoading = false // Don't show loading spinner - we have content
+                print("✅ [ChannelDetailView] Local video added to content list - content.count: \(content.count)")
                 
-                // Load added usernames for Twilly TV and auto-add own username
-                if currentChannel.channelName.lowercased() == "twilly tv" {
-                    loadAddedUsernames()
-                    // Auto-add user's own username to see their own content
-                    autoAddOwnUsername()
-                    // Load sent follow requests to track request status (for button states)
-                    loadSentFollowRequests(mergeWithExisting: false)
-                    // Load received follow requests to show badge count
-                    loadReceivedFollowRequests()
-                }
+                // Start polling for thumbnail immediately
+                startThumbnailPolling()
                 
-                // Check for local video info to show immediately
-                if let localInfo = globalLocalVideoInfo, localInfo.channelName == currentChannel.channelName {
-                    print("📹 [ChannelDetailView] Found local video for this channel - showing immediately")
-                    let localContent = ChannelContent(
-                        SK: "local-\(UUID().uuidString)",
-                        fileName: localInfo.url.lastPathComponent,
-                        title: localInfo.title,
-                        description: localInfo.description,
-                        hlsUrl: nil,
-                        thumbnailUrl: nil,
-                        createdAt: Date().ISO8601Format(),
-                        isVisible: true,
-                        price: localInfo.price,
-                        category: "Videos",
-                        creatorUsername: authService.username,
-                        localFileURL: localInfo.url
-                    )
-                    localVideoContent = localContent
-                    content = [localContent] // Show local video immediately
-                    isLoading = false // Don't show loading spinner - we have content
-                    print("✅ [ChannelDetailView] Local video added to content list - content.count: \(content.count)")
-                    
-                    // Start polling for thumbnail immediately
-                    startThumbnailPolling()
-                    
-                    // Clear global info after using it
-                    globalLocalVideoInfo = nil
-                }
-                
+                // Clear global info after using it
+                globalLocalVideoInfo = nil
+            }
+            
                 // Show cached content immediately if available
                 let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
                 let hasCachedContent = isTwillyTV ? (!publicContent.isEmpty || !privateContent.isEmpty) : !content.isEmpty
@@ -337,15 +343,15 @@ struct ChannelDetailView: View {
                 
                 if !hasCachedContent && (!hasLoaded || forceRefresh || needsBothViewsReload || needsReload) {
                     print("🔄 [ChannelDetailView] Loading server content... (forceRefresh: \(forceRefresh), hasCachedContent: \(hasCachedContent))")
-                    if localVideoContent == nil {
+                if localVideoContent == nil {
                         // Only show loading if we have no cached content
-                        isLoading = true
-                        if forceRefresh {
-                            content = [] // Clear content on force refresh
-                        }
-                        errorMessage = nil
+                    isLoading = true
+                    if forceRefresh {
+                        content = [] // Clear content on force refresh
                     }
-                    loadContent()
+                    errorMessage = nil
+                }
+                loadContent()
                 } else if hasCachedContent {
                     // We have cached content - fetch new content in background silently
                     print("🔄 [ChannelDetailView] Fetching new content in background (cached content shown)")
@@ -404,13 +410,13 @@ struct ChannelDetailView: View {
                             print("⚠️ [ChannelDetailView] Background refresh failed (non-critical): \(error.localizedDescription)")
                         }
                     }
-                } else {
-                    print("✅ [ChannelDetailView] Already loaded and not forcing refresh, skipping load")
-                }
-                
-                // Start auto-refresh to check for new videos
-                startAutoRefresh()
+            } else {
+                print("✅ [ChannelDetailView] Already loaded and not forcing refresh, skipping load")
             }
+            
+            // Start auto-refresh to check for new videos
+            startAutoRefresh()
+        }
             .onChange(of: showingPlayer) { newValue in
                 print("🔄 [ChannelDetailView] showingPlayer changed to: \(newValue)")
                 if newValue {
@@ -421,81 +427,81 @@ struct ChannelDetailView: View {
     
     private var viewWithNotificationsAndGestures: some View {
         viewWithLifecycleHandlers
-            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RefreshTwillyTVContent"))) { _ in
-                // CRITICAL: When a follow request is accepted, refresh everything to show private content
-                print("🔄 [ChannelDetailView] Received RefreshTwillyTVContent notification - follow request was accepted")
-                guard currentChannel.channelName.lowercased() == "twilly tv" else { return }
-                
-                // Refresh added usernames to get the newly accepted private username
-                loadAddedUsernames(mergeWithExisting: true)
-                
-                // Refresh sent follow requests to update status from "pending" to "accepted"
-                // Use merge to preserve any optimistic updates
-                loadSentFollowRequests(mergeWithExisting: true)
-                
-                // Refresh content to show private content from the accepted user
-                Task {
-                    do {
-                        try? await Task.sleep(nanoseconds: 500_000_000) // Wait 0.5s for addedUsernames to load
-                        try? await refreshChannelContent()
-                        print("✅ [ChannelDetailView] Refreshed content after follow request acceptance")
-                    } catch {
-                        print("❌ [ChannelDetailView] Error refreshing content after acceptance: \(error.localizedDescription)")
-                    }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RefreshTwillyTVContent"))) { _ in
+            // CRITICAL: When a follow request is accepted, refresh everything to show private content
+            print("🔄 [ChannelDetailView] Received RefreshTwillyTVContent notification - follow request was accepted")
+            guard currentChannel.channelName.lowercased() == "twilly tv" else { return }
+            
+            // Refresh added usernames to get the newly accepted private username
+            loadAddedUsernames(mergeWithExisting: true)
+            
+            // Refresh sent follow requests to update status from "pending" to "accepted"
+            // Use merge to preserve any optimistic updates
+            loadSentFollowRequests(mergeWithExisting: true)
+            
+            // Refresh content to show private content from the accepted user
+            Task {
+                do {
+                    try? await Task.sleep(nanoseconds: 500_000_000) // Wait 0.5s for addedUsernames to load
+                    try? await refreshChannelContent()
+                    print("✅ [ChannelDetailView] Refreshed content after follow request acceptance")
+                } catch {
+                    print("❌ [ChannelDetailView] Error refreshing content after acceptance: \(error.localizedDescription)")
                 }
             }
-            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NewFollowRequestReceived"))) { _ in
-                // CRITICAL: When a new follow request is received, refresh the received requests list
-                print("🔄 [ChannelDetailView] Received NewFollowRequestReceived notification - refreshing received requests")
-                loadReceivedFollowRequests()
-            }
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 20)
-                    .onEnded { value in
-                        let horizontalMovement = abs(value.translation.width)
-                        let verticalMovement = abs(value.translation.height)
-                        
-                        // Swipe down to dismiss
-                        if value.translation.height > 100 || value.predictedEndTranslation.height > 200 {
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NewFollowRequestReceived"))) { _ in
+            // CRITICAL: When a new follow request is received, refresh the received requests list
+            print("🔄 [ChannelDetailView] Received NewFollowRequestReceived notification - refreshing received requests")
+            loadReceivedFollowRequests()
+        }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 20)
+                .onEnded { value in
+                    let horizontalMovement = abs(value.translation.width)
+                    let verticalMovement = abs(value.translation.height)
+                    
+                    // Swipe down to dismiss
+                    if value.translation.height > 100 || value.predictedEndTranslation.height > 200 {
+                        dismiss()
+                        return
+                    }
+                    
+                    // Swipe RIGHT (from left to right, positive width) to go to stream screen
+                    // Only process as swipe if horizontal movement is significant and greater than vertical
+                    if horizontalMovement > 50 && horizontalMovement > verticalMovement {
+                        if value.translation.width > 80 || value.predictedEndTranslation.width > 150 {
+                            // Post notification to show stream screen
+                            print("✅ [ChannelDetailView] Swipe RIGHT detected → Going to Stream screen")
+                            NotificationCenter.default.post(
+                                name: NSNotification.Name("ShowStreamScreen"),
+                                object: nil
+                            )
+                            // Dismiss channel view to show stream screen
                             dismiss()
-                            return
-                        }
-                        
-                        // Swipe RIGHT (from left to right, positive width) to go to stream screen
-                        // Only process as swipe if horizontal movement is significant and greater than vertical
-                        if horizontalMovement > 50 && horizontalMovement > verticalMovement {
-                            if value.translation.width > 80 || value.predictedEndTranslation.width > 150 {
-                                // Post notification to show stream screen
-                                print("✅ [ChannelDetailView] Swipe RIGHT detected → Going to Stream screen")
-                                NotificationCenter.default.post(
-                                    name: NSNotification.Name("ShowStreamScreen"),
-                                    object: nil
-                                )
-                                // Dismiss channel view to show stream screen
-                                dismiss()
-                            }
                         }
                     }
-            )
+                }
+        )
     }
     
     private var videoPlayerFullScreenCover: some View {
-        Group {
-            let _ = print("🎬 [ChannelDetailView] ========== FULLSCREEN COVER OPENED ==========")
-            let _ = print("   - showingPlayer: \(showingPlayer)")
-            let _ = print("   - selectedContent: \(selectedContent?.fileName ?? "nil")")
-            let _ = print("   - selectedContent hlsUrl: \(selectedContent?.hlsUrl ?? "nil")")
-            let _ = print("   - selectedContent thumbnailUrl: \(selectedContent?.thumbnailUrl ?? "nil")")
-            
-            if let content = selectedContent {
-                // Check for local file first, then HLS URL
-                if let localURL = content.localFileURL {
-                    let _ = print("✅ [ChannelDetailView] Opening video player with LOCAL file: \(localURL.path)")
-                    VideoPlayerView(url: localURL, content: content)
-                } else if let hlsUrl = content.hlsUrl, !hlsUrl.isEmpty, let url = URL(string: hlsUrl) {
-                    let _ = print("✅ [ChannelDetailView] Opening video player with HLS URL: \(hlsUrl)")
-                    let _ = print("   - Thumbnail URL: \(content.thumbnailUrl ?? "none")")
-                    VideoPlayerView(url: url, content: content)
+            Group {
+                let _ = print("🎬 [ChannelDetailView] ========== FULLSCREEN COVER OPENED ==========")
+                let _ = print("   - showingPlayer: \(showingPlayer)")
+                let _ = print("   - selectedContent: \(selectedContent?.fileName ?? "nil")")
+                let _ = print("   - selectedContent hlsUrl: \(selectedContent?.hlsUrl ?? "nil")")
+                let _ = print("   - selectedContent thumbnailUrl: \(selectedContent?.thumbnailUrl ?? "nil")")
+                
+                if let content = selectedContent {
+                    // Check for local file first, then HLS URL
+                    if let localURL = content.localFileURL {
+                        let _ = print("✅ [ChannelDetailView] Opening video player with LOCAL file: \(localURL.path)")
+                        VideoPlayerView(url: localURL, content: content)
+                    } else if let hlsUrl = content.hlsUrl, !hlsUrl.isEmpty, let url = URL(string: hlsUrl) {
+                        let _ = print("✅ [ChannelDetailView] Opening video player with HLS URL: \(hlsUrl)")
+                        let _ = print("   - Thumbnail URL: \(content.thumbnailUrl ?? "none")")
+                        VideoPlayerView(url: url, content: content)
                 } else {
                     let _ = print("❌ [ChannelDetailView] Cannot open video player - missing content or hlsUrl")
                     let _ = print("   - selectedContent exists: \(selectedContent != nil)")
@@ -562,27 +568,27 @@ struct ChannelDetailView: View {
                         .padding()
                     }
                 }
-            } else {
-                // Fallback if selectedContent is nil
-                ZStack {
-                    Color.black.ignoresSafeArea()
-                    VStack(spacing: 20) {
-                        Text("No video selected")
-                            .foregroundColor(.white)
-                        Button("Close") {
-                            showingPlayer = false
+                } else {
+                    // Fallback if selectedContent is nil
+                    ZStack {
+                        Color.black.ignoresSafeArea()
+                        VStack(spacing: 20) {
+                            Text("No video selected")
+                                .foregroundColor(.white)
+                            Button("Close") {
+                                showingPlayer = false
+                            }
                         }
                     }
                 }
             }
         }
-    }
     
     var body: some View {
         viewWithNotificationsAndGestures
             .fullScreenCover(isPresented: $showingPlayer) {
                 videoPlayerFullScreenCover
-            }
+        }
     }
     
     // MARK: - View Components
@@ -592,12 +598,12 @@ struct ChannelDetailView: View {
     private var navigationTitleView: some View {
         // For Twilly TV, show empty title since it's on the poster
         // For other channels, show channel name
-        if currentChannel.channelName.lowercased() == "twilly tv" {
+            if currentChannel.channelName.lowercased() == "twilly tv" {
             EmptyView()
-        } else {
-            Text(currentChannel.channelName)
-                .font(.system(size: 18, weight: .bold))
-                .foregroundColor(.white)
+            } else {
+                Text(currentChannel.channelName)
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.white)
         }
     }
     
@@ -608,7 +614,7 @@ struct ChannelDetailView: View {
         if currentChannel.channelName.lowercased() == "twilly tv" {
             HStack(spacing: 12) {
                 // Public/Private toggle (first, on the left)
-                privateToggleButton
+            privateToggleButton
                 
                 // Twilly logo button to toggle filter (my content vs all content)
                 twillyLogoFilterButton
@@ -694,7 +700,7 @@ struct ChannelDetailView: View {
     
     private var privateToggleButtonContent: some View {
         HStack(spacing: 4) {
-            Image(systemName: showPrivateContent ? "lock.fill" : "lock.open.fill")
+                Image(systemName: showPrivateContent ? "lock.fill" : "lock.open.fill")
                 .font(.system(size: 14))
             Text(showPrivateContent ? "Private" : "Public")
                 .font(.caption)
@@ -1485,10 +1491,11 @@ struct ChannelDetailView: View {
                             // Deselection buttons - both say "Remove"
                             HStack(spacing: 8) {
                                 // "Remove" button for added - only show if added
+                                // CRITICAL: Pass visibility to ensure we remove the correct entry (public vs private)
                                 if item.isAdded {
                                     Button(action: {
-                                        print("🟡 [ChannelDetailView] Removing Added from dropdown: \(item.username)")
-                                        deselectAddedUsername(item.username, email: item.email)
+                                        print("🟡 [ChannelDetailView] Removing Added from dropdown: \(item.username) (visibility: \(item.addedVisibility ?? "public"))")
+                                        deselectAddedUsername(item.username, email: item.email, visibility: item.addedVisibility)
                                     }) {
                                         Text("Remove")
                                             .font(.caption)
@@ -1567,6 +1574,7 @@ struct ChannelDetailView: View {
         let email: String?
         let isAdded: Bool
         let isRequested: Bool
+        let addedVisibility: String? // Track visibility for added entries (public/private)
     }
     
     // Get all usernames (both added and requested) for dropdown display
@@ -1574,6 +1582,8 @@ struct ChannelDetailView: View {
         var usernameMap: [String: UsernameDropdownItem] = [:]
         
         // Add all added usernames (filter out empty usernames)
+        // CRITICAL: Track visibility separately for public and private entries
+        // A username can have both public and private entries, so we need to handle them separately
         for addedUsername in addedUsernames {
             let cleanUsername = addedUsername.streamerUsername.trimmingCharacters(in: .whitespaces)
             // Skip empty usernames
@@ -1583,12 +1593,17 @@ struct ChannelDetailView: View {
             }
             
             let usernameLower = cleanUsername.lowercased()
-            usernameMap[usernameLower] = UsernameDropdownItem(
-                id: "added-\(usernameLower)",
+            let visibility = addedUsername.streamerVisibility?.lowercased() ?? "public"
+            // Use visibility in the key to allow both public and private entries for the same username
+            let key = "\(usernameLower):\(visibility)"
+            
+            usernameMap[key] = UsernameDropdownItem(
+                id: "added-\(usernameLower)-\(visibility)",
                 username: cleanUsername,
                 email: addedUsername.streamerEmail,
                 isAdded: true,
-                isRequested: false
+                isRequested: false,
+                addedVisibility: visibility
             )
         }
         
@@ -1606,23 +1621,43 @@ struct ChannelDetailView: View {
             
             // Only include pending, active, or accepted requests
             if status == "pending" || status == "active" || status == "accepted" {
-                if let existing = usernameMap[usernameLower] {
-                    // Update existing entry to include requested state
-                    usernameMap[usernameLower] = UsernameDropdownItem(
+                // Check if there's an existing entry for this username (could be public or private)
+                // Private requests should be associated with private added entries
+                // We'll check for both public and private entries
+                let publicKey = "\(usernameLower):public"
+                let privateKey = "\(usernameLower):private"
+                
+                // Prefer private entry if it exists (since this is a private request)
+                if let existing = usernameMap[privateKey] {
+                    // Update private entry to include requested state
+                    usernameMap[privateKey] = UsernameDropdownItem(
                         id: existing.id,
                         username: existing.username,
                         email: existing.email ?? sentRequest.requestedUserEmail,
                         isAdded: existing.isAdded,
-                        isRequested: true
+                        isRequested: true,
+                        addedVisibility: existing.addedVisibility
+                    )
+                } else if let existing = usernameMap[publicKey] {
+                    // Update public entry to include requested state (less common, but possible)
+                    usernameMap[publicKey] = UsernameDropdownItem(
+                        id: existing.id,
+                        username: existing.username,
+                        email: existing.email ?? sentRequest.requestedUserEmail,
+                        isAdded: existing.isAdded,
+                        isRequested: true,
+                        addedVisibility: existing.addedVisibility
                     )
                 } else {
-                    // New entry for requested only
+                    // New entry for requested only (no added entry exists)
+                    // Use username as key (no visibility suffix for requested-only entries)
                     usernameMap[usernameLower] = UsernameDropdownItem(
                         id: "requested-\(usernameLower)",
                         username: cleanUsername,
                         email: sentRequest.requestedUserEmail,
                         isAdded: false,
-                        isRequested: true
+                        isRequested: true,
+                        addedVisibility: nil
                     )
                 }
             }
@@ -1975,6 +2010,72 @@ struct ChannelDetailView: View {
         }
     }
     
+    // Save sent follow requests to UserDefaults to persist optimistic updates
+    private func saveSentFollowRequestsToUserDefaults() {
+        guard let userEmail = authService.userEmail else {
+            print("⚠️ [ChannelDetailView] Cannot save sentFollowRequests to UserDefaults - userEmail is nil")
+            return
+        }
+        
+        let key = "sentFollowRequests_\(userEmail)"
+        do {
+            let encoder = JSONEncoder()
+            let encoded = try encoder.encode(sentFollowRequests)
+            UserDefaults.standard.set(encoded, forKey: key)
+            UserDefaults.standard.synchronize() // CRITICAL: Force immediate write to disk
+            print("💾 [ChannelDetailView] Saved \(sentFollowRequests.count) sent follow requests to UserDefaults (key: \(key))")
+            print("   📋 Saved requests: \(sentFollowRequests.map { "\($0.requestedUsername) (status: \($0.status))" }.joined(separator: ", "))")
+        } catch {
+            print("❌ [ChannelDetailView] Failed to encode sentFollowRequests: \(error.localizedDescription)")
+        }
+    }
+    
+    // Load sent follow requests from UserDefaults (for optimistic updates persistence)
+    // CRITICAL: This should ALWAYS load from cache first, before server data is fetched
+    // This ensures optimistic updates persist across app restarts and logins
+    // The cache is the source of truth for optimistic updates - server data will merge with it
+    private func loadSentFollowRequestsFromUserDefaults() {
+        guard let userEmail = authService.userEmail else {
+            print("⚠️ [ChannelDetailView] Cannot load sentFollowRequests from UserDefaults - userEmail is nil")
+            return
+        }
+        
+        let key = "sentFollowRequests_\(userEmail)"
+        if let data = UserDefaults.standard.data(forKey: key) {
+            do {
+                let decoder = JSONDecoder()
+                let loaded = try decoder.decode([SentFollowRequest].self, from: data)
+                
+                // CRITICAL: Always merge cache with existing, prioritizing cache for optimistic updates
+                // Cache contains the most recent user actions (like clicking "Request")
+                // Server data will be merged later in loadSentFollowRequests()
+                let cachedUsernames = Set(loaded.map { $0.requestedUsername.lowercased() })
+                let existingUsernames = Set(sentFollowRequests.map { $0.requestedUsername.lowercased() })
+                
+                // Start with cached data (it has the most recent optimistic updates)
+                var merged = loaded
+                
+                // Add any existing requests that aren't in cache (from previous server fetches)
+                for existing in sentFollowRequests {
+                    if !cachedUsernames.contains(existing.requestedUsername.lowercased()) {
+                        merged.append(existing)
+                    }
+                }
+                
+                sentFollowRequests = merged
+                print("📂 [ChannelDetailView] Loaded \(loaded.count) sent follow requests from UserDefaults (cache restored)")
+                print("   📋 Cached requests: \(loaded.map { "\($0.requestedUsername) (status: \($0.status))" }.joined(separator: ", "))")
+                if merged.count > loaded.count {
+                    print("   ➕ Merged with \(merged.count - loaded.count) existing requests from memory")
+                }
+            } catch {
+                print("❌ [ChannelDetailView] Failed to decode sentFollowRequests: \(error.localizedDescription)")
+            }
+        } else {
+            print("📭 [ChannelDetailView] No cached sentFollowRequests in UserDefaults")
+        }
+    }
+    
     // Save removed usernames to UserDefaults
     private func saveRemovedUsernamesToUserDefaults() {
         guard let userEmail = authService.userEmail else {
@@ -2035,16 +2136,9 @@ struct ChannelDetailView: View {
     
     // Load added usernames for Twilly TV filtering
     private func loadAddedUsernames(mergeWithExisting: Bool = false) {
-        // Also load sent and received follow requests when loading added usernames
-        // Use merge mode to preserve optimistic updates
-        // CRITICAL: Only load if mergeWithExisting is true OR if we're doing initial load (not merge)
-        // This prevents overwriting optimistic updates when mergeWithExisting is false
-        if mergeWithExisting {
-            loadSentFollowRequests(mergeWithExisting: true)
-        } else {
-            // Initial load - safe to load without merge
-            loadSentFollowRequests(mergeWithExisting: false)
-        }
+        // CRITICAL: DO NOT load sentFollowRequests here - they are COMPLETELY INDEPENDENT
+        // Public "Add" and private "Request" should NEVER affect each other
+        // Only load received follow requests (for badge count) - this is independent
         loadReceivedFollowRequests()
         guard currentChannel.channelName.lowercased() == "twilly tv" else {
             return
@@ -2074,6 +2168,10 @@ struct ChannelDetailView: View {
                     print("✅ [ChannelDetailView] Loaded \(filteredCached.count) added usernames from cache (filtered from \(cached.count), excluded \(cached.count - filteredCached.count) removed)")
                 } else if !cached.isEmpty {
                     print("⚠️ [ChannelDetailView] All \(cached.count) cached usernames were filtered out (removed)")
+                    // CRITICAL: If all cached usernames were removed, clear the cache
+                    // This ensures the cache doesn't persist stale data
+                    UserDefaults.standard.removeObject(forKey: addedUsernamesKey(for: userEmail))
+                    print("🧹 [ChannelDetailView] Cleared stale cache after filtering")
                 }
             } else {
                 // Email not available yet - try loading with a delay
@@ -2119,45 +2217,61 @@ struct ChannelDetailView: View {
             do {
                 let response = try await ChannelService.shared.getAddedUsernames(userEmail: userEmail)
                 await MainActor.run {
+                    // CRITICAL: Preserve optimistic updates - do NOT clear cache if we're merging
+                    // Only clear cache on initial load if server is explicitly empty AND we're certain it's the source of truth
+                    let serverUsernames = response.addedUsernames ?? []
+                    
+                    // CRITICAL: If merging, preserve optimistic updates even if server returns empty
+                    // The server might not have processed the optimistic update yet
                     if mergeWithExisting && !addedUsernames.isEmpty {
                         // Merge server data with existing optimistic updates
                         // CRITICAL: Do NOT add back usernames that were explicitly removed
-                        let serverUsernames = response.addedUsernames ?? []
                         print("🔍 [DEBUG] Server returned \(serverUsernames.count) usernames: \(serverUsernames.map { $0.streamerUsername }.joined(separator: ", "))")
                         print("🔍 [DEBUG] Current removedUsernames: \(removedUsernames.map { $0 }.joined(separator: ", "))")
                         
                         var mergedUsernames: [AddedUsername] = []
-                        let existingUsernamesLower = Set(addedUsernames.map { $0.streamerUsername.lowercased() })
+                        // CRITICAL: Track existing entries by BOTH username AND visibility
+                        let existingEntries = Set(addedUsernames.map { 
+                            "\($0.streamerUsername.lowercased()):\($0.streamerVisibility?.lowercased() ?? "public")"
+                        })
                         let removedUsernamesLower = Set(removedUsernames.map { $0.lowercased() })
                         
                         // Start with existing (optimistic) usernames
                         mergedUsernames = addedUsernames
                         
-                        // Add server usernames that aren't already in the list AND weren't explicitly removed
+                        // Add server usernames that aren't already in the list (by username+visibility) AND weren't explicitly removed
                         for serverUsername in serverUsernames {
                             let serverUsernameLower = serverUsername.streamerUsername.lowercased()
-                            let isInExisting = existingUsernamesLower.contains(serverUsernameLower)
+                            let serverVisibility = serverUsername.streamerVisibility?.lowercased() ?? "public"
+                            let serverEntryKey = "\(serverUsernameLower):\(serverVisibility)"
+                            let isInExisting = existingEntries.contains(serverEntryKey)
                             let isRemoved = removedUsernamesLower.contains(serverUsernameLower)
                             
-                            print("🔍 [DEBUG] Processing server username: '\(serverUsername.streamerUsername)' (lowercased: '\(serverUsernameLower)') - inExisting: \(isInExisting), isRemoved: \(isRemoved)")
+                            print("🔍 [DEBUG] Processing server username: '\(serverUsername.streamerUsername)' (visibility: \(serverVisibility), key: \(serverEntryKey)) - inExisting: \(isInExisting), isRemoved: \(isRemoved)")
                             
                             if !isInExisting && !isRemoved {
                                 mergedUsernames.append(serverUsername)
-                                print("   ➕ Added server username: \(serverUsername.streamerUsername)")
+                                print("   ➕ Added server username: \(serverUsername.streamerUsername) (visibility: \(serverVisibility))")
                             } else if isRemoved {
                                 print("   🚫 Skipping removed username from server: \(serverUsername.streamerUsername)")
                             } else {
-                                print("   ⏭️ Skipping username already in existing list: \(serverUsername.streamerUsername)")
+                                print("   ⏭️ Skipping username+visibility already in existing list: \(serverUsername.streamerUsername) (visibility: \(serverVisibility))")
                             }
                         }
                         
                         // Update existing entries with server data (more accurate) but keep optimistic ones if server doesn't have them
+                        // CRITICAL: Match by BOTH username AND visibility
                         for (index, existing) in mergedUsernames.enumerated() {
-                            if let serverVersion = serverUsernames.first(where: { $0.streamerUsername.lowercased() == existing.streamerUsername.lowercased() }) {
+                            let existingVisibility = existing.streamerVisibility?.lowercased() ?? "public"
+                            if let serverVersion = serverUsernames.first(where: { 
+                                $0.streamerUsername.lowercased() == existing.streamerUsername.lowercased() &&
+                                ($0.streamerVisibility?.lowercased() ?? "public") == existingVisibility
+                            }) {
                                 mergedUsernames[index] = serverVersion
+                                print("   🔄 Updated existing entry with server data: \(existing.streamerUsername) (visibility: \(existingVisibility))")
                             } else {
                                 // Keep optimistic update if server doesn't have it yet (might be processing)
-                                print("   ⚠️ Keeping optimistic username (not in server yet): \(existing.streamerUsername)")
+                                print("   ⚠️ Keeping optimistic username (not in server yet): \(existing.streamerUsername) (visibility: \(existingVisibility))")
                             }
                         }
                         
@@ -2185,13 +2299,30 @@ struct ChannelDetailView: View {
                             let originalCount = allServerUsernames.count
                             print("✅ [ChannelDetailView] Loaded \(addedUsernames.count) added usernames from server (initial load, filtered from \(originalCount), excluded \(originalCount - addedUsernames.count) removed)")
                         } else {
-                            // Server returned empty - keep cached data if we have it
-                            if addedUsernames.isEmpty {
-                                // No cached data either - truly empty
-                                print("⚠️ [ChannelDetailView] Server returned empty list and no cached data")
+                            // Server returned empty - preserve cache if it exists (might contain optimistic updates)
+                            // Only clear cache if we don't have any cached data
+                            let cached = loadAddedUsernamesFromUserDefaults()
+                            if !cached.isEmpty {
+                                // We have cached data - preserve it (might be optimistic updates)
+                                // Filter out removed usernames but keep the rest
+                                let filteredCached = cached.filter { username in
+                                    let lowercased = username.streamerUsername.lowercased()
+                                    return !removedUsernames.contains(lowercased)
+                                }
+                                if !filteredCached.isEmpty {
+                                    addedUsernames = filteredCached
+                                    print("✅ [ChannelDetailView] Server returned empty, preserving \(filteredCached.count) cached usernames (may contain optimistic updates)")
+                                } else {
+                                    // All cached usernames were removed - clear cache
+                                    let key = addedUsernamesKey(for: userEmail)
+                                    UserDefaults.standard.removeObject(forKey: key)
+                                    addedUsernames = []
+                                    print("🧹 [ChannelDetailView] Server returned empty, all cached usernames were removed - cleared cache")
+                                }
                             } else {
-                                // Keep cached data since server is empty
-                                print("⚠️ [ChannelDetailView] Server returned empty list, keeping \(addedUsernames.count) cached usernames")
+                                // No cached data and server is empty - truly empty
+                                addedUsernames = []
+                                print("✅ [ChannelDetailView] Loaded 0 added usernames from server (server is clean, no cache)")
                             }
                         }
                     }
@@ -2764,6 +2895,9 @@ struct ChannelDetailView: View {
                             sentFollowRequests.append(newSentRequest)
                         }
                         print("   ✅ Verification: Request exists in array: \(sentFollowRequests.contains(where: { $0.requestedUsername.lowercased() == cleanUsername.lowercased() }))")
+                        
+                        // CRITICAL: Save to UserDefaults immediately to persist optimistic update
+                        saveSentFollowRequestsToUserDefaults()
                     } else {
                         // User clicked "Add" button (public) - add to addedUsernames → show "Added"
                         // CRITICAL: ONLY update addedUsernames, NEVER touch sentFollowRequests
@@ -2779,12 +2913,27 @@ struct ChannelDetailView: View {
                             streamerVisibility: "public"
                         )
                         
-                        if let existingIndex = addedUsernames.firstIndex(where: { $0.streamerUsername.lowercased() == cleanUsername.lowercased() }) {
-                            print("⚠️ [ChannelDetailView] Username \(cleanUsername) already in addedUsernames list - updating")
+                        // CRITICAL: Only update/replace if there's an existing entry with the SAME visibility (public)
+                        // If there's a private entry, keep it and add the public entry separately
+                        if let existingIndex = addedUsernames.firstIndex(where: { 
+                            let usernameMatches = $0.streamerUsername.lowercased() == cleanUsername.lowercased()
+                            let itemVisibility = $0.streamerVisibility?.lowercased() ?? "public"
+                            return usernameMatches && itemVisibility == "public"
+                        }) {
+                            print("⚠️ [ChannelDetailView] Username \(cleanUsername) already in addedUsernames list with PUBLIC visibility - updating")
                             addedUsernames[existingIndex] = newAddedUsername
                         } else {
+                            // Check if there's a private entry - if so, keep it and add public separately
+                            let hasPrivateEntry = addedUsernames.contains(where: {
+                                let usernameMatches = $0.streamerUsername.lowercased() == cleanUsername.lowercased()
+                                let itemVisibility = $0.streamerVisibility?.lowercased() ?? "public"
+                                return usernameMatches && itemVisibility == "private"
+                            })
+                            if hasPrivateEntry {
+                                print("✅ [ChannelDetailView] Username \(cleanUsername) has PRIVATE entry - adding PUBLIC entry separately")
+                            }
                             addedUsernames.append(newAddedUsername)
-                            print("✅ [ChannelDetailView] Optimistically added username: \(cleanUsername) (email: \(streamerEmail.isEmpty ? "N/A" : streamerEmail))")
+                            print("✅ [ChannelDetailView] Optimistically added username: \(cleanUsername) (visibility: public, email: \(streamerEmail.isEmpty ? "N/A" : streamerEmail))")
                         }
                         
                         // CRITICAL: Remove from removedUsernames set if it was previously removed
@@ -2909,11 +3058,70 @@ struct ChannelDetailView: View {
                         print("   📊 Current sentFollowRequests count: \(sentFollowRequests.count)")
                         print("   📋 Contains '\(cleanUsername)': \(sentFollowRequests.contains(where: { $0.requestedUsername.lowercased() == cleanUsername.lowercased() }))")
                         
+                        // CRITICAL: Save to UserDefaults immediately to persist optimistic update
+                        saveSentFollowRequestsToUserDefaults()
+                        
                         // Show a warning message for server errors but don't block the UI
                         if isServerError || isTimeout {
                             errorMessage = isServerError ? 
                                 "Request may have encountered an error, but was sent. Please check your connection." :
                                 "Request may have timed out, but request was sent. Please check your connection."
+                            Task {
+                                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                                await MainActor.run {
+                                    errorMessage = nil
+                                }
+                            }
+                        }
+                        return
+                    }
+                    
+                    // CRITICAL: For public "Add" requests, ALSO update UI optimistically on ANY error
+                    // (except "User not found") because the add might have succeeded on the backend
+                    // This includes timeouts, HTTP 500 errors, and other server errors
+                    if !isPrivate && !isUserNotFound {
+                        print("   ⚠️ Error occurred for public Add request - updating UI optimistically (add may have succeeded)")
+                        print("      Error type: \(isTimeout ? "timeout" : isServerError ? "server error" : "other")")
+                        let streamerEmail = email ?? usernameSearchResults.first(where: { $0.username.lowercased() == cleanUsername.lowercased() })?.email ?? ""
+                        let newAddedUsername = AddedUsername(
+                            streamerEmail: streamerEmail,
+                            streamerUsername: cleanUsername,
+                            addedAt: ISO8601DateFormatter().string(from: Date()),
+                            streamerVisibility: "public"
+                        )
+                        
+                        // CRITICAL: Only update/replace if there's an existing entry with the SAME visibility (public)
+                        if let existingIndex = addedUsernames.firstIndex(where: {
+                            let usernameMatches = $0.streamerUsername.lowercased() == cleanUsername.lowercased()
+                            let itemVisibility = $0.streamerVisibility?.lowercased() ?? "public"
+                            return usernameMatches && itemVisibility == "public"
+                        }) {
+                            print("   🔄 Updating existing public entry in addedUsernames")
+                            addedUsernames[existingIndex] = newAddedUsername
+                        } else {
+                            print("   ➕ Adding new public entry to addedUsernames")
+                            addedUsernames.append(newAddedUsername)
+                        }
+                        
+                        // CRITICAL: Remove from removedUsernames set if it was previously removed
+                        if removedUsernames.contains(cleanUsername.lowercased()) {
+                            removedUsernames.remove(cleanUsername.lowercased())
+                            print("   ✅ Removed '\(cleanUsername.lowercased())' from removedUsernames set (can be added again)")
+                            saveRemovedUsernamesToUserDefaults()
+                        }
+                        
+                        print("   ✅ Optimistically updated UI - button should show 'Added'")
+                        print("   📊 Current addedUsernames count: \(addedUsernames.count)")
+                        print("   📋 Contains '\(cleanUsername)': \(addedUsernames.contains(where: { $0.streamerUsername.lowercased() == cleanUsername.lowercased() && ($0.streamerVisibility?.lowercased() ?? "public") == "public" }))")
+                        
+                        // CRITICAL: Save to UserDefaults immediately to persist optimistic update
+                        saveAddedUsernamesToUserDefaults()
+                        
+                        // Show a warning message for server errors but don't block the UI
+                        if isServerError || isTimeout {
+                            errorMessage = isServerError ?
+                                "Add may have encountered an error, but was processed. Please check your connection." :
+                                "Add may have timed out, but was processed. Please check your connection."
                             Task {
                                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                                 await MainActor.run {
@@ -3043,10 +3251,25 @@ struct ChannelDetailView: View {
     // "Add" button tracks public username addition (addedUsernames)
     // "Request🔒" button tracks private request workflow (sentFollowRequests)
     // These should never affect each other
-    private func isUsernameAdded(_ username: String) -> Bool {
+    // Check if a username is added with a specific visibility
+    // For public button: check if username is added with "public" visibility
+    // For private button: check if username is added with "private" visibility
+    private func isUsernameAdded(_ username: String, visibility: String? = "public") -> Bool {
         // Remove 🔒 from username for comparison (addedUsernames stores clean usernames)
         let cleanUsername = username.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces)
-        let isAdded = addedUsernames.contains(where: { $0.streamerUsername.lowercased() == cleanUsername.lowercased() })
+        let isAdded = addedUsernames.contains(where: { 
+            let usernameMatches = $0.streamerUsername.lowercased() == cleanUsername.lowercased()
+            // If visibility is specified, check that it matches
+            // If visibility is nil, check if streamerVisibility is nil or "public" (default to public)
+            if let expectedVisibility = visibility {
+                let itemVisibility = $0.streamerVisibility?.lowercased() ?? "public"
+                return usernameMatches && itemVisibility == expectedVisibility.lowercased()
+            } else {
+                // If no visibility specified, default to public (backward compatibility)
+                let itemVisibility = $0.streamerVisibility?.lowercased() ?? "public"
+                return usernameMatches && itemVisibility == "public"
+            }
+        })
         return isAdded
     }
     
@@ -3236,24 +3459,37 @@ struct ChannelDetailView: View {
                         print("✅ [ChannelDetailView] Merged sent follow requests: \(pendingResult.requests?.count ?? 0) pending + \(activeRequests.count) active from server + \(uniqueRequests.count - serverRequests.count) optimistic = \(uniqueRequests.count) total")
                         print("   📋 Final merged requests: \(uniqueRequests.map { "\($0.requestedUsername) (status: \($0.status))" }.joined(separator: ", "))")
                     } else {
-                        sentFollowRequests = serverRequests
+                        // CRITICAL: Even when mergeWithExisting is false, we should preserve cached optimistic updates
+                        // Only overwrite if we have cached data that's not in server response
+                        let serverUsernames = Set(serverRequests.map { $0.requestedUsername.lowercased() })
+                        var finalRequests = serverRequests
+                        
+                        // Preserve any cached requests that aren't on server yet (optimistic updates)
+                        for cached in sentFollowRequests {
+                            let cachedUsername = cached.requestedUsername.lowercased()
+                            if !serverUsernames.contains(cachedUsername) {
+                                let hasValidStatus = cached.status.lowercased() == "pending" || 
+                                                     cached.status.lowercased() == "active" || 
+                                                     cached.status.lowercased() == "accepted" ||
+                                                     cached.status.lowercased() == "declined"
+                                if hasValidStatus {
+                                    finalRequests.append(cached)
+                                    print("   💾 Preserved cached optimistic request: \(cached.requestedUsername) (status: \(cached.status))")
+                                }
+                            }
+                        }
+                        
+                        sentFollowRequests = finalRequests
                         print("✅ [ChannelDetailView] Loaded \(sentFollowRequests.count) sent follow requests (\(pendingResult.requests?.count ?? 0) pending + \(activeRequests.count) active)")
                     }
                     
-                    // FINAL VERIFICATION: Double-check that no removed usernames made it through
-                    let finalFiltered = sentFollowRequests.filter { request in
-                        let lowercased = request.requestedUsername.lowercased()
-                        let isRemoved = removedUsernames.contains(lowercased)
-                        if isRemoved {
-                            print("   🚨 [DEBUG] CRITICAL: Found removed username in final sentFollowRequests list! '\(request.requestedUsername)' (lowercased: '\(lowercased)') - REMOVING IT NOW")
-                        }
-                        return !isRemoved
-                    }
+                    // CRITICAL: DO NOT filter sentFollowRequests by removedUsernames
+                    // removedUsernames is ONLY for filtering addedUsernames (public "Add" button)
+                    // sentFollowRequests (private "Request🔒" button) are COMPLETELY INDEPENDENT
+                    // A user can have a pending private request even if they removed the username from public added list
                     
-                    if finalFiltered.count != sentFollowRequests.count {
-                        print("   🚨 [DEBUG] CRITICAL: Had to remove \(sentFollowRequests.count - finalFiltered.count) removed username(s) from final sentFollowRequests list!")
-                        sentFollowRequests = finalFiltered
-                    }
+                    // CRITICAL: Save to UserDefaults after loading to persist any optimistic updates
+                    saveSentFollowRequestsToUserDefaults()
                     
                     isLoadingSentRequests = false
                 }
@@ -3596,8 +3832,9 @@ struct ChannelDetailView: View {
                         var updatedRequest = sentFollowRequests[index]
                         // Note: SentFollowRequest is immutable, so we need to reload from server
                         print("🔄 [ChannelDetailView] Request was approved, now removed - status should be 'rejected'")
+                        // CRITICAL: Use merge=true to preserve any other optimistic updates
                         // Reload sent requests to get updated status
-                        loadSentFollowRequests(mergeWithExisting: false)
+                        loadSentFollowRequests(mergeWithExisting: true)
                     }
                     
                     // Save to UserDefaults immediately
@@ -3623,24 +3860,32 @@ struct ChannelDetailView: View {
     }
     
     // Deselect added username - reverts "Added" back to "Add"
-    private func deselectAddedUsername(_ username: String, email: String?) {
+    private func deselectAddedUsername(_ username: String, email: String? = nil, visibility: String? = nil) {
         guard let userEmail = authService.userEmail else {
             print("⚠️ [ChannelDetailView] Cannot deselect - userEmail is nil")
             return
         }
         
         let cleanUsername = username.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces)
+        let expectedVisibility = visibility?.lowercased() ?? "public" // Default to public if not specified
         
         print("🔴 [ChannelDetailView] ========== DESELECT ADDED USERNAME ==========")
         print("   📝 Username: '\(username)' -> clean: '\(cleanUsername)'")
         print("   📧 Email parameter: \(email ?? "nil")")
+        print("   🔒 Visibility: \(expectedVisibility)")
         print("   📊 Current addedUsernames count: \(addedUsernames.count)")
-        print("   📋 Current addedUsernames: \(addedUsernames.map { "\($0.streamerUsername) (email: \($0.streamerEmail))" }.joined(separator: ", "))")
+        print("   📋 Current addedUsernames: \(addedUsernames.map { "\($0.streamerUsername) (visibility: \($0.streamerVisibility ?? "public"), email: \($0.streamerEmail))" }.joined(separator: ", "))")
         
-        // Find the AddedUsername object to get the email
-        guard let addedUsername = addedUsernames.first(where: { $0.streamerUsername.lowercased() == cleanUsername.lowercased() }) else {
-            print("❌ [ChannelDetailView] Could not find username in addedUsernames: \(cleanUsername)")
-            print("   🔍 Searched in: \(addedUsernames.map { $0.streamerUsername.lowercased() }.joined(separator: ", "))")
+        // CRITICAL: Find the AddedUsername object that matches BOTH username AND visibility
+        // This ensures we only remove the correct entry (public or private)
+        guard let addedUsername = addedUsernames.first(where: { 
+            let usernameMatches = $0.streamerUsername.lowercased() == cleanUsername.lowercased()
+            let itemVisibility = $0.streamerVisibility?.lowercased() ?? "public"
+            let visibilityMatches = itemVisibility == expectedVisibility
+            return usernameMatches && visibilityMatches
+        }) else {
+            print("❌ [ChannelDetailView] Could not find username with matching visibility in addedUsernames: \(cleanUsername) (visibility: \(expectedVisibility))")
+            print("   🔍 Searched in: \(addedUsernames.map { "\($0.streamerUsername.lowercased()) (visibility: \($0.streamerVisibility ?? "public"))" }.joined(separator: ", "))")
             return
         }
         
@@ -3649,6 +3894,9 @@ struct ChannelDetailView: View {
         print("   📧 Email from parameter: \(email ?? "nil")")
         print("   📧 Email from addedUsername: \(addedUsername.streamerEmail)")
         print("   📧 Email to use (before lookup): \(emailToUse)")
+        
+        // Capture visibility for use in closures
+        let visibilityToUse = visibility
         
         // If email is empty, try to look it up from the username
         if emailToUse.isEmpty {
@@ -3675,19 +3923,19 @@ struct ChannelDetailView: View {
                 }
                 
                 // Continue with the removal using the looked-up email
-                await performRemoveAddedUsername(cleanUsername: cleanUsername, email: emailToUse, userEmail: userEmail)
+                await performRemoveAddedUsername(cleanUsername: cleanUsername, email: emailToUse, userEmail: userEmail, visibility: visibilityToUse)
             }
             return
         }
         
         // Email is available, proceed with removal
         Task {
-            await performRemoveAddedUsername(cleanUsername: cleanUsername, email: emailToUse, userEmail: userEmail)
+            await performRemoveAddedUsername(cleanUsername: cleanUsername, email: emailToUse, userEmail: userEmail, visibility: visibilityToUse)
         }
     }
     
     // Helper function to perform the actual removal
-    private func performRemoveAddedUsername(cleanUsername: String, email: String, userEmail: String) async {
+    private func performRemoveAddedUsername(cleanUsername: String, email: String, userEmail: String, visibility: String? = nil) async {
         Task {
             do {
                 print("   🚀 Calling removeFollow API...")
@@ -3706,12 +3954,18 @@ struct ChannelDetailView: View {
                 print("   📥 Response: success=\(response.success), message=\(response.message ?? "nil")")
                 
                 await MainActor.run {
-                    // CRITICAL: Always remove from local array optimistically when user clicks "Remove"
-                    // This ensures the UI updates immediately, regardless of backend response
+                    // CRITICAL: Only remove the entry that matches BOTH username AND visibility
+                    // This ensures we don't accidentally remove the other visibility type (public vs private)
                     let beforeCount = addedUsernames.count
-                    addedUsernames.removeAll { $0.streamerUsername.lowercased() == cleanUsername.lowercased() }
+                    let expectedVisibility = visibility?.lowercased() ?? "public"
+                    addedUsernames.removeAll { 
+                        let usernameMatches = $0.streamerUsername.lowercased() == cleanUsername.lowercased()
+                        let itemVisibility = $0.streamerVisibility?.lowercased() ?? "public"
+                        let visibilityMatches = itemVisibility == expectedVisibility
+                        return usernameMatches && visibilityMatches
+                    }
                     let afterCount = addedUsernames.count
-                    print("   📊 Optimistically removed from addedUsernames: \(beforeCount) -> \(afterCount) (removed \(beforeCount - afterCount) item(s))")
+                    print("   📊 Optimistically removed from addedUsernames: \(beforeCount) -> \(afterCount) (removed \(beforeCount - afterCount) item(s) with visibility: \(expectedVisibility))")
                     saveAddedUsernamesToUserDefaults()
                     
                     // Check what was actually deleted based on deletedType (for tracking purposes)
@@ -4224,10 +4478,11 @@ struct ChannelDetailView: View {
                                                 // Deselection buttons - both say "Remove"
                                                 HStack(spacing: 8) {
                                                     // "Remove" button for added - only show if added
+                                                    // CRITICAL: Pass visibility to ensure we remove the correct entry (public vs private)
                                                     if item.isAdded {
                                                         Button(action: {
-                                                            print("🟡 [ChannelDetailView] Removing Added from dropdown: \(item.username)")
-                                                            deselectAddedUsername(item.username, email: item.email)
+                                                            print("🟡 [ChannelDetailView] Removing Added from dropdown: \(item.username) (visibility: \(item.addedVisibility ?? "public"))")
+                                                            deselectAddedUsername(item.username, email: item.email, visibility: item.addedVisibility)
                                                         }) {
                                                             Text("Remove")
                                                                 .font(.caption)
@@ -4427,11 +4682,18 @@ struct ChannelDetailView: View {
             }
         }
         .onAppear {
-            // CRITICAL: Ensure sentFollowRequests and addedUsernames are loaded when search results appear
-            // This ensures button states (Approved/Requested) are correct
-            if sentFollowRequests.isEmpty || addedUsernames.isEmpty {
-                print("🔄 [ChannelDetailView] Loading sentFollowRequests and addedUsernames for search results...")
-                loadSentFollowRequests(mergeWithExisting: true)
+            // CRITICAL: Load cache FIRST before server fetch to restore optimistic updates
+            // This ensures "Requested" state persists even if server hasn't processed the request yet
+            // CRITICAL: Public "Add" and private "Request" are COMPLETELY INDEPENDENT
+            // Loading one should NEVER affect the other
+            print("🔄 [ChannelDetailView] Loading sentFollowRequests and addedUsernames for search results...")
+            // CRITICAL: Load from UserDefaults FIRST to restore cached optimistic updates
+            // This must happen synchronously before any UI rendering
+            loadSentFollowRequestsFromUserDefaults()
+            print("   ✅ Cache loaded - sentFollowRequests count: \(sentFollowRequests.count)")
+            // Then fetch from server and merge (preserves cached data if server doesn't have it yet)
+            loadSentFollowRequests(mergeWithExisting: true) // Always merge to preserve optimistic updates
+            if addedUsernames.isEmpty {
                 loadAddedUsernames(mergeWithExisting: true)
             }
         }
@@ -4511,11 +4773,28 @@ struct ChannelDetailView: View {
     @ViewBuilder
     private func publicAccountButton(for result: UsernameSearchResult) -> some View {
         // Public button should always show Add/Added, never Request
-        // Check if already added FIRST - if added, allow deselection
-        if isUsernameAdded(result.username) {
+        // Check if already added with PUBLIC visibility FIRST - if added, allow deselection
+        // CRITICAL: Only show "Added" if the username is added with "public" visibility
+        // If it's added with "private" visibility, show "Add" (public version not added)
+        let cleanUsername = result.username.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces)
+        let isPublicAdded = isUsernameAdded(result.username, visibility: "public")
+        
+        // DEBUG: Log button state for public button
+        let _ = {
+            print("🔍 [ChannelDetailView] PUBLIC button state for '\(cleanUsername)':")
+            print("   isPublicAdded: \(isPublicAdded)")
+            print("   addedUsernames count: \(addedUsernames.count)")
+            let matchingEntries = addedUsernames.filter { $0.streamerUsername.lowercased() == cleanUsername.lowercased() }
+            print("   Matching entries: \(matchingEntries.count)")
+            for entry in matchingEntries {
+                print("     - \(entry.streamerUsername) (visibility: \(entry.streamerVisibility ?? "public"))")
+            }
+        }()
+        
+        if isPublicAdded {
             Button(action: {
-                print("🟡 [ChannelDetailView] ADDED BUTTON TAPPED - deselecting")
-                deselectAddedUsername(result.username, email: result.email)
+                print("🟡 [ChannelDetailView] ADDED BUTTON TAPPED (PUBLIC) - deselecting")
+                deselectAddedUsername(result.username, email: result.email, visibility: "public")
             }) {
                 Text("Added")
                     .font(.caption)
@@ -4577,10 +4856,15 @@ struct ChannelDetailView: View {
         // CRITICAL: Once "Requested", can't go back to "Request" (one-way flow)
         // If declined, requester still sees "Requested" (can't request again)
         
-        // Check if request was approved AND user is in addedUsernames (has access)
+        // Check if request was approved AND user is in addedUsernames with PRIVATE visibility (has access)
+        // CRITICAL: Only show "Approved" if the username is added with "private" visibility
+        // If it's added with "public" visibility, don't show "Approved" for the private button
         let isApproved = isFollowRequestApproved(result.username)
         let isInAddedUsernames = addedUsernames.contains(where: { 
-            $0.streamerUsername.lowercased() == cleanPrivateUsername.lowercased() 
+            let usernameMatches = $0.streamerUsername.lowercased() == cleanPrivateUsername.lowercased()
+            // Only match if visibility is "private"
+            let itemVisibility = $0.streamerVisibility?.lowercased() ?? "public"
+            return usernameMatches && itemVisibility == "private"
         })
         
         // DEBUG: Log button state determination (execute before ViewBuilder)
@@ -4613,8 +4897,8 @@ struct ChannelDetailView: View {
             // Request was approved - show "Approved" with remove option
             // User is in addedUsernames, can remove which sets status to "rejected"
             Button(action: {
-                print("🟡 [ChannelDetailView] APPROVED BUTTON TAPPED - removing")
-                removeUsername(cleanPrivateUsername)
+                print("🟡 [ChannelDetailView] APPROVED BUTTON TAPPED (PRIVATE) - removing")
+                deselectAddedUsername(result.username, email: result.email, visibility: "private")
             }) {
                 Text("Approved")
                     .font(.caption)
@@ -4630,14 +4914,14 @@ struct ChannelDetailView: View {
             // CRITICAL: Once "Requested", button should NOT allow deselection (one-way flow)
             // This includes: pending (waiting), declined (still shows "Requested" from requester's perspective)
             // Only show "Requested" - no action button (can't cancel once requested)
-            Text("Requested")
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundColor(.orange)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color.orange.opacity(0.2))
-                .cornerRadius(6)
+                Text("Requested")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.orange.opacity(0.2))
+                    .cornerRadius(6)
         } else {
             // Check if THIS SPECIFIC private button is being added (not public)
             // Only show spinner for private button if it's the private key being added
@@ -5364,8 +5648,8 @@ struct ChannelDetailView: View {
         // ALWAYS set isLoading = true when starting to load (unless we have local video)
         // This ensures loading view shows immediately, even before async work starts
         if localVideoContent == nil {
-            isLoading = true
-            errorMessage = nil
+                isLoading = true
+                errorMessage = nil
         }
         
         Task {
@@ -5496,10 +5780,10 @@ struct ChannelDetailView: View {
                             
                             do {
                                 let bothViews = try await channelService.fetchBothViewsContent(
-                                    channelName: currentChannel.channelName,
-                                    creatorEmail: currentChannel.creatorEmail,
-                                    viewerEmail: viewerEmail,
-                                    limit: 20,
+                                channelName: currentChannel.channelName,
+                                creatorEmail: currentChannel.creatorEmail,
+                                viewerEmail: viewerEmail,
+                                limit: 20,
                                     forceRefresh: true
                                 )
                                 
@@ -5600,10 +5884,10 @@ struct ChannelDetailView: View {
                         
                         do {
                             let bothViews = try await channelService.fetchBothViewsContent(
-                                channelName: currentChannel.channelName,
-                                creatorEmail: currentChannel.creatorEmail,
-                                viewerEmail: viewerEmail,
-                                limit: 20,
+                            channelName: currentChannel.channelName,
+                            creatorEmail: currentChannel.creatorEmail,
+                            viewerEmail: viewerEmail,
+                            limit: 20,
                                 forceRefresh: forceRefresh
                             )
                             
@@ -5627,7 +5911,7 @@ struct ChannelDetailView: View {
                                     return isPrivate
                                 }
                             }.value
-                            
+                                
                             // Update UI immediately with filtered content
                             await MainActor.run {
                                 // Store both separately - use strictly filtered arrays
@@ -5657,10 +5941,10 @@ struct ChannelDetailView: View {
                                 hasLoaded = true
                                 print("✅ [ChannelDetailView] Both views loaded in single request - public: \(publicContent.count), private: \(privateContent.count), showing: \(showPrivateContent ? "private" : "public")")
                             }
-                            
+                                
                             // Check and delete short videos after content is loaded (background task)
                             Task.detached(priority: .utility) {
-                                await checkAndDeleteShortVideos()
+                                    await checkAndDeleteShortVideos()
                             }
                         } catch {
                             print("❌ [ChannelDetailView] Error loading both views: \(error.localizedDescription)")
@@ -5771,20 +6055,20 @@ struct ChannelDetailView: View {
                 // Add new items efficiently
                 for item in publicItems where !seenPublicSKs.contains(item.SK) {
                     publicContent.append(item)
-                    seenPublicSKs.insert(item.SK)
-                }
+                        seenPublicSKs.insert(item.SK)
+                    }
                 for item in privateItems where !seenPrivateSKs.contains(item.SK) {
                     privateContent.append(item)
-                    seenPrivateSKs.insert(item.SK)
+                        seenPrivateSKs.insert(item.SK)
+                    }
                 }
-            }
-            
+                
             // Update current view content immediately
             if showPrivateContent {
                 content = privateContent
             } else {
                 content = publicContent
-            }
+                }
         }
         
         // Populate cache with unfiltered content when content is updated
@@ -6724,7 +7008,7 @@ struct ChannelDetailView: View {
                             // For Twilly TV, only confirm no content if both views are loaded and both are empty
                             let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
                             if isTwillyTV && bothViewsLoaded {
-                                hasConfirmedNoContent = true
+                            hasConfirmedNoContent = true
                             } else if !isTwillyTV {
                                 hasConfirmedNoContent = true
                             }
@@ -6740,7 +7024,7 @@ struct ChannelDetailView: View {
                                             // For Twilly TV, never confirm "no content" unless both views are checked
                                             let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
                                             if !isTwillyTV {
-                                                hasConfirmedNoContent = true
+                                            hasConfirmedNoContent = true
                                             }
                                         }
                                     }
@@ -7601,56 +7885,56 @@ struct ContentCard: View {
                     HStack(spacing: 12) {
                         // Thumbnail with favorite button overlay
                         ZStack(alignment: .topTrailing) {
-                            // Thumbnail - maintain aspect ratio for portrait videos
-                            ZStack {
-                                AsyncImage(url: URL(string: content.thumbnailUrl ?? "")) { phase in
-                                    switch phase {
-                                    case .success(let image):
-                                        image
-                                            .resizable()
-                                            .aspectRatio(contentMode: .fill)
-                                    case .failure(_), .empty:
-                                        ZStack {
-                                            Color.gray.opacity(0.3)
-                                            Image(systemName: "play.circle.fill")
-                                                .font(.system(size: 40))
-                                                .foregroundColor(.white.opacity(0.5))
-                                        }
-                                    @unknown default:
+                        // Thumbnail - maintain aspect ratio for portrait videos
+                        ZStack {
+                            AsyncImage(url: URL(string: content.thumbnailUrl ?? "")) { phase in
+                                switch phase {
+                                case .success(let image):
+                                    image
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                case .failure(_), .empty:
+                                    ZStack {
                                         Color.gray.opacity(0.3)
+                                        Image(systemName: "play.circle.fill")
+                                            .font(.system(size: 40))
+                                            .foregroundColor(.white.opacity(0.5))
+                                    }
+                                @unknown default:
+                                    Color.gray.opacity(0.3)
+                                }
+                            }
+                            
+                            // Upload status indicators overlay
+                            if isLocalVideo && isUploadComplete {
+                                VStack {
+                                    Spacer()
+                                    HStack {
+                                        Spacer()
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .font(.system(size: 20))
+                                            .foregroundColor(.twillyCyan)
+                                            .background(Circle().fill(Color.black.opacity(0.7)))
+                                            .padding(4)
                                     }
                                 }
-                                
-                                // Upload status indicators overlay
-                                if isLocalVideo && isUploadComplete {
-                                    VStack {
+                            } else if isLocalVideo && isPollingForThumbnail {
+                                VStack {
+                                    Spacer()
+                                    HStack {
                                         Spacer()
-                                        HStack {
-                                            Spacer()
-                                            Image(systemName: "checkmark.circle.fill")
-                                                .font(.system(size: 20))
-                                                .foregroundColor(.twillyCyan)
-                                                .background(Circle().fill(Color.black.opacity(0.7)))
-                                                .padding(4)
-                                        }
-                                    }
-                                } else if isLocalVideo && isPollingForThumbnail {
-                                    VStack {
-                                        Spacer()
-                                        HStack {
-                                            Spacer()
-                                            ProgressView()
-                                                .tint(.twillyCyan)
-                                                .scaleEffect(0.8)
-                                                .padding(6)
-                                                .background(Circle().fill(Color.black.opacity(0.7)))
-                                        }
+                                        ProgressView()
+                                            .tint(.twillyCyan)
+                                            .scaleEffect(0.8)
+                                            .padding(6)
+                                            .background(Circle().fill(Color.black.opacity(0.7)))
                                     }
                                 }
                             }
-                            .frame(width: 120, height: 120) // Square frame to accommodate both portrait and landscape
-                            .clipped()
-                            .cornerRadius(8)
+                        }
+                        .frame(width: 120, height: 120) // Square frame to accommodate both portrait and landscape
+                        .clipped()
+                        .cornerRadius(8)
                         }
                         
                         // Content info - Title, username, and duration

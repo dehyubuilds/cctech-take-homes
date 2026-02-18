@@ -168,6 +168,32 @@ private struct CachedChannels: Codable {
     let timestamp: Date
 }
 
+// Persistent cache structure for channel content
+private struct CachedContent: Codable {
+    let content: [ChannelContent]
+    let nextToken: String?
+    let hasMore: Bool
+    let timestamp: Date
+    let channelName: String
+    let creatorEmail: String
+    let viewerEmail: String?
+    let showPrivateContent: Bool
+}
+
+// Persistent cache structure for both views content
+private struct CachedBothViewsContent: Codable {
+    let publicContent: [ChannelContent]
+    let privateContent: [ChannelContent]
+    let publicNextToken: String?
+    let privateNextToken: String?
+    let publicHasMore: Bool
+    let privateHasMore: Bool
+    let timestamp: Date
+    let channelName: String
+    let creatorEmail: String
+    let viewerEmail: String?
+}
+
 // Persistent cache structure for discoverable channels
 private struct CachedDiscoverableChannels: Codable {
     let channels: [DiscoverableChannel]
@@ -191,9 +217,14 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
     // Cache for channels - using persistent storage for better performance
     private var cachedChannels: [String: (channels: [Channel], timestamp: Date)] = [:]
     private var cachedDiscoverableChannels: [String: (channels: [DiscoverableChannel], timestamp: Date)] = [:]
+    private var cachedContent: [String: (content: PaginatedContent, timestamp: Date)] = [:]
+    private var cachedBothViewsContent: [String: (content: BothViewsContent, timestamp: Date)] = [:]
     private let cacheExpirationInterval: TimeInterval = 3600 // 1 hour (longer cache for better performance)
+    private let contentCacheExpirationInterval: TimeInterval = 300 // 5 minutes for content (fresher)
     private let cacheKey = "twilly_cached_channels"
     private let discoverableCacheKey = "twilly_cached_discoverable_channels"
+    private let contentCacheKey = "twilly_cached_content"
+    private let bothViewsCacheKey = "twilly_cached_both_views"
     
     // Custom URLSession for regular API calls (fast timeout for quick responses)
     private lazy var urlSession: URLSession = {
@@ -1170,8 +1201,19 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         let hasMore: Bool
     }
     
+    // Both views result structure (for single request returning both public and private)
+    struct BothViewsContent {
+        let publicContent: [ChannelContent]
+        let privateContent: [ChannelContent]
+        let publicNextToken: String?
+        let privateNextToken: String?
+        let publicHasMore: Bool
+        let privateHasMore: Bool
+    }
+    
     // Fetch content for a specific channel with pagination
     // Uses GraphQL if enabled, otherwise falls back to REST API
+    // OPTIMIZATION: Returns cached data immediately if available, then refreshes in background
     func fetchChannelContent(
         channelName: String,
         creatorEmail: String,
@@ -1181,6 +1223,66 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         forceRefresh: Bool = false,
         showPrivateContent: Bool = false
     ) async throws -> PaginatedContent {
+        // FAST PATH: Check cache first (only for first page, no nextToken)
+        if !forceRefresh && nextToken == nil {
+            let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")_\(showPrivateContent)"
+            
+            // Check in-memory cache first (instant)
+            if let cached = cachedContent[cacheKey] {
+                let age = Date().timeIntervalSince(cached.timestamp)
+                if age < contentCacheExpirationInterval {
+                    print("⚡ [ChannelService] Using in-memory cached content (age: \(Int(age))s)")
+                    // Refresh in background if cache is getting old (> 2 min)
+                    if age > 120 {
+                        Task.detached { [weak self] in
+                            _ = try? await self?.fetchChannelContent(
+                                channelName: channelName,
+                                creatorEmail: creatorEmail,
+                                viewerEmail: viewerEmail,
+                                limit: limit,
+                                nextToken: nil,
+                                forceRefresh: true,
+                                showPrivateContent: showPrivateContent
+                            )
+                        }
+                    }
+                    return cached.content
+                }
+            }
+            
+            // Check persistent cache (UserDefaults) - very fast
+            let persistentCacheKey = "\(contentCacheKey)_\(cacheKey)"
+            if let cachedData = UserDefaults.standard.data(forKey: persistentCacheKey) {
+                if let cached = try? JSONDecoder().decode(CachedContent.self, from: cachedData) {
+                    let age = Date().timeIntervalSince(cached.timestamp)
+                    if age < contentCacheExpirationInterval {
+                        print("⚡ [ChannelService] Using persistent cached content (age: \(Int(age))s)")
+                        let paginated = PaginatedContent(
+                            content: cached.content,
+                            nextToken: cached.nextToken,
+                            hasMore: cached.hasMore
+                        )
+                        // Update in-memory cache for next time
+                        cachedContent[cacheKey] = (content: paginated, timestamp: cached.timestamp)
+                        // Refresh in background if cache is getting old
+                        if age > 120 {
+                            Task.detached { [weak self] in
+                                _ = try? await self?.fetchChannelContent(
+                                    channelName: channelName,
+                                    creatorEmail: creatorEmail,
+                                    viewerEmail: viewerEmail,
+                                    limit: limit,
+                                    nextToken: nil,
+                                    forceRefresh: true,
+                                    showPrivateContent: showPrivateContent
+                                )
+                            }
+                        }
+                        return paginated
+                    }
+                }
+            }
+        }
         // Use GraphQL if enabled and configured, but fall back to REST on error
         if useGraphQL, let endpoint = graphQLEndpoint, let apiKey = graphQLApiKey {
             do {
@@ -1395,14 +1497,276 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             // If we got exactly the limit, there might be more
             let hasMore = contents.count == limit || nextToken != nil
             
-            return PaginatedContent(
+            let result = PaginatedContent(
                 content: contents,
                 nextToken: nextToken,
                 hasMore: hasMore
             )
+            
+            // OPTIMIZATION: Cache result (only for first page, no nextToken)
+            if nextToken == nil {
+                let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")_\(showPrivateContent)"
+                let timestamp = Date()
+                
+                // Update in-memory cache
+                cachedContent[cacheKey] = (content: result, timestamp: timestamp)
+                
+                // Save to persistent cache (UserDefaults)
+                let cached = CachedContent(
+                    content: contents,
+                    nextToken: nextToken,
+                    hasMore: hasMore,
+                    timestamp: timestamp,
+                    channelName: channelName,
+                    creatorEmail: creatorEmail,
+                    viewerEmail: viewerEmail,
+                    showPrivateContent: showPrivateContent
+                )
+                if let encoded = try? JSONEncoder().encode(cached) {
+                    let persistentCacheKey = "\(contentCacheKey)_\(cacheKey)"
+                    UserDefaults.standard.set(encoded, forKey: persistentCacheKey)
+                    print("💾 [ChannelService] Cached \(contents.count) content items (in-memory + persistent)")
+                }
+            }
+            
+            return result
         }
         
         return PaginatedContent(content: [], nextToken: nil, hasMore: false)
+    }
+    
+    // Fetch both public and private content in a single request for instant toggle
+    // OPTIMIZATION: Returns cached data immediately if available, then refreshes in background
+    func fetchBothViewsContent(
+        channelName: String,
+        creatorEmail: String,
+        viewerEmail: String? = nil,
+        limit: Int = 20,
+        forceRefresh: Bool = false
+    ) async throws -> BothViewsContent {
+        // FAST PATH: Check cache first
+        if !forceRefresh {
+            let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")"
+            
+            // Check in-memory cache first (instant)
+            if let cached = cachedBothViewsContent[cacheKey] {
+                let age = Date().timeIntervalSince(cached.timestamp)
+                if age < contentCacheExpirationInterval {
+                    print("⚡ [ChannelService] Using in-memory cached both views (age: \(Int(age))s)")
+                    // Refresh in background if cache is getting old (> 2 min)
+                    if age > 120 {
+                        Task.detached { [weak self] in
+                            _ = try? await self?.fetchBothViewsContent(
+                                channelName: channelName,
+                                creatorEmail: creatorEmail,
+                                viewerEmail: viewerEmail,
+                                limit: limit,
+                                forceRefresh: true
+                            )
+                        }
+                    }
+                    return cached.content
+                }
+            }
+            
+            // Check persistent cache (UserDefaults) - very fast
+            let persistentCacheKey = "\(bothViewsCacheKey)_\(cacheKey)"
+            if let cachedData = UserDefaults.standard.data(forKey: persistentCacheKey) {
+                if let cached = try? JSONDecoder().decode(CachedBothViewsContent.self, from: cachedData) {
+                    let age = Date().timeIntervalSince(cached.timestamp)
+                    if age < contentCacheExpirationInterval {
+                        print("⚡ [ChannelService] Using persistent cached both views (age: \(Int(age))s)")
+                        let bothViews = BothViewsContent(
+                            publicContent: cached.publicContent,
+                            privateContent: cached.privateContent,
+                            publicNextToken: cached.publicNextToken,
+                            privateNextToken: cached.privateNextToken,
+                            publicHasMore: cached.publicHasMore,
+                            privateHasMore: cached.privateHasMore
+                        )
+                        // Update in-memory cache for next time
+                        cachedBothViewsContent[cacheKey] = (content: bothViews, timestamp: cached.timestamp)
+                        // Refresh in background if cache is getting old
+                        if age > 120 {
+                            Task.detached { [weak self] in
+                                _ = try? await self?.fetchBothViewsContent(
+                                    channelName: channelName,
+                                    creatorEmail: creatorEmail,
+                                    viewerEmail: viewerEmail,
+                                    limit: limit,
+                                    forceRefresh: true
+                                )
+                            }
+                        }
+                        return bothViews
+                    }
+                }
+            }
+        }
+        
+        print("📡 [ChannelService] Fetching both views in single request (limit: \(limit))")
+        guard let url = URL(string: "\(baseURL)/channels/get-content") else {
+            throw URLError(.badURL)
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        if forceRefresh {
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+        }
+        
+        var body: [String: Any] = [
+            "channelName": channelName,
+            "creatorEmail": creatorEmail,
+            "limit": limit,
+            "returnBothViews": true
+        ]
+        
+        if let viewerEmail = viewerEmail {
+            body["viewerEmail"] = viewerEmail
+        }
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let session = forceRefresh ? {
+            let config = URLSessionConfiguration.default
+            config.timeoutIntervalForRequest = 60.0
+            config.timeoutIntervalForResource = 120.0
+            return URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        }() : urlSession
+        
+        let (data, response) = try await session.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            print("❌ [ChannelService] Failed to fetch both views - status: \(statusCode)")
+            throw URLError(.badServerResponse)
+        }
+        
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let success = json["success"] as? Bool, success else {
+            print("❌ [ChannelService] Invalid response format for both views")
+            throw URLError(.badServerResponse)
+        }
+        
+        // Parse public and private content arrays
+        let parseContentArray = { (array: [[String: Any]]) -> [ChannelContent] in
+            return array.compactMap { itemDict -> ChannelContent? in
+                guard let sk = itemDict["SK"] as? String else { return nil }
+                
+                let thumbnailUrl = itemDict["thumbnailUrl"] as? String
+                
+                var price: Double? = nil
+                if let priceValue = itemDict["price"] {
+                    if let priceDouble = priceValue as? Double {
+                        price = priceDouble
+                    } else if let priceInt = priceValue as? Int {
+                        price = Double(priceInt)
+                    } else if let priceNSNumber = priceValue as? NSNumber {
+                        price = priceNSNumber.doubleValue
+                    } else if let priceString = priceValue as? String, let priceDouble = Double(priceString) {
+                        price = priceDouble
+                    }
+                }
+                
+                var title: String? = itemDict["title"] as? String
+                if let titleStr = title, titleStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    title = nil
+                }
+                
+                var description: String? = itemDict["description"] as? String
+                if let descStr = description, descStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    description = nil
+                }
+                
+                let creatorUsername = itemDict["creatorUsername"] as? String ?? 
+                                     itemDict["username"] as? String
+                
+                var isPrivateUsername: Bool? = nil
+                if let isPrivateValue = itemDict["isPrivateUsername"] {
+                    if let isPrivateBool = isPrivateValue as? Bool {
+                        isPrivateUsername = isPrivateBool
+                    } else if let isPrivateString = isPrivateValue as? String {
+                        isPrivateUsername = isPrivateString.lowercased() == "true" || isPrivateString == "1"
+                    } else if let isPrivateNumber = isPrivateValue as? NSNumber {
+                        isPrivateUsername = isPrivateNumber.boolValue
+                    } else if let isPrivateInt = isPrivateValue as? Int {
+                        isPrivateUsername = isPrivateInt == 1
+                    }
+                }
+                
+                return ChannelContent(
+                    SK: sk,
+                    fileName: itemDict["fileName"] as? String ?? "",
+                    title: title,
+                    description: description,
+                    hlsUrl: itemDict["hlsUrl"] as? String,
+                    thumbnailUrl: thumbnailUrl,
+                    createdAt: itemDict["createdAt"] as? String,
+                    isVisible: itemDict["isVisible"] as? Bool,
+                    price: price,
+                    category: itemDict["category"] as? String,
+                    uploadId: itemDict["uploadId"] as? String,
+                    fileId: itemDict["fileId"] as? String,
+                    airdate: itemDict["airdate"] as? String,
+                    creatorUsername: creatorUsername,
+                    isPrivateUsername: isPrivateUsername
+                )
+            }
+        }
+        
+        let publicArray = json["publicContent"] as? [[String: Any]] ?? []
+        let privateArray = json["privateContent"] as? [[String: Any]] ?? []
+        
+        let publicContent = parseContentArray(publicArray)
+        let privateContent = parseContentArray(privateArray)
+        
+        let publicNextToken = json["publicNextToken"] as? String
+        let privateNextToken = json["privateNextToken"] as? String
+        let publicHasMore = json["publicHasMore"] as? Bool ?? (publicNextToken != nil)
+        let privateHasMore = json["privateHasMore"] as? Bool ?? (privateNextToken != nil)
+        
+        print("✅ [ChannelService] Fetched both views - public: \(publicContent.count), private: \(privateContent.count)")
+        
+        let result = BothViewsContent(
+            publicContent: publicContent,
+            privateContent: privateContent,
+            publicNextToken: publicNextToken,
+            privateNextToken: privateNextToken,
+            publicHasMore: publicHasMore,
+            privateHasMore: privateHasMore
+        )
+        
+        // OPTIMIZATION: Cache result
+        let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")"
+        let timestamp = Date()
+        
+        // Update in-memory cache
+        cachedBothViewsContent[cacheKey] = (content: result, timestamp: timestamp)
+        
+        // Save to persistent cache (UserDefaults)
+        let cached = CachedBothViewsContent(
+            publicContent: publicContent,
+            privateContent: privateContent,
+            publicNextToken: publicNextToken,
+            privateNextToken: privateNextToken,
+            publicHasMore: publicHasMore,
+            privateHasMore: privateHasMore,
+            timestamp: timestamp,
+            channelName: channelName,
+            creatorEmail: creatorEmail,
+            viewerEmail: viewerEmail
+        )
+        if let encoded = try? JSONEncoder().encode(cached) {
+            let persistentCacheKey = "\(bothViewsCacheKey)_\(cacheKey)"
+            UserDefaults.standard.set(encoded, forKey: persistentCacheKey)
+            print("💾 [ChannelService] Cached both views (public: \(publicContent.count), private: \(privateContent.count)) (in-memory + persistent)")
+        }
+        
+        return result
     }
     
     // Convenience method for backward compatibility (loads first page)
