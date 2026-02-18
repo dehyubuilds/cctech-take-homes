@@ -3557,7 +3557,7 @@ struct ChannelDetailView: View {
             .padding(.top, 8)
             .padding(.bottom, 20)
         } else {
-            // For Twilly TV, never show "no content" message - just show loading or empty list
+            // Show "no content" message if there's truly no content (after loading completes)
             // This prevents confusing messages when toggling between public/private
             if currentChannel.channelName.lowercased() == "twilly tv" {
                 // Just show empty list (no message) for Twilly TV
@@ -4283,14 +4283,22 @@ struct ChannelDetailView: View {
                     hasConfirmedNoContent = false
                     print("🔍 [ChannelDetailView] Fetched filtered content in background: \(filtered.count) items")
                 } else {
-                    // For Twilly TV, never confirm "no content" - content might be in the other view
-                    // Only confirm for non-Twilly TV channels
-                    if currentChannel.channelName.lowercased() != "twilly tv" {
+                    // For Twilly TV, confirm "no content" only if both views are empty
+                    let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
+                    if isTwillyTV {
+                        // Check both public and private content
+                        let hasPublicContent = !publicContent.isEmpty
+                        let hasPrivateContent = !privateContent.isEmpty
+                        if !hasPublicContent && !hasPrivateContent && bothViewsLoaded {
+                            hasConfirmedNoContent = true
+                            print("🔍 [ChannelDetailView] Twilly TV: Confirmed no content in both public and private views")
+                        } else {
+                            hasConfirmedNoContent = false
+                            print("🔍 [ChannelDetailView] Twilly TV: No content in this view - not confirming (might be in other view)")
+                        }
+                    } else {
                         hasConfirmedNoContent = true
                         print("🔍 [ChannelDetailView] Confirmed no content available after server check (non-Twilly TV)")
-                    } else {
-                        hasConfirmedNoContent = false
-                        print("🔍 [ChannelDetailView] No content in this view for Twilly TV - not confirming (might be in other view)")
                     }
                     content = []
                     previousContentBeforeFilter = []
