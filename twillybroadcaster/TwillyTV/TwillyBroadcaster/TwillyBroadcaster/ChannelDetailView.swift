@@ -157,20 +157,11 @@ struct ChannelDetailView: View {
         viewWithNavigation
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    HStack {
-                        // Show navigation title for non-Twilly TV channels
-                        if currentChannel.channelName.lowercased() != "twilly tv" {
-                            navigationTitleView
-                        } else {
-                            // For Twilly TV, show toggle, filter, and favorites shifted left
-                            HStack(spacing: 12) {
-                                privateToggleButton
-                                twillyLogoFilterButton
-                                favoritesButton
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.leading, 20)
-                        }
+                    // Show navigation title for non-Twilly TV channels
+                    if currentChannel.channelName.lowercased() != "twilly tv" {
+                        navigationTitleView
+                    } else {
+                        EmptyView()
                     }
                 }
             }
@@ -521,9 +512,20 @@ struct ChannelDetailView: View {
     // MARK: - Toolbar Items
     @ViewBuilder
     private var leadingToolbarItems: some View {
-        // Empty for Twilly TV (items moved to center)
-        // For other channels, could add items here if needed
-        EmptyView()
+        // Twilly TV specific toolbar items
+        if currentChannel.channelName.lowercased() == "twilly tv" {
+            HStack(spacing: 12) {
+                // Public/Private toggle (first, on the left)
+                privateToggleButton
+                
+                // Twilly logo button to toggle filter (my content vs all content)
+                twillyLogoFilterButton
+                
+                // Favorites star button
+                favoritesButton
+            }
+            .padding(.leading, 20)
+        }
     }
     
     @ViewBuilder
