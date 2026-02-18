@@ -139,86 +139,7 @@ struct ChannelDetailView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                if currentChannel.channelName.lowercased() == "twilly tv" {
-                    // Stunning Twilly TV title with production-ready design
-                    HStack(spacing: 10) {
-                        // Animated gradient orb
-                        ZStack {
-                            Circle()
-                                .fill(
-                                    RadialGradient(
-                                        gradient: Gradient(colors: [
-                                            Color.twillyCyan.opacity(0.9),
-                                            Color.twillyTeal.opacity(0.7),
-                                            Color.twillyCyan.opacity(0.5)
-                                        ]),
-                                        center: .center,
-                                        startRadius: 2,
-                                        endRadius: 8
-                                    )
-                                )
-                                .frame(width: 10, height: 10)
-                                .shadow(color: Color.twillyCyan.opacity(0.8), radius: 6)
-                            
-                            Circle()
-                                .stroke(Color.white.opacity(0.4), lineWidth: 1.5)
-                                .frame(width: 10, height: 10)
-                        }
-                        
-                        Text("TWILLY TV")
-                            .font(.system(size: 20, weight: .black, design: .rounded))
-                            .tracking(3)
-                            .foregroundStyle(
-                                LinearGradient(
-                                    gradient: Gradient(colors: [
-                                        Color.white,
-                                        Color.twillyTeal,
-                                        Color.twillyCyan,
-                                        Color.white
-                                    ]),
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .shadow(color: Color.twillyCyan.opacity(0.9), radius: 8, x: 0, y: 2)
-                            .shadow(color: Color.black.opacity(0.5), radius: 4, x: 0, y: 1)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 16)
-                            .fill(
-                                LinearGradient(
-                                    gradient: Gradient(colors: [
-                                        Color.black.opacity(0.6),
-                                        Color.black.opacity(0.4)
-                                    ]),
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16)
-                                    .stroke(
-                                        LinearGradient(
-                                            gradient: Gradient(colors: [
-                                                Color.twillyTeal.opacity(0.8),
-                                                Color.twillyCyan.opacity(0.6),
-                                                Color.twillyTeal.opacity(0.8)
-                                            ]),
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        ),
-                                        lineWidth: 1.5
-                                    )
-                            )
-                            .shadow(color: Color.twillyCyan.opacity(0.3), radius: 12, x: 0, y: 4)
-                    )
-                } else {
-                    Text(currentChannel.channelName)
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white)
-                }
+                navigationTitleView
             }
         }
         .toolbar {
@@ -714,6 +635,97 @@ struct ChannelDetailView: View {
     }
     
     // MARK: - View Components
+    
+    // MARK: - Navigation Title
+    private var navigationTitleView: some View {
+        Group {
+            if currentChannel.channelName.lowercased() == "twilly tv" {
+                twillyTVTitleView
+            } else {
+                Text(currentChannel.channelName)
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.white)
+            }
+        }
+    }
+    
+    private var twillyTVTitleView: some View {
+        HStack(spacing: 10) {
+            // Animated gradient orb
+            ZStack {
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            gradient: Gradient(colors: [
+                                Color.twillyCyan.opacity(0.9),
+                                Color.twillyTeal.opacity(0.7),
+                                Color.twillyCyan.opacity(0.5)
+                            ]),
+                            center: .center,
+                            startRadius: 2,
+                            endRadius: 8
+                        )
+                    )
+                    .frame(width: 10, height: 10)
+                    .shadow(color: Color.twillyCyan.opacity(0.8), radius: 6)
+                
+                Circle()
+                    .stroke(Color.white.opacity(0.4), lineWidth: 1.5)
+                    .frame(width: 10, height: 10)
+            }
+            
+            Text("TWILLY TV")
+                .font(.system(size: 20, weight: .black, design: .rounded))
+                .tracking(3)
+                .foregroundStyle(
+                    LinearGradient(
+                        gradient: Gradient(colors: [
+                            Color.white,
+                            Color.twillyTeal,
+                            Color.twillyCyan,
+                            Color.white
+                        ]),
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .shadow(color: Color.twillyCyan.opacity(0.9), radius: 8, x: 0, y: 2)
+                .shadow(color: Color.black.opacity(0.5), radius: 4, x: 0, y: 1)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(titleBackgroundView)
+    }
+    
+    private var titleBackgroundView: some View {
+        RoundedRectangle(cornerRadius: 16)
+            .fill(
+                LinearGradient(
+                    gradient: Gradient(colors: [
+                        Color.black.opacity(0.6),
+                        Color.black.opacity(0.4)
+                    ]),
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(
+                        LinearGradient(
+                            gradient: Gradient(colors: [
+                                Color.twillyTeal.opacity(0.8),
+                                Color.twillyCyan.opacity(0.6),
+                                Color.twillyTeal.opacity(0.8)
+                            ]),
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1.5
+                    )
+            )
+            .shadow(color: Color.twillyCyan.opacity(0.3), radius: 12, x: 0, y: 4)
+    }
     
     private var backgroundGradient: some View {
         ZStack {
