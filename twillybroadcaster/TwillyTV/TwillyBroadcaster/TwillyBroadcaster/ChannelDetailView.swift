@@ -3558,17 +3558,18 @@ struct ChannelDetailView: View {
             .padding(.bottom, 20)
         } else {
             // Show "no content" message if there's truly no content (after loading completes)
-            // This prevents confusing messages when toggling between public/private
-            if currentChannel.channelName.lowercased() == "twilly tv" {
-                // Just show empty list (no message) for Twilly TV
-                Spacer()
-                    .frame(height: 100)
-            } else if content.isEmpty && hasConfirmedNoContent {
-                // Only show empty state for non-Twilly TV channels after confirming there's truly no content
+            if content.isEmpty && hasConfirmedNoContent {
+                // Show empty state after confirming there's truly no content
                 emptyStateView
-            } else {
-                // Fallback: show loading if we have nothing
+            } else if content.isEmpty && !isLoading && hasLoaded {
+                // If we've loaded and have no content, show empty state
+                emptyStateView
+            } else if content.isEmpty && isLoading {
+                // Still loading - show loading indicator
                 loadingView
+            } else if content.isEmpty {
+                // Fallback: show empty state
+                emptyStateView
             }
         }
     }
