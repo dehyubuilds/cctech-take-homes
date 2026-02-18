@@ -559,7 +559,8 @@ struct ChannelDetailView: View {
             HStack(spacing: 4) {
                 // Filter label
                 Text(showOnlyOwnContent ? "My" : "All")
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .font(.caption)
+                    .fontWeight(.medium)
                     .foregroundColor(showOnlyOwnContent ? .twillyCyan : .white.opacity(0.8))
                 
                 // Filter indicator icon
@@ -567,19 +568,6 @@ struct ChannelDetailView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(showOnlyOwnContent ? .twillyCyan : .white.opacity(0.7))
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(showOnlyOwnContent ? Color.twillyCyan.opacity(0.2) : Color.white.opacity(0.1))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(
-                        showOnlyOwnContent ? Color.twillyCyan.opacity(0.5) : Color.white.opacity(0.2),
-                        lineWidth: 1
-                    )
-            )
         }
     }
     
@@ -610,59 +598,14 @@ struct ChannelDetailView: View {
     }
     
     private var privateToggleButtonContent: some View {
-        HStack(spacing: 6) {
-            ZStack {
-                Circle()
-                    .fill(showPrivateContent ? Color.orange.opacity(0.3) : Color.twillyCyan.opacity(0.3))
-                    .frame(width: 20, height: 20)
-                Image(systemName: showPrivateContent ? "lock.fill" : "lock.open.fill")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(showPrivateContent ? .orange : .twillyCyan)
-            }
-            
-            Text(showPrivateContent ? "PRIVATE" : "PUBLIC")
-                .font(.system(size: 11, weight: .black, design: .rounded))
-                .tracking(1.5)
+        HStack(spacing: 4) {
+            Image(systemName: showPrivateContent ? "lock.fill" : "lock.open.fill")
+                .font(.system(size: 14))
+            Text(showPrivateContent ? "Private" : "Public")
+                .font(.caption)
+                .fontWeight(.medium)
         }
         .foregroundColor(showPrivateContent ? .orange : .twillyCyan)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(privateToggleBackground)
-        .shadow(color: (showPrivateContent ? Color.orange : Color.twillyCyan).opacity(0.4), radius: 8, x: 0, y: 3)
-    }
-    
-    private var privateToggleBackground: some View {
-        RoundedRectangle(cornerRadius: 12)
-            .fill(
-                LinearGradient(
-                    gradient: Gradient(colors: showPrivateContent ? [
-                        Color.orange.opacity(0.25),
-                        Color.orange.opacity(0.15)
-                    ] : [
-                        Color.twillyTeal.opacity(0.25),
-                        Color.twillyCyan.opacity(0.15)
-                    ]),
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(
-                        LinearGradient(
-                            gradient: Gradient(colors: showPrivateContent ? [
-                                Color.orange.opacity(0.7),
-                                Color.orange.opacity(0.5)
-                            ] : [
-                                Color.twillyTeal.opacity(0.6),
-                                Color.twillyCyan.opacity(0.4)
-                            ]),
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        ),
-                        lineWidth: 1.5
-                    )
-            )
     }
     
     // MARK: - Action Handlers
