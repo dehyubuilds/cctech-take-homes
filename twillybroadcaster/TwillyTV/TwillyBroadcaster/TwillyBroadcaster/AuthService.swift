@@ -22,6 +22,10 @@ class AuthService: ObservableObject {
     @Published var isLoadingUsername = false
     @Published var errorMessage: String?
     
+    // Track which user we last loaded username for (to detect user changes)
+    private var lastUsernameLoadEmail: String?
+    private var lastUsernameLoadUserId: String?
+    
     private var cancellables = Set<AnyCancellable>()
     
     private init() {
@@ -115,31 +119,47 @@ class AuthService: ObservableObject {
             if let user = Amplify.Auth.getCurrentUser() {
                 // User exists and is authenticated
                 await MainActor.run {
+                    let newUserEmail = user.username
+                    let newUserId = user.userId
+                    
                     self.currentUser = user
                     self.isAuthenticated = true
-                    self.userEmail = user.username // Email is used as username
-                    self.userId = user.userId
-                    // CRITICAL FIX: Only load username if we don't already have one
-                    // This prevents flashing the username setup screen for existing users
-                    if self.username == nil {
+                    self.userEmail = newUserEmail
+                    self.userId = newUserId
+                    
+                    // CRITICAL: Always reload username if:
+                    // 1. We don't have a username, OR
+                    // 2. The user email/userId changed (different user logged in)
+                    // This ensures we always have the latest username from the server, not a stale cached value
+                    let userChanged = lastUsernameLoadEmail != newUserEmail || lastUsernameLoadUserId != newUserId
+                    
+                    if self.username == nil || userChanged {
+                        // Clear old username if user changed to prevent showing wrong username
+                        if userChanged {
+                            print("🔄 [AuthService] User changed (email: \(lastUsernameLoadEmail ?? "nil") -> \(newUserEmail)), clearing old username and reloading")
+                            self.username = nil
+                        }
                         // Don't set isLoadingUsername here - let loadUsername() manage its own state
                         loadUsername()
                     } else {
-                        // Username already exists - don't show loading state
+                        // Username already exists and user hasn't changed - don't show loading state
                         self.isLoadingUsername = false
-                        print("✅ [AuthService] Username already set: \(self.username ?? "nil"), skipping load")
+                        print("✅ [AuthService] Username already set: \(self.username ?? "nil"), skipping load (same user)")
                     }
                 }
             } else {
                 // User is not signed in
-                await MainActor.run {
-                    self.isAuthenticated = false
-                    self.currentUser = nil
-                    self.userEmail = nil
-                    self.userId = nil
-                    self.username = nil
-                    self.isLoadingUsername = false
-                }
+            await MainActor.run {
+                self.isAuthenticated = false
+                self.currentUser = nil
+                self.userEmail = nil
+                self.userId = nil
+                self.username = nil
+                self.isLoadingUsername = false
+                // Clear tracking to force reload on next login
+                self.lastUsernameLoadEmail = nil
+                self.lastUsernameLoadUserId = nil
+            }
             }
         }
     }
@@ -394,6 +414,9 @@ class AuthService: ObservableObject {
                 self.username = nil
                 self.isLoadingUsername = false
                 self.isLoading = false
+                // Clear tracking to force reload on next login
+                self.lastUsernameLoadEmail = nil
+                self.lastUsernameLoadUserId = nil
             }
         } catch {
             // Log detailed error information
@@ -752,8 +775,11 @@ class AuthService: ObservableObject {
                 print("🔍 [AuthService] Username fetch result: \(username ?? "nil")")
                 await MainActor.run {
                     self.username = username
+                    // Track which user we loaded the username for
+                    self.lastUsernameLoadEmail = userEmail
+                    self.lastUsernameLoadUserId = userId
                     self.isLoadingUsername = false
-                    print("✅ [AuthService] Username loaded: \(username ?? "nil"), isLoadingUsername: false")
+                    print("✅ [AuthService] Username loaded: \(username ?? "nil"), isLoadingUsername: false (for email: \(userEmail))")
                 }
             } catch {
                 print("❌ [AuthService] Could not load username: \(error.localizedDescription)")
@@ -792,8 +818,10 @@ class AuthService: ObservableObject {
             throw AuthError.notAuthenticated
         }
         
-        isLoading = true
-        errorMessage = nil
+        await MainActor.run {
+            self.isLoading = true
+            self.errorMessage = nil
+        }
         
         do {
             try await ChannelService.shared.updateUsername(

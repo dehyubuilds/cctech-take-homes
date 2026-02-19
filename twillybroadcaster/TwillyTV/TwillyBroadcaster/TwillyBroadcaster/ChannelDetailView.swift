@@ -24,12 +24,12 @@ struct ChannelDetailView: View {
     
     @State private var currentChannel: DiscoverableChannel // Mutable channel for live updates
     @State private var content: [ChannelContent] = []
-    @State private var isLoading = true // Start as true to show loading immediately on first render
+    @State private var isLoading = false // Only true when fetching AND no cached content
     @State private var isLoadingMore = false // Loading more items (pagination)
     @State private var errorMessage: String?
     @State private var selectedContent: ChannelContent?
     @State private var showingPlayer = false
-    @State private var hasLoaded = false
+    @State private var hasLoadedOnce = false // Track if we've successfully loaded at least once
     @State private var initialContentCount = 0 // Track initial count to detect new videos
     @State private var localVideoContent: ChannelContent? = nil // Local video shown immediately
     @State private var nextToken: String? = nil // Pagination token
@@ -246,7 +246,7 @@ struct ChannelDetailView: View {
                 // (Tasks are automatically cancelled when view disappears, but explicit cancellation is safer)
             }
         .onAppear {
-            print("👁️ [ChannelDetailView] onAppear called - hasLoaded: \(hasLoaded), content.count: \(content.count), isLoading: \(isLoading), forceRefresh: \(forceRefresh)")
+            print("👁️ [ChannelDetailView] onAppear called - hasLoadedOnce: \(hasLoadedOnce), content.count: \(content.count), isLoading: \(isLoading), forceRefresh: \(forceRefresh)")
             print("   Channel: \(currentChannel.channelName)")
             print("   Poster URL at onAppear: \(currentChannel.posterUrl.isEmpty ? "EMPTY" : currentChannel.posterUrl)")
             
@@ -313,7 +313,7 @@ struct ChannelDetailView: View {
                 let hasCachedContent = isTwillyTV ? (!publicContent.isEmpty || !privateContent.isEmpty) : !content.isEmpty
                 
                 if hasCachedContent {
-                    // We have cached content - show it immediately
+                    // INSTAGRAM/TIKTOK PATTERN: Show cached content immediately, fetch fresh in background
                     if isTwillyTV {
                         // Restore from cached arrays
                         if showPrivateContent {
@@ -326,32 +326,31 @@ struct ChannelDetailView: View {
                             hasMoreContent = publicHasMore
                         }
                         bothViewsLoaded = true
-                        hasLoaded = true
-                        isLoading = false
-                        print("⚡ [ChannelDetailView] Showing cached content immediately - \(content.count) items")
-                    } else {
-                        // Non-Twilly TV - content array should already have data
-                        hasLoaded = true
-                        isLoading = false
-                        print("⚡ [ChannelDetailView] Showing cached content immediately - \(content.count) items")
                     }
+                    // CRITICAL: Mark as loaded and stop loading spinner immediately
+                    hasLoadedOnce = true
+                    isLoading = false
+                    hasConfirmedNoContent = false // Reset - we have content
+                    print("⚡ [ChannelDetailView] Showing cached content immediately - \(content.count) items")
                 }
                 
                 // Always fetch new content in background (unless forceRefresh, then show loading)
                 let needsBothViewsReload = isTwillyTV && (!bothViewsLoaded || (publicContent.isEmpty && privateContent.isEmpty))
                 let needsReload = content.isEmpty && !isLoading
                 
-                if !hasCachedContent && (!hasLoaded || forceRefresh || needsBothViewsReload || needsReload) {
+                if !hasCachedContent && (!hasLoadedOnce || forceRefresh || needsBothViewsReload || needsReload) {
                     print("🔄 [ChannelDetailView] Loading server content... (forceRefresh: \(forceRefresh), hasCachedContent: \(hasCachedContent))")
-                if localVideoContent == nil {
-                        // Only show loading if we have no cached content
-                    isLoading = true
-                    if forceRefresh {
-                        content = [] // Clear content on force refresh
+                    // CRITICAL: Only show loading spinner if we have NO cached content
+                    // This matches Instagram/TikTok behavior - never show loading if you have something to show
+                    if localVideoContent == nil {
+                        isLoading = true
+                        if forceRefresh {
+                            content = [] // Clear content on force refresh
+                            hasConfirmedNoContent = false // Reset confirmation on refresh
+                        }
+                        errorMessage = nil
                     }
-                    errorMessage = nil
-                }
-                loadContent()
+                    loadContent()
                 } else if hasCachedContent {
                     // We have cached content - fetch new content in background silently
                     print("🔄 [ChannelDetailView] Fetching new content in background (cached content shown)")
@@ -717,14 +716,30 @@ struct ChannelDetailView: View {
         }
         // Always use cached unfiltered content for filtering to avoid server calls
         if showOnlyOwnContent, let username = authService.username {
-            // Cache unfiltered content before filtering (if not already cached)
-            if cachedUnfilteredContent.isEmpty {
+            // CRITICAL: Update cache with current content before filtering to preserve any optimistic updates (like saved titles)
+            // This ensures the cache always has the latest content with updated titles
+            if !content.isEmpty {
+                // Merge current content into cache, preserving any updates (like titles)
+                for item in content {
+                    if let cacheIndex = cachedUnfilteredContent.firstIndex(where: { $0.SK == item.SK }) {
+                        // Update existing item in cache (preserves title updates)
+                        cachedUnfilteredContent[cacheIndex] = item
+                    } else {
+                        // Add new item to cache
+                        cachedUnfilteredContent.append(item)
+                    }
+                }
+                cachedNextToken = nextToken
+                cachedHasMoreContent = hasMoreContent
+                print("💾 [ChannelDetailView] Updated cached unfiltered content with latest items (preserving title updates): \(cachedUnfilteredContent.count) items")
+            } else if cachedUnfilteredContent.isEmpty {
+                // Only cache if cache is empty and we have content
                 cachedUnfilteredContent = content
                 cachedNextToken = nextToken
                 cachedHasMoreContent = hasMoreContent
                 print("💾 [ChannelDetailView] Cached unfiltered content: \(cachedUnfilteredContent.count) items")
             }
-            // Filter from cached unfiltered content (not current filtered content)
+            // Filter from cached unfiltered content (now guaranteed to have latest titles)
             let sourceContent = cachedUnfilteredContent.isEmpty ? content : cachedUnfilteredContent
             var filtered = sourceContent.filter { item in
                 item.creatorUsername?.lowercased() == username.lowercased()
@@ -4596,15 +4611,16 @@ struct ChannelDetailView: View {
     
     @ViewBuilder
     private var contentSection: some View {
-        if isLoading {
-            loadingView
-        } else if let error = errorMessage {
+        // INSTAGRAM/TIKTOK PATTERN: Simple, reliable state management
+        // Priority: Error > Content > Loading > Empty (only if explicitly confirmed)
+        
+        if let error = errorMessage {
             errorView(error)
         } else if !content.isEmpty {
-            // Show current content (filtering happens silently in background)
+            // Always show content if available (even if loading in background)
             contentListView
         } else if !previousContentBeforeFilter.isEmpty {
-            // Show previous content if current is empty but we haven't confirmed yet (filtering in background)
+            // Show previous content while filtering (smooth transition)
             LazyVStack(spacing: 12) {
                 ForEach(previousContentBeforeFilter) { item in
                     contentCard(for: item)
@@ -4613,21 +4629,19 @@ struct ChannelDetailView: View {
             .padding(.horizontal, 16)
             .padding(.top, 8)
             .padding(.bottom, 20)
+        } else if isLoading {
+            // Show loading only when actively fetching AND no cached content
+            loadingView
+        } else if hasConfirmedNoContent && hasLoadedOnce {
+            // CRITICAL: Only show empty state if:
+            // 1. We've explicitly confirmed no content exists (hasConfirmedNoContent = true)
+            // 2. We've successfully loaded at least once (hasLoadedOnce = true)
+            // This prevents showing "empty" prematurely or during race conditions
+            emptyStateView
         } else {
-            // Show "no content" message ONLY if we've confirmed there's truly no content
-            // CRITICAL: Never show empty state unless hasConfirmedNoContent is explicitly true
-            // Always show loading if we're loading, haven't loaded yet, or haven't confirmed no content
-            if isLoading {
-                // Still loading - show loading indicator
-                loadingView
-            } else if content.isEmpty && hasConfirmedNoContent {
-                // Show empty state ONLY after explicitly confirming there's truly no content
-                emptyStateView
-            } else {
-                // Fallback: show loading (don't assume empty until we've confirmed)
-                // This handles: content.isEmpty && !hasConfirmedNoContent
-                loadingView
-            }
+            // Fallback: Show loading (don't assume empty until explicitly confirmed)
+            // This handles edge cases where state might be inconsistent
+            loadingView
         }
     }
     
@@ -5075,6 +5089,7 @@ struct ChannelDetailView: View {
                 // Open title page when edit button is clicked - show text field immediately
                 managingContent = item
                 editingTitle = item.title ?? ""
+                showingContentManagementPopup = true
             } : nil,
             isOwnContent: isOwnContent,
             isFavorite: isFavorite(item),
@@ -5225,7 +5240,7 @@ struct ChannelDetailView: View {
                 }
                 
                 isLoading = false
-                hasLoaded = true
+                hasLoadedOnce = true
             }
         } catch {
             await MainActor.run {
@@ -5682,9 +5697,9 @@ struct ChannelDetailView: View {
                             updateContentWith(result.content, replaceLocal: false)
                             nextToken = result.nextToken
                             hasMoreContent = result.hasMore
-                            // updateContentWith already sets isLoading = false and hasLoaded = true, but ensure it's set
+                            // updateContentWith already sets isLoading = false and hasLoadedOnce = true, but ensure it's set
                             isLoading = false
-                            hasLoaded = true
+                            hasLoadedOnce = true
                             
                             // Check if local video now has thumbnail from server
                             if let localContent = localVideoContent,
@@ -5824,7 +5839,7 @@ struct ChannelDetailView: View {
                                     
                                     cachedUnfilteredContent = publicContent + privateContent
                                     isLoading = false
-                                    hasLoaded = true
+                                    hasLoadedOnce = true
                                     print("✅ [ChannelDetailView] Both views reloaded in single request - public: \(publicContent.count), private: \(privateContent.count)")
                                 }
                             } catch {
@@ -5844,7 +5859,7 @@ struct ChannelDetailView: View {
                                     nextToken = result.nextToken
                                     hasMoreContent = result.hasMore
                                     isLoading = false
-                                    hasLoaded = true
+                                    hasLoadedOnce = true
                                 }
                             }
                         } else {
@@ -5864,8 +5879,8 @@ struct ChannelDetailView: View {
                                 nextToken = result.nextToken
                                 hasMoreContent = result.hasMore
                                 isLoading = false
-                                hasLoaded = true
-                                print("✅ [ChannelDetailView] Content loaded - isLoading: \(isLoading), hasLoaded: \(hasLoaded), content.count: \(content.count)")
+                                hasLoadedOnce = true
+                                print("✅ [ChannelDetailView] Content loaded - isLoading: \(isLoading), hasLoadedOnce: \(hasLoadedOnce), content.count: \(content.count)")
                             }
                         }
                     }
@@ -5938,7 +5953,7 @@ struct ChannelDetailView: View {
                                 cachedUnfilteredContent = publicContent + privateContent
                                 
                                 isLoading = false
-                                hasLoaded = true
+                                hasLoadedOnce = true
                                 print("✅ [ChannelDetailView] Both views loaded in single request - public: \(publicContent.count), private: \(privateContent.count), showing: \(showPrivateContent ? "private" : "public")")
                             }
                                 
@@ -5963,7 +5978,7 @@ struct ChannelDetailView: View {
                                 nextToken = result.nextToken
                                 hasMoreContent = result.hasMore
                                 isLoading = false
-                                hasLoaded = true
+                                hasLoadedOnce = true
                             }
                         }
                     } else {
@@ -5990,8 +6005,8 @@ struct ChannelDetailView: View {
                             nextToken = result.nextToken
                             hasMoreContent = result.hasMore
                             isLoading = false
-                            hasLoaded = true
-                            print("✅ [ChannelDetailView] Final state - content.count: \(content.count), isLoading: \(isLoading), hasLoaded: \(hasLoaded), errorMessage: \(errorMessage ?? "nil")")
+                            hasLoadedOnce = true
+                            print("✅ [ChannelDetailView] Final state - content.count: \(content.count), isLoading: \(isLoading), hasLoadedOnce: \(hasLoadedOnce), errorMessage: \(errorMessage ?? "nil")")
                             
                             // Check and delete short videos after content is loaded
                             Task {
@@ -6015,8 +6030,8 @@ struct ChannelDetailView: View {
                 await MainActor.run {
                     errorMessage = error.localizedDescription
                     isLoading = false
-                    hasLoaded = true
-                    print("❌ [ChannelDetailView] Error state set - errorMessage: \(errorMessage ?? "nil"), isLoading: \(isLoading), hasLoaded: \(hasLoaded)")
+                    hasLoadedOnce = true
+                    print("❌ [ChannelDetailView] Error state set - errorMessage: \(errorMessage ?? "nil"), isLoading: \(isLoading), hasLoadedOnce: \(hasLoadedOnce)")
                 }
             }
         }
@@ -6343,22 +6358,29 @@ struct ChannelDetailView: View {
             }
         }
         
-        // CRITICAL: Preserve titles from existing content when server version is nil/empty
-        // This prevents titles from disappearing after being edited
+        // CRITICAL: Preserve optimistic title updates to prevent old server data from overwriting new titles
+        // This prevents titles from being overwritten by stale server responses after a save
         let contentWithPreservedTitles = filteredSortedContent.map { serverItem -> ChannelContent in
             // Find matching item in existing content by SK
             if let existingItem = content.first(where: { $0.SK == serverItem.SK }) {
-                // If existing item has a title and server item doesn't, preserve the existing title
                 let existingTitle = existingItem.title?.trimmingCharacters(in: .whitespaces) ?? ""
                 let serverTitle = serverItem.title?.trimmingCharacters(in: .whitespaces) ?? ""
                 
-                if !existingTitle.isEmpty && serverTitle.isEmpty {
-                    // Preserve existing title - server hasn't updated yet
-                    print("🔒 [ChannelDetailView] Preserving existing title '\(existingTitle)' for \(serverItem.fileName) (server title is empty)")
+                // CRITICAL: Always preserve existing title if it exists and is different from server
+                // This prevents old server data from overwriting optimistic updates
+                // Only use server title if:
+                // 1. Existing title is empty AND server title is not empty, OR
+                // 2. Both titles are the same (server has confirmed our update)
+                let shouldPreserveExistingTitle = !existingTitle.isEmpty && existingTitle != serverTitle
+                
+                if shouldPreserveExistingTitle {
+                    // Preserve existing title - it's an optimistic update that hasn't been confirmed by server yet
+                    // OR server returned stale data
+                    print("🔒 [ChannelDetailView] Preserving existing title '\(existingTitle)' for \(serverItem.fileName) (server has '\(serverTitle.isEmpty ? "empty" : serverTitle)')")
                     return ChannelContent(
                         SK: serverItem.SK,
                         fileName: serverItem.fileName,
-                        title: existingItem.title, // Preserve existing title
+                        title: existingItem.title, // Preserve existing title (optimistic update)
                         description: serverItem.description ?? existingItem.description,
                         hlsUrl: serverItem.hlsUrl ?? existingItem.hlsUrl,
                         thumbnailUrl: serverItem.thumbnailUrl ?? existingItem.thumbnailUrl,
@@ -6373,26 +6395,35 @@ struct ChannelDetailView: View {
                         isPrivateUsername: serverItem.isPrivateUsername ?? existingItem.isPrivateUsername,
                         localFileURL: serverItem.localFileURL ?? existingItem.localFileURL
                     )
+                } else if existingTitle.isEmpty && !serverTitle.isEmpty {
+                    // Existing title is empty but server has one - use server title
+                    print("📥 [ChannelDetailView] Using server title '\(serverTitle)' for \(serverItem.fileName) (existing was empty)")
+                } else if existingTitle == serverTitle {
+                    // Titles match - server has confirmed our update
+                    print("✅ [ChannelDetailView] Title confirmed by server: '\(serverTitle)' for \(serverItem.fileName)")
                 }
             }
-            // No existing item or server has a title - use server item as-is
+            // Use server item (either no existing item, or titles match, or server has title when existing doesn't)
             return serverItem
         }
         
         content = contentWithPreservedTitles
         isLoading = false
-        hasLoaded = true
+        hasLoadedOnce = true // Mark as successfully loaded
         
+        // INSTAGRAM/TIKTOK PATTERN: Only confirm "no content" after explicit server response
         // Reset flags when content is successfully loaded
         if !content.isEmpty {
             hasConfirmedNoContent = false
             previousContentBeforeFilter = []
         } else {
+            // CRITICAL: Only confirm "no content" if we've loaded from server and it's truly empty
             // For Twilly TV, never confirm "no content" - content might be in the other view (public/private)
-            // Only confirm for non-Twilly TV channels
+            // Only confirm for non-Twilly TV channels after explicit server response
             if currentChannel.channelName.lowercased() != "twilly tv" {
+                // Only confirm if we've actually loaded from server (not just from cache)
                 hasConfirmedNoContent = true
-                print("ℹ️ [ChannelDetailView] Content is empty after update - setting hasConfirmedNoContent = true (non-Twilly TV)")
+                print("ℹ️ [ChannelDetailView] Content is empty after server update - setting hasConfirmedNoContent = true (non-Twilly TV)")
             } else {
                 hasConfirmedNoContent = false
                 print("ℹ️ [ChannelDetailView] Content is empty for Twilly TV - not confirming (might be in other view)")
@@ -6879,7 +6910,7 @@ struct ChannelDetailView: View {
                         // If content is now empty, stop loading spinner immediately
                         if content.isEmpty && publicContent.isEmpty && privateContent.isEmpty {
                             isLoading = false
-                            hasLoaded = true
+                            hasLoadedOnce = true
                             // For Twilly TV, never confirm "no content" - might be content in other view
                             if currentChannel.channelName.lowercased() != "twilly tv" {
                                 hasConfirmedNoContent = true
@@ -6894,7 +6925,7 @@ struct ChannelDetailView: View {
                                         // Ensure loading stops even if content is empty
                                         if result?.content.isEmpty == true {
                                             isLoading = false
-                                            hasLoaded = true
+                                            hasLoadedOnce = true
                                             // For Twilly TV, never confirm "no content"
                                             if currentChannel.channelName.lowercased() != "twilly tv" {
                                                 hasConfirmedNoContent = true
@@ -6904,7 +6935,7 @@ struct ChannelDetailView: View {
                                 } catch {
                                     await MainActor.run {
                                         isLoading = false
-                                        hasLoaded = true
+                                        hasLoadedOnce = true
                                         // Don't show error for empty content - it's expected
                                         if !error.localizedDescription.lowercased().contains("not found") {
                                             print("❌ [ChannelDetailView] Error refreshing after delete: \(error.localizedDescription)")
@@ -6938,7 +6969,7 @@ struct ChannelDetailView: View {
                             // If content is now empty, stop loading spinner immediately
                             if content.isEmpty && publicContent.isEmpty && privateContent.isEmpty {
                                 isLoading = false
-                                hasLoaded = true
+                                hasLoadedOnce = true
                                 // For Twilly TV, never confirm "no content"
                                 if currentChannel.channelName.lowercased() != "twilly tv" {
                                     hasConfirmedNoContent = true
@@ -6951,7 +6982,7 @@ struct ChannelDetailView: View {
                                         await MainActor.run {
                                             if result?.content.isEmpty == true {
                                                 isLoading = false
-                                                hasLoaded = true
+                                                hasLoadedOnce = true
                                                 // For Twilly TV, never confirm "no content"
                                                 if currentChannel.channelName.lowercased() != "twilly tv" {
                                                     hasConfirmedNoContent = true
@@ -6961,7 +6992,7 @@ struct ChannelDetailView: View {
                                     } catch {
                                         await MainActor.run {
                                             isLoading = false
-                                            hasLoaded = true
+                                            hasLoadedOnce = true
                                         }
                                     }
                                 }
@@ -7004,7 +7035,7 @@ struct ChannelDetailView: View {
                         // If content is now empty, stop loading spinner immediately
                         if content.isEmpty && publicContent.isEmpty && privateContent.isEmpty {
                             isLoading = false
-                            hasLoaded = true
+                            hasLoadedOnce = true
                             // For Twilly TV, only confirm no content if both views are loaded and both are empty
                             let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
                             if isTwillyTV && bothViewsLoaded {
@@ -7020,7 +7051,7 @@ struct ChannelDetailView: View {
                                     await MainActor.run {
                                         if result?.content.isEmpty == true {
                                             isLoading = false
-                                            hasLoaded = true
+                                            hasLoadedOnce = true
                                             // For Twilly TV, never confirm "no content" unless both views are checked
                                             let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
                                             if !isTwillyTV {
@@ -7031,7 +7062,7 @@ struct ChannelDetailView: View {
                                 } catch {
                                     await MainActor.run {
                                         isLoading = false
-                                        hasLoaded = true
+                                        hasLoadedOnce = true
                                     }
                                 }
                             }
@@ -7349,6 +7380,12 @@ struct ChannelDetailView: View {
             }
         }
         
+        // CRITICAL: Also update cachedUnfilteredContent so title persists when toggling filter
+        if let index = self.cachedUnfilteredContent.firstIndex(where: { $0.SK == content.SK }) {
+            self.cachedUnfilteredContent[index] = createUpdatedItem(self.cachedUnfilteredContent[index])
+            print("✅ [ChannelDetailView] Updated cachedUnfilteredContent with title (for filter toggle)")
+        }
+        
         // Close popup immediately so user sees the update
         showingContentManagementPopup = false
         managingContent = nil
@@ -7359,8 +7396,12 @@ struct ChannelDetailView: View {
         
         Task {
             do {
+                // Use fileId if available, otherwise fall back to SK
+                let fileIdToUse = content.fileId ?? content.SK
+                print("💾 [ChannelDetailView] Updating title - fileId: \(fileIdToUse), SK: \(content.SK), title: '\(trimmedTitle)'")
+                
                 let response = try await ChannelService.shared.updateFileDetails(
-                    fileId: content.SK,
+                    fileId: fileIdToUse,
                     userId: userEmail,
                     title: trimmedTitle.isEmpty ? nil : trimmedTitle,
                     description: nil,
@@ -7395,16 +7436,18 @@ struct ChannelDetailView: View {
                     }
                     
                     if response.success {
-                        // Determine server title
-                        let serverTitle: String?
-                        if let data = response.data, let titleValue = data["title"] {
-                            if let stringValue = titleValue.value as? String, !stringValue.isEmpty {
-                                serverTitle = stringValue
-                            } else {
-                                serverTitle = trimmedTitle.isEmpty ? nil : trimmedTitle
+                        // Determine server title from response
+                        // CRITICAL: Use the title we sent (trimmedTitle) as the source of truth
+                        // The backend should have saved it, so use what we sent unless response explicitly says otherwise
+                        let serverTitle: String? = trimmedTitle.isEmpty ? nil : trimmedTitle
+                        
+                        // Log response for debugging
+                        print("✅ [ChannelDetailView] Update successful - using saved title: '\(serverTitle ?? "nil")'")
+                        if let data = response.data {
+                            print("   📦 Response data keys: \(data.keys.joined(separator: ", "))")
+                            if let titleValue = data["title"] {
+                                print("   📝 Response title value: \(titleValue)")
                             }
-                        } else {
-                            serverTitle = trimmedTitle.isEmpty ? nil : trimmedTitle
                         }
                         
                         // Update with confirmed data from server - update all arrays
