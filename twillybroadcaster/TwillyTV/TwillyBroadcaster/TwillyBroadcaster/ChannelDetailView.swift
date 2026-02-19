@@ -72,6 +72,7 @@ struct ChannelDetailView: View {
     @State private var showFavoritesOnly = false // Filter to show only favorited content
     @State private var favoriteContentIds: Set<String> = [] // Set of favorited content SK IDs
     @State private var isFilteringContent = false // Loading state when filtering content
+    @State private var isCurrentUserPrivate = false // Track if current user has private account
     @State private var hasConfirmedNoContent = false // Only show "no content" after confirming there's truly none
     @State private var previousContentBeforeFilter: [ChannelContent] = [] // Keep previous content visible during filter
     @State private var cachedUnfilteredContent: [ChannelContent] = [] // Cache full content when filters are applied
@@ -266,6 +267,9 @@ struct ChannelDetailView: View {
                 loadUserPostAutomatically()
             }
             
+            // Load current user's account visibility (to determine if they can add private viewers)
+            loadCurrentUserVisibility()
+            
             // Load added usernames for Twilly TV and auto-add own username
             if currentChannel.channelName.lowercased() == "twilly tv" {
                 loadAddedUsernames()
@@ -359,12 +363,15 @@ struct ChannelDetailView: View {
                             if isTwillyTV {
                                 // Fetch both views in background
                                 let viewerEmail = authService.userEmail
+                                // Send added usernames to backend as fallback
+                                let clientAddedUsernames = addedUsernames.map { $0.streamerUsername }
                                 let bothViews = try await channelService.fetchBothViewsContent(
                                     channelName: currentChannel.channelName,
                                     creatorEmail: currentChannel.creatorEmail,
                                     viewerEmail: viewerEmail,
                                     limit: 20,
-                                    forceRefresh: false
+                                    forceRefresh: false,
+                                    clientAddedUsernames: clientAddedUsernames
                                 )
                                 
                                 await MainActor.run {
@@ -1005,6 +1012,28 @@ struct ChannelDetailView: View {
     
     private func favoritesKey(for userEmail: String) -> String {
         return "favorites_\(userEmail)"
+    }
+    
+    private func loadCurrentUserVisibility() {
+        guard let userEmail = authService.userEmail else {
+            print("⚠️ [ChannelDetailView] Cannot load user visibility - no user email")
+            return
+        }
+        
+        Task {
+            do {
+                let response = try await ChannelService.shared.getUsernameVisibility(userEmail: userEmail)
+                await MainActor.run {
+                    isCurrentUserPrivate = !(response.isPublic ?? true) // Default to public if not set
+                    print("✅ [ChannelDetailView] Loaded current user visibility: \(isCurrentUserPrivate ? "private" : "public")")
+                }
+            } catch {
+                await MainActor.run {
+                    print("❌ [ChannelDetailView] Error loading user visibility: \(error)")
+                    isCurrentUserPrivate = false // Default to public on error
+                }
+            }
+        }
     }
     
     private func loadFavoritesFromUserDefaults() {
@@ -3007,6 +3036,15 @@ struct ChannelDetailView: View {
                         // Only reload on next view appear or manual refresh to avoid overwriting optimistic updates
                         print("   ✅ Trusting optimistic update - request button should show 'Requested' now")
                     }
+                    
+                    // CRITICAL: For Twilly TV, always refresh content after adding a username
+                    // This ensures newly added user's content appears immediately
+                    if currentChannel.channelName.lowercased() == "twilly tv" {
+                        print("🔄 [ChannelDetailView] Refreshing Twilly TV content after adding username: \(cleanUsername)")
+                        Task {
+                            try? await refreshChannelContent()
+                        }
+                    }
                 }
             } catch {
                 print("   ❌ ERROR in API call:")
@@ -3140,6 +3178,15 @@ struct ChannelDetailView: View {
                         // CRITICAL: Save to UserDefaults immediately to persist optimistic update
                         saveAddedUsernamesToUserDefaults()
                         
+                        // CRITICAL: For Twilly TV, refresh content after optimistic add
+                        // This ensures newly added user's content appears immediately, even if API call failed
+                        if currentChannel.channelName.lowercased() == "twilly tv" {
+                            print("🔄 [ChannelDetailView] Refreshing Twilly TV content after optimistic add: \(cleanUsername)")
+                            Task {
+                                try? await refreshChannelContent()
+                            }
+                        }
+                        
                         // Show a warning message for server errors but don't block the UI
                         if isServerError || isTimeout {
                             errorMessage = isServerError ?
@@ -3267,6 +3314,98 @@ struct ChannelDetailView: View {
             }
         }
         print("🔵 [ChannelDetailView] ========== REQUEST BUTTON HANDLER COMPLETE ==========")
+    }
+    
+    // Add a user as a private viewer (for private account owners)
+    private func addPrivateViewerInline(username: String, email: String?) {
+        guard let ownerEmail = authService.userEmail else {
+            print("❌ [ChannelDetailView] Cannot add private viewer - missing owner email")
+            return
+        }
+        
+        let privateKey = "\(username.lowercased()):private"
+        addingUsernames.insert(privateKey)
+        
+        Task {
+            do {
+                let response = try await ChannelService.shared.addPrivateViewer(
+                    ownerEmail: ownerEmail,
+                    viewerUsername: username
+                )
+                
+                await MainActor.run {
+                    addingUsernames.remove(privateKey)
+                    
+                    // Optimistically update addedUsernames
+                    let newAdded = AddedUsername(
+                        streamerEmail: email ?? "",
+                        streamerUsername: username,
+                        addedAt: ISO8601DateFormatter().string(from: Date()),
+                        streamerVisibility: "private"
+                    )
+                    if !addedUsernames.contains(where: { 
+                        $0.streamerUsername.lowercased() == username.lowercased() && 
+                        $0.streamerVisibility?.lowercased() == "private"
+                    }) {
+                        addedUsernames.append(newAdded)
+                    }
+                    
+                    // Refresh content to show new viewer's content
+                    Task {
+                        try? await refreshChannelContent()
+                    }
+                    
+                    print("✅ [ChannelDetailView] Successfully added \(username) as private viewer")
+                }
+            } catch {
+                await MainActor.run {
+                    addingUsernames.remove(privateKey)
+                    print("❌ [ChannelDetailView] Error adding private viewer: \(error)")
+                }
+            }
+        }
+    }
+    
+    // Remove a user from private viewers (for private account owners)
+    private func removePrivateViewerInline(username: String, email: String?) {
+        guard let ownerEmail = authService.userEmail else {
+            print("❌ [ChannelDetailView] Cannot remove private viewer - missing owner email")
+            return
+        }
+        
+        let privateKey = "\(username.lowercased()):private"
+        addingUsernames.insert(privateKey)
+        
+        Task {
+            do {
+                try await ChannelService.shared.removePrivateViewer(
+                    ownerEmail: ownerEmail,
+                    viewerEmail: email ?? ""
+                )
+                
+                await MainActor.run {
+                    addingUsernames.remove(privateKey)
+                    
+                    // Optimistically remove from addedUsernames
+                    addedUsernames.removeAll(where: { 
+                        $0.streamerUsername.lowercased() == username.lowercased() && 
+                        $0.streamerVisibility?.lowercased() == "private"
+                    })
+                    
+                    // Refresh content to remove viewer's content
+                    Task {
+                        try? await refreshChannelContent()
+                    }
+                    
+                    print("✅ [ChannelDetailView] Successfully removed \(username) from private viewers")
+                }
+            } catch {
+                await MainActor.run {
+                    addingUsernames.remove(privateKey)
+                    print("❌ [ChannelDetailView] Error removing private viewer: \(error)")
+                }
+            }
+        }
     }
     
     // Check if username is already added
@@ -4872,25 +5011,87 @@ struct ChannelDetailView: View {
     private func privateAccountButton(for result: UsernameSearchResult) -> some View {
         let cleanPrivateUsername = result.username.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces)
         
-        // Priority order: Approved (with remove) > Requested > Being Added (spinner) > Request🔒 button
-        // Standard lifecycle (like Instagram/Snapchat):
-        // Request → Requested (pending/declined) → Approved (accepted, in addedUsernames) → Rejected (if removed)
-        // CRITICAL: Once "Requested", can't go back to "Request" (one-way flow)
-        // If declined, requester still sees "Requested" (can't request again)
+        // NEW FLOW: If current user is a private account owner, they can add/remove viewers directly
+        // Check if current user is viewing their own account (can't add themselves)
+        let isViewingSelf = authService.username?.lowercased() == cleanPrivateUsername.lowercased()
         
-        // Check if request was approved AND user is in addedUsernames with PRIVATE visibility (has access)
-        // CRITICAL: Only show "Approved" if the username is added with "private" visibility
-        // If it's added with "public" visibility, don't show "Approved" for the private button
-        let isApproved = isFollowRequestApproved(result.username)
-        let isInAddedUsernames = addedUsernames.contains(where: { 
+        // Check if target user is already added as a private viewer
+        let isPrivateViewer = addedUsernames.contains(where: { 
             let usernameMatches = $0.streamerUsername.lowercased() == cleanPrivateUsername.lowercased()
-            // Only match if visibility is "private"
             let itemVisibility = $0.streamerVisibility?.lowercased() ?? "public"
             return usernameMatches && itemVisibility == "private"
         })
         
-        // DEBUG: Log button state determination (execute before ViewBuilder)
-        let _ = {
+        // If current user is private account owner and not viewing self, show Add/Remove buttons
+        if isCurrentUserPrivate && !isViewingSelf {
+            let privateKey = "\(cleanPrivateUsername.lowercased()):private"
+            let isBeingAdded = addingUsernames.contains(privateKey)
+            
+            if isBeingAdded {
+                ProgressView()
+                    .tint(.white)
+                    .scaleEffect(0.8)
+            } else if isPrivateViewer {
+                // User is already a private viewer - show "Remove from Private"
+                Button(action: {
+                    print("🔴 [ChannelDetailView] REMOVE FROM PRIVATE - \(cleanPrivateUsername)")
+                    removePrivateViewerInline(username: cleanPrivateUsername, email: result.email)
+                }) {
+                    Text("Remove from Private")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.red.opacity(0.8))
+                        .cornerRadius(6)
+                }
+            } else {
+                // User is not a private viewer - show "Add to Private"
+                Button(action: {
+                    print("🟢 [ChannelDetailView] ADD TO PRIVATE - \(cleanPrivateUsername)")
+                    addPrivateViewerInline(username: cleanPrivateUsername, email: result.email)
+                }) {
+                    Text("Add to Private")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            LinearGradient(
+                                gradient: Gradient(colors: [
+                                    Color.orange.opacity(0.8),
+                                    Color.orange
+                                ]),
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .cornerRadius(6)
+                }
+            }
+        } else {
+            // OLD FLOW: Request/Requested/Approved (for non-private account owners or legacy flow)
+            // Priority order: Approved (with remove) > Requested > Being Added (spinner) > Request🔒 button
+            // Standard lifecycle (like Instagram/Snapchat):
+            // Request → Requested (pending/declined) → Approved (accepted, in addedUsernames) → Rejected (if removed)
+            // CRITICAL: Once "Requested", can't go back to "Request" (one-way flow)
+            // If declined, requester still sees "Requested" (can't request again)
+            
+            // Check if request was approved AND user is in addedUsernames with PRIVATE visibility (has access)
+            // CRITICAL: Only show "Approved" if the username is added with "private" visibility
+            // If it's added with "public" visibility, don't show "Approved" for the private button
+            let isApproved = isFollowRequestApproved(result.username)
+            let isInAddedUsernames = addedUsernames.contains(where: { 
+                let usernameMatches = $0.streamerUsername.lowercased() == cleanPrivateUsername.lowercased()
+                // Only match if visibility is "private"
+                let itemVisibility = $0.streamerVisibility?.lowercased() ?? "public"
+                return usernameMatches && itemVisibility == "private"
+            })
+            
+            // DEBUG: Log button state determination (execute before ViewBuilder)
+            let _ = {
             print("🔍 [ChannelDetailView] Button state for '\(cleanPrivateUsername)':")
             print("   isApproved: \(isApproved)")
             print("   isInAddedUsernames: \(isInAddedUsernames)")
@@ -4913,9 +5114,9 @@ struct ChannelDetailView: View {
                 print("   Matching addedUsernames: \(matchingAdded.count)")
                 print("   All addedUsernames: \(addedUsernames.map { $0.streamerUsername }.joined(separator: ", "))")
             }
-        }()
-        
-        if isApproved && isInAddedUsernames {
+            }()
+            
+            if isApproved && isInAddedUsernames {
             // Request was approved - show "Approved" with remove option
             // User is in addedUsernames, can remove which sets status to "rejected"
             Button(action: {
@@ -4981,6 +5182,7 @@ struct ChannelDetailView: View {
                         )
                         .cornerRadius(6)
                 }
+            }
             }
         }
     }
@@ -5317,18 +5519,72 @@ struct ChannelDetailView: View {
     // Refresh channel content
     private func refreshChannelContent() async throws -> (content: [ChannelContent], nextToken: String?, hasMore: Bool)? {
         do {
-            // For Twilly TV, pass viewerEmail to filter by added usernames
-            let viewerEmail = currentChannel.channelName.lowercased() == "twilly tv" ? authService.userEmail : nil
-            let result = try await channelService.fetchChannelContent(
-                channelName: currentChannel.channelName,
-                creatorEmail: currentChannel.creatorEmail,
-                viewerEmail: viewerEmail,
-                limit: 20,
-                nextToken: nil,
-                forceRefresh: true,
-                showPrivateContent: showPrivateContent
-            )
-            return (result.content, result.nextToken, result.hasMore)
+            let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
+            let viewerEmail = isTwillyTV ? authService.userEmail : nil
+            
+            // For Twilly TV, use fetchBothViewsContent to get both public and private content
+            // CRITICAL: Pass clientAddedUsernames so backend knows about newly added/removed usernames
+            if isTwillyTV {
+                // Extract usernames from addedUsernames array (current state)
+                let clientAddedUsernames = addedUsernames.map { $0.streamerUsername }
+                print("🔄 [ChannelDetailView] Refreshing Twilly TV content with \(clientAddedUsernames.count) added usernames: \(clientAddedUsernames.joined(separator: ", "))")
+                
+                let bothViews = try await channelService.fetchBothViewsContent(
+                    channelName: currentChannel.channelName,
+                    creatorEmail: currentChannel.creatorEmail,
+                    viewerEmail: viewerEmail,
+                    limit: 20,
+                    forceRefresh: true,
+                    clientAddedUsernames: clientAddedUsernames.isEmpty ? nil : clientAddedUsernames
+                )
+                
+                // Update both public and private content arrays
+                await MainActor.run {
+                    publicContent = bothViews.publicContent
+                    privateContent = bothViews.privateContent
+                    publicNextToken = bothViews.publicNextToken
+                    privateNextToken = bothViews.privateNextToken
+                    publicHasMore = bothViews.publicHasMore
+                    privateHasMore = bothViews.privateHasMore
+                    bothViewsLoaded = true
+                    
+                    // Update currently displayed content based on showPrivateContent
+                    if showPrivateContent {
+                        content = privateContent
+                        nextToken = privateNextToken
+                        hasMoreContent = privateHasMore
+                    } else {
+                        content = publicContent
+                        nextToken = publicNextToken
+                        hasMoreContent = publicHasMore
+                    }
+                    
+                    // Update cached unfiltered content
+                    cachedUnfilteredContent = publicContent + privateContent
+                }
+                
+                // Prefetch video content after updating (outside MainActor for async work)
+                Task {
+                    await prefetchVideoContent()
+                }
+                
+                // Return content for current view
+                return showPrivateContent ? 
+                    (bothViews.privateContent, bothViews.privateNextToken, bothViews.privateHasMore) :
+                    (bothViews.publicContent, bothViews.publicNextToken, bothViews.publicHasMore)
+            } else {
+                // For non-Twilly TV channels, use regular fetchChannelContent
+                let result = try await channelService.fetchChannelContent(
+                    channelName: currentChannel.channelName,
+                    creatorEmail: currentChannel.creatorEmail,
+                    viewerEmail: viewerEmail,
+                    limit: 20,
+                    nextToken: nil,
+                    forceRefresh: true,
+                    showPrivateContent: showPrivateContent
+                )
+                return (result.content, result.nextToken, result.hasMore)
+            }
         } catch {
             print("❌ [ChannelDetailView] Error refreshing content: \(error.localizedDescription)")
             throw error
@@ -5802,12 +6058,15 @@ struct ChannelDetailView: View {
                             }
                             
                             do {
+                                // Send added usernames to backend as fallback
+                                let clientAddedUsernames = addedUsernames.map { $0.streamerUsername }
                                 let bothViews = try await channelService.fetchBothViewsContent(
                                 channelName: currentChannel.channelName,
                                 creatorEmail: currentChannel.creatorEmail,
                                 viewerEmail: viewerEmail,
                                 limit: 20,
-                                    forceRefresh: true
+                                    forceRefresh: true,
+                                    clientAddedUsernames: clientAddedUsernames
                                 )
                                 
                                 await MainActor.run {
@@ -5906,12 +6165,15 @@ struct ChannelDetailView: View {
                         // isLoading already set synchronously in loadContent() - no need to set again
                         
                         do {
+                            // Send added usernames to backend as fallback (in case server doesn't have them due to auth errors)
+                            let clientAddedUsernames = addedUsernames.map { $0.streamerUsername }
                             let bothViews = try await channelService.fetchBothViewsContent(
-                            channelName: currentChannel.channelName,
-                            creatorEmail: currentChannel.creatorEmail,
-                            viewerEmail: viewerEmail,
-                            limit: 20,
-                                forceRefresh: forceRefresh
+                                channelName: currentChannel.channelName,
+                                creatorEmail: currentChannel.creatorEmail,
+                                viewerEmail: viewerEmail,
+                                limit: 20,
+                                forceRefresh: forceRefresh,
+                                clientAddedUsernames: clientAddedUsernames
                             )
                             
                             // Filter on background thread for performance, then update UI incrementally
@@ -6441,6 +6703,14 @@ struct ChannelDetailView: View {
         // Minimal final logging to prevent UI freeze
         print("✅ [ChannelDetailView] Updated: \(content.count) items, isLoading: \(isLoading)")
         
+        // CRITICAL: Prefetch video content for instant playback
+        // Prefetch HLS playlists for first 3-5 items in background
+        if !content.isEmpty && !isLoading {
+            Task {
+                await prefetchVideoContent()
+            }
+        }
+        
         // Check for duplicates in final content array
         var seenIdsFinal = Set<String>()
         var duplicateIdsFinal: [String] = []
@@ -6500,6 +6770,49 @@ struct ChannelDetailView: View {
             }
         }
         print("🔄 [ChannelDetailView] ========== UPDATE CONTENT END ==========")
+        
+        // CRITICAL: Prefetch video content for instant playback
+        // Prefetch HLS playlists for first 3-5 items in background
+        if !content.isEmpty && !isLoading {
+            Task {
+                await prefetchVideoContent()
+            }
+        }
+    }
+    
+    // Prefetch video content for instant playback
+    private func prefetchVideoContent() async {
+        // Only prefetch for Twilly TV (main timeline)
+        guard currentChannel.channelName.lowercased() == "twilly tv" else {
+            return
+        }
+        
+        // Get items to prefetch (first 5 items from current view)
+        let itemsToPrefetch = Array(content.prefix(5))
+        
+        guard !itemsToPrefetch.isEmpty else {
+            return
+        }
+        
+        print("🔄 [ChannelDetailView] Starting video prefetch for \(itemsToPrefetch.count) items")
+        print("   📋 Items: \(itemsToPrefetch.map { $0.fileName }.joined(separator: ", "))")
+        
+        // TODO: VideoPrefetchService calls - ensure VideoPrefetchService.swift is added to Xcode target
+        // Uncomment these lines once VideoPrefetchService.swift is added to the target:
+        /*
+        // Cancel any existing prefetches before starting new ones
+        VideoPrefetchService.shared.cancelAllPrefetches()
+        
+        // Prefetch playlists in background
+        VideoPrefetchService.shared.prefetchPlaylists(for: itemsToPrefetch, maxItems: 5)
+        
+        // Log cache stats after a delay
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+            let stats = VideoPrefetchService.shared.getCacheStats()
+            print("📊 [ChannelDetailView] Prefetch cache stats - Playlists: \(stats.playlists), Segments: \(stats.segments), Active: \(stats.activeTasks)")
+        }
+        */
     }
     
     // Start polling for thumbnail and HLS availability
@@ -8558,6 +8871,19 @@ class VideoPlayerController: ObservableObject {
         print("   Scheme: \(url.scheme ?? "nil")")
         print("   Host: \(url.host ?? "nil")")
         print("   Path: \(url.path)")
+        
+        // Check if playlist was prefetched
+        let hlsUrl = url.absoluteString
+        // TODO: VideoPrefetchService call - ensure VideoPrefetchService.swift is added to Xcode target
+        // Uncomment this line once VideoPrefetchService.swift is added to the target:
+        /*
+        if VideoPrefetchService.shared.isPlaylistPrefetched(hlsUrl: hlsUrl) {
+            print("⚡ [VideoPlayerController] Playlist was prefetched - instant load!")
+        } else {
+            print("📥 [VideoPlayerController] Playlist not prefetched - loading from network")
+        }
+        */
+        print("📥 [VideoPlayerController] Loading playlist from network")
         
         isLoading = true
         isReady = false
