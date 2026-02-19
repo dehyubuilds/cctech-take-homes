@@ -413,11 +413,46 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
     func clearAllCache() {
         cachedChannels.removeAll()
         cachedDiscoverableChannels.removeAll()
+        cachedContent.removeAll()
+        cachedBothViewsContent.removeAll()
         // Clear all persistent cache keys
         let defaults = UserDefaults.standard
-        let keys = defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix(cacheKey) || $0.hasPrefix(discoverableCacheKey) }
+        let keys = defaults.dictionaryRepresentation().keys.filter { 
+            $0.hasPrefix(cacheKey) || 
+            $0.hasPrefix(discoverableCacheKey) || 
+            $0.hasPrefix(contentCacheKey) || 
+            $0.hasPrefix(bothViewsCacheKey)
+        }
         keys.forEach { defaults.removeObject(forKey: $0) }
-        print("🗑️ Cleared all channel caches")
+        print("🗑️ Cleared all channel and content caches")
+    }
+    
+    // Clear content cache for a specific channel (useful when content is updated)
+    func clearContentCache(channelName: String, creatorEmail: String, viewerEmail: String? = nil, showPrivateContent: Bool = false) {
+        let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")_\(showPrivateContent)"
+        
+        // Clear in-memory cache
+        cachedContent.removeValue(forKey: cacheKey)
+        
+        // Clear persistent cache
+        let persistentCacheKey = "\(contentCacheKey)_\(cacheKey)"
+        UserDefaults.standard.removeObject(forKey: persistentCacheKey)
+        
+        print("🗑️ [ChannelService] Cleared content cache for channel: \(channelName)")
+    }
+    
+    // Clear both views cache for Twilly TV
+    func clearBothViewsCache(channelName: String, creatorEmail: String, viewerEmail: String? = nil) {
+        let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")"
+        
+        // Clear in-memory cache
+        cachedBothViewsContent.removeValue(forKey: cacheKey)
+        
+        // Clear persistent cache
+        let persistentCacheKey = "\(bothViewsCacheKey)_\(cacheKey)"
+        UserDefaults.standard.removeObject(forKey: persistentCacheKey)
+        
+        print("🗑️ [ChannelService] Cleared both views cache for channel: \(channelName)")
     }
     
     // Generate or fetch stream key for a channel

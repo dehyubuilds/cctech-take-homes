@@ -417,6 +417,11 @@ class AuthService: ObservableObject {
                 // Clear tracking to force reload on next login
                 self.lastUsernameLoadEmail = nil
                 self.lastUsernameLoadUserId = nil
+                
+                // CRITICAL: Clear content cache on logout to ensure fresh data on next login
+                // This prevents stale titles and content from persisting across sessions
+                ChannelService.shared.clearAllCache()
+                print("🗑️ [AuthService] Cleared all content cache on logout")
             }
         } catch {
             // Log detailed error information

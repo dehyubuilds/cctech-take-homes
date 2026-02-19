@@ -6358,25 +6358,24 @@ struct ChannelDetailView: View {
             }
         }
         
-        // CRITICAL: Preserve optimistic title updates to prevent old server data from overwriting new titles
-        // This prevents titles from being overwritten by stale server responses after a save
+        // CRITICAL: Preserve optimistic title updates ONLY when server title is empty
+        // This prevents titles from disappearing after being edited, but allows server updates to come through
+        // IMPORTANT: If server has a title (even if different), use it - server is the source of truth after save
         let contentWithPreservedTitles = filteredSortedContent.map { serverItem -> ChannelContent in
             // Find matching item in existing content by SK
             if let existingItem = content.first(where: { $0.SK == serverItem.SK }) {
                 let existingTitle = existingItem.title?.trimmingCharacters(in: .whitespaces) ?? ""
                 let serverTitle = serverItem.title?.trimmingCharacters(in: .whitespaces) ?? ""
                 
-                // CRITICAL: Always preserve existing title if it exists and is different from server
-                // This prevents old server data from overwriting optimistic updates
-                // Only use server title if:
-                // 1. Existing title is empty AND server title is not empty, OR
-                // 2. Both titles are the same (server has confirmed our update)
-                let shouldPreserveExistingTitle = !existingTitle.isEmpty && existingTitle != serverTitle
-                
-                if shouldPreserveExistingTitle {
-                    // Preserve existing title - it's an optimistic update that hasn't been confirmed by server yet
-                    // OR server returned stale data
-                    print("🔒 [ChannelDetailView] Preserving existing title '\(existingTitle)' for \(serverItem.fileName) (server has '\(serverTitle.isEmpty ? "empty" : serverTitle)')")
+                // CRITICAL: Only preserve existing title if server title is empty
+                // If server has a title (even if different), use server title - it's the source of truth
+                // This ensures:
+                // 1. Optimistic updates are preserved until server confirms (server title empty = not saved yet)
+                // 2. Server updates always win (server has title = it was saved, use it)
+                // 3. Fresh titles from server are always used (prevents stale cache from blocking new titles)
+                if !existingTitle.isEmpty && serverTitle.isEmpty {
+                    // Preserve existing title - server hasn't updated yet (optimistic update still valid)
+                    print("🔒 [ChannelDetailView] Preserving existing title '\(existingTitle)' for \(serverItem.fileName) (server title is empty - not saved yet)")
                     return ChannelContent(
                         SK: serverItem.SK,
                         fileName: serverItem.fileName,
@@ -6395,15 +6394,15 @@ struct ChannelDetailView: View {
                         isPrivateUsername: serverItem.isPrivateUsername ?? existingItem.isPrivateUsername,
                         localFileURL: serverItem.localFileURL ?? existingItem.localFileURL
                     )
-                } else if existingTitle.isEmpty && !serverTitle.isEmpty {
-                    // Existing title is empty but server has one - use server title
-                    print("📥 [ChannelDetailView] Using server title '\(serverTitle)' for \(serverItem.fileName) (existing was empty)")
-                } else if existingTitle == serverTitle {
+                } else if !serverTitle.isEmpty && serverTitle != existingTitle {
+                    // Server has a title that's different - use server title (it's the source of truth)
+                    print("📥 [ChannelDetailView] Using server title '\(serverTitle)' for \(serverItem.fileName) (existing was '\(existingTitle.isEmpty ? "empty" : existingTitle)')")
+                } else if existingTitle == serverTitle && !serverTitle.isEmpty {
                     // Titles match - server has confirmed our update
                     print("✅ [ChannelDetailView] Title confirmed by server: '\(serverTitle)' for \(serverItem.fileName)")
                 }
             }
-            // Use server item (either no existing item, or titles match, or server has title when existing doesn't)
+            // Use server item (server is always source of truth if it has data)
             return serverItem
         }
         
@@ -7468,6 +7467,27 @@ struct ChannelDetailView: View {
                                 print("✅ [ChannelDetailView] Updated public content cache with confirmed title")
                             }
                         }
+                        
+                        // CRITICAL: Invalidate ChannelService cache to force fresh load on next fetch
+                        // This ensures titles persist across logout/login
+                        let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
+                        if isTwillyTV {
+                            // Clear both views cache for Twilly TV
+                            ChannelService.shared.clearBothViewsCache(
+                                channelName: currentChannel.channelName,
+                                creatorEmail: currentChannel.creatorEmail,
+                                viewerEmail: userEmail
+                            )
+                        } else {
+                            // Clear single view cache for other channels
+                            ChannelService.shared.clearContentCache(
+                                channelName: currentChannel.channelName,
+                                creatorEmail: currentChannel.creatorEmail,
+                                viewerEmail: userEmail,
+                                showPrivateContent: showPrivateContent
+                            )
+                        }
+                        print("🗑️ [ChannelDetailView] Invalidated content cache to ensure fresh titles on next load")
                     } else {
                         print("❌ [ChannelDetailView] Update failed: \(response.message ?? "Unknown error")")
                         // Revert optimistic update on failure - revert all arrays
