@@ -7395,9 +7395,11 @@ struct ChannelDetailView: View {
         
         Task {
             do {
-                // Use fileId if available, otherwise fall back to SK
-                let fileIdToUse = content.fileId ?? content.SK
-                print("💾 [ChannelDetailView] Updating title - fileId: \(fileIdToUse), SK: \(content.SK), title: '\(trimmedTitle)'")
+                // CRITICAL: Always use SK (which is the full FILE#file-123 format) for the update
+                // fileId might be missing the FILE# prefix, so SK is the reliable source
+                // The backend expects the full SK format (FILE#file-123) as the fileId parameter
+                let fileIdToUse = content.SK // Always use SK - it's the full format that matches DynamoDB
+                print("💾 [ChannelDetailView] Updating title - SK: \(fileIdToUse), fileId: \(content.fileId ?? "N/A"), title: '\(trimmedTitle)'")
                 
                 let response = try await ChannelService.shared.updateFileDetails(
                     fileId: fileIdToUse,
