@@ -621,7 +621,7 @@ struct ChannelDetailView: View {
                 // Favorites star button
                 favoritesButton
             }
-            .padding(.leading, 20)
+            .padding(.leading, 8)
         }
     }
     
@@ -685,9 +685,17 @@ struct ChannelDetailView: View {
     
     private var favoritesButton: some View {
         Button(action: handleFavoritesToggle) {
-            Image(systemName: showFavoritesOnly ? "star.fill" : "star")
-                .font(.system(size: 14))
-                .foregroundColor(showFavoritesOnly ? .yellow : .white.opacity(0.8))
+            ZStack {
+                // Circle background
+                Circle()
+                    .fill(Color.white.opacity(0.1))
+                    .frame(width: 24, height: 24)
+                
+                // Star icon (smaller)
+                Image(systemName: showFavoritesOnly ? "star.fill" : "star")
+                    .font(.system(size: 11))
+                    .foregroundColor(showFavoritesOnly ? .yellow : .white.opacity(0.8))
+            }
         }
     }
     
