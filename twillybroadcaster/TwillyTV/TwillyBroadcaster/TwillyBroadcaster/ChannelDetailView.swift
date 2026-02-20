@@ -1539,6 +1539,8 @@ struct ChannelDetailView: View {
                             
                             Text(item.username)
                                 .foregroundColor(.white)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
                             
                             Spacer()
                             
@@ -4868,6 +4870,8 @@ struct ChannelDetailView: View {
                                                 
                                                 Text(item.username)
                                                     .foregroundColor(.white)
+                                                    .lineLimit(1)
+                                                    .minimumScaleFactor(0.8)
                                                 
                                                 Spacer()
                                                 
@@ -5138,6 +5142,8 @@ struct ChannelDetailView: View {
                 
                 Text(displayUsername)
                     .foregroundColor(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                 
                 Spacer()
                 
