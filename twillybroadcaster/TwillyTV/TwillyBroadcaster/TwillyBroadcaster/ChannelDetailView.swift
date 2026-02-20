@@ -2415,7 +2415,10 @@ struct ChannelDetailView: View {
                                     $0.streamerUsername.lowercased() == cachedUsername.streamerUsername.lowercased() &&
                                     ($0.streamerVisibility?.lowercased() ?? "public") == cachedVisibility
                                 })
-                                let isRemoved = removedUsernames.contains(cachedUsername.streamerUsername.lowercased())
+                                // Check removal by username:visibility (and legacy format for backward compatibility)
+                                let cachedUsernameLower = cachedUsername.streamerUsername.lowercased()
+                                let cachedRemovedKey = "\(cachedUsernameLower):\(cachedVisibility)"
+                                let isRemoved = removedUsernames.contains(cachedRemovedKey) || removedUsernames.contains(cachedUsernameLower)
                                 
                                 if !seenEntries.contains(entryKey) && !isRemoved {
                                     // Only add if it's a private entry not in server (preserve private status)
@@ -3068,11 +3071,18 @@ struct ChannelDetailView: View {
                             print("✅ [ChannelDetailView] Optimistically added username: \(cleanUsername) (visibility: public, email: \(streamerEmail.isEmpty ? "N/A" : streamerEmail))")
                         }
                         
-                        // CRITICAL: Remove from removedUsernames set if it was previously removed
+                        // CRITICAL: Remove from removedUsernames set if it was previously removed (check by username:visibility)
                         // This allows the username to be added again if the user wants to
+                        let publicKey = "\(cleanUsername.lowercased()):public"
+                        if removedUsernames.contains(publicKey) {
+                            removedUsernames.remove(publicKey)
+                            print("   ✅ Removed '\(publicKey)' from removedUsernames set (can be added again)")
+                            saveRemovedUsernamesToUserDefaults()
+                        }
+                        // Also check for legacy format (just username) for backward compatibility
                         if removedUsernames.contains(cleanUsername.lowercased()) {
                             removedUsernames.remove(cleanUsername.lowercased())
-                            print("   ✅ Removed '\(cleanUsername.lowercased())' from removedUsernames set (can be added again)")
+                            print("   ✅ Removed legacy '\(cleanUsername.lowercased())' from removedUsernames set (can be added again)")
                             saveRemovedUsernamesToUserDefaults()
                         }
                         print("   📊 Current addedUsernames count: \(addedUsernames.count)")
@@ -3244,10 +3254,17 @@ struct ChannelDetailView: View {
                             addedUsernames.append(newAddedUsername)
                         }
                         
-                        // CRITICAL: Remove from removedUsernames set if it was previously removed
+                        // CRITICAL: Remove from removedUsernames set if it was previously removed (check by username:visibility)
+                        let publicKey = "\(cleanUsername.lowercased()):public"
+                        if removedUsernames.contains(publicKey) {
+                            removedUsernames.remove(publicKey)
+                            print("   ✅ Removed '\(publicKey)' from removedUsernames set (can be added again)")
+                            saveRemovedUsernamesToUserDefaults()
+                        }
+                        // Also check for legacy format (just username) for backward compatibility
                         if removedUsernames.contains(cleanUsername.lowercased()) {
                             removedUsernames.remove(cleanUsername.lowercased())
-                            print("   ✅ Removed '\(cleanUsername.lowercased())' from removedUsernames set (can be added again)")
+                            print("   ✅ Removed legacy '\(cleanUsername.lowercased())' from removedUsernames set (can be added again)")
                             saveRemovedUsernamesToUserDefaults()
                         }
                         
@@ -3357,10 +3374,17 @@ struct ChannelDetailView: View {
                             print("   ✅ Optimistically added accepted username: \(cleanUsername)")
                         }
                         
-                        // CRITICAL: Remove from removedUsernames set if it was previously removed
+                        // CRITICAL: Remove from removedUsernames set if it was previously removed (check by username:visibility)
+                        let publicKey = "\(cleanUsername.lowercased()):public"
+                        if removedUsernames.contains(publicKey) {
+                            removedUsernames.remove(publicKey)
+                            print("   ✅ Removed '\(publicKey)' from removedUsernames set (can be added again)")
+                            saveRemovedUsernamesToUserDefaults()
+                        }
+                        // Also check for legacy format (just username) for backward compatibility
                         if removedUsernames.contains(cleanUsername.lowercased()) {
                             removedUsernames.remove(cleanUsername.lowercased())
-                            print("   ✅ Removed '\(cleanUsername.lowercased())' from removedUsernames set (can be added again)")
+                            print("   ✅ Removed legacy '\(cleanUsername.lowercased())' from removedUsernames set (can be added again)")
                             saveRemovedUsernamesToUserDefaults()
                         }
                         
@@ -3462,6 +3486,21 @@ struct ChannelDetailView: View {
                         $0.streamerVisibility?.lowercased() == "private"
                     })
                     print("   ✅ Verification: username is now in addedUsernames: \(isNowInArray)")
+                    
+                    // CRITICAL: Remove from removedUsernames set if it was previously removed (check by username:visibility)
+                    // This allows the username to be added again if the user wants to
+                    let privateKey = "\(username.lowercased()):private"
+                    if removedUsernames.contains(privateKey) {
+                        removedUsernames.remove(privateKey)
+                        print("   ✅ Removed '\(privateKey)' from removedUsernames set (can be added again)")
+                        saveRemovedUsernamesToUserDefaults()
+                    }
+                    // Also check for legacy format (just username) for backward compatibility
+                    if removedUsernames.contains(username.lowercased()) {
+                        removedUsernames.remove(username.lowercased())
+                        print("   ✅ Removed legacy '\(username.lowercased())' from removedUsernames set (can be added again)")
+                        saveRemovedUsernamesToUserDefaults()
+                    }
                     
                     // CRITICAL: Save to UserDefaults to persist the change
                     saveAddedUsernamesToUserDefaults()
@@ -3687,8 +3726,10 @@ struct ChannelDetailView: View {
                 if removedCount != newCount {
                     print("✅ [ChannelDetailView] Removed \(removedCount - newCount) entry(ies) from addedUsernames")
                     
-                    // Add to removedUsernames set to prevent re-adding immediately
-                    removedUsernames.insert(username.lowercased())
+                    // Add to removedUsernames set to prevent re-adding immediately (track by username:visibility)
+                    let removedKey = "\(username.lowercased()):private"
+                    removedUsernames.insert(removedKey)
+                    print("   🚫 Added '\(removedKey)' to removedUsernames set (private removal)")
                     saveRemovedUsernamesToUserDefaults()
                     
                     // CRITICAL: Save to UserDefaults to persist the change
@@ -4454,10 +4495,12 @@ struct ChannelDetailView: View {
                         print("   ✅ NOT removing from sentFollowRequests - preserving private request")
                     }
                     
-                    // Track as removed (always, since user explicitly clicked Remove)
+                    // Track as removed (always, since user explicitly clicked Remove) - use username:visibility format
                     let lowercasedUsername = cleanUsername.lowercased()
-                    removedUsernames.insert(lowercasedUsername)
-                    print("   🚫 Added to removedUsernames set: '\(lowercasedUsername)' (original: '\(cleanUsername)')")
+                    let visibility = visibilityToUse?.lowercased() ?? "public"
+                    let removedKey = "\(lowercasedUsername):\(visibility)"
+                    removedUsernames.insert(removedKey)
+                    print("   🚫 Added '\(removedKey)' to removedUsernames set (original: '\(cleanUsername)', visibility: \(visibility))")
                     saveRemovedUsernamesToUserDefaults()
                     
                     // Check backend response - if it says "not found", don't reload (keeps removal)
@@ -4620,10 +4663,12 @@ struct ChannelDetailView: View {
                         print("   ✅ NOT removing from addedUsernames - preserving public add")
                     }
                     
-                    // Track as removed (always, since user explicitly clicked Remove)
+                    // Track as removed (always, since user explicitly clicked Remove) - use username:visibility format
                     let lowercasedUsername = cleanUsername.lowercased()
-                    removedUsernames.insert(lowercasedUsername)
-                    print("   🚫 Added to removedUsernames set: '\(lowercasedUsername)' (original: '\(cleanUsername)')")
+                    let visibility = visibilityToUse?.lowercased() ?? "public"
+                    let removedKey = "\(lowercasedUsername):\(visibility)"
+                    removedUsernames.insert(removedKey)
+                    print("   🚫 Added '\(removedKey)' to removedUsernames set (original: '\(cleanUsername)', visibility: \(visibility))")
                     saveRemovedUsernamesToUserDefaults()
                     
                     // If backend says "not found", it means it was already removed or never existed
