@@ -4497,10 +4497,10 @@ struct ChannelDetailView: View {
                     
                     // Track as removed (always, since user explicitly clicked Remove) - use username:visibility format
                     let lowercasedUsername = cleanUsername.lowercased()
-                    let visibility = visibilityToUse?.lowercased() ?? "public"
-                    let removedKey = "\(lowercasedUsername):\(visibility)"
+                    let visibilityValue = visibility?.lowercased() ?? "public"
+                    let removedKey = "\(lowercasedUsername):\(visibilityValue)"
                     removedUsernames.insert(removedKey)
-                    print("   🚫 Added '\(removedKey)' to removedUsernames set (original: '\(cleanUsername)', visibility: \(visibility))")
+                    print("   🚫 Added '\(removedKey)' to removedUsernames set (original: '\(cleanUsername)', visibility: \(visibilityValue))")
                     saveRemovedUsernamesToUserDefaults()
                     
                     // Check backend response - if it says "not found", don't reload (keeps removal)
@@ -4664,11 +4664,12 @@ struct ChannelDetailView: View {
                     }
                     
                     // Track as removed (always, since user explicitly clicked Remove) - use username:visibility format
+                    // Follow requests are typically for public accounts, so use "public" as default
                     let lowercasedUsername = cleanUsername.lowercased()
-                    let visibility = visibilityToUse?.lowercased() ?? "public"
-                    let removedKey = "\(lowercasedUsername):\(visibility)"
+                    let visibilityValue = "public" // Follow requests are for public accounts
+                    let removedKey = "\(lowercasedUsername):\(visibilityValue)"
                     removedUsernames.insert(removedKey)
-                    print("   🚫 Added '\(removedKey)' to removedUsernames set (original: '\(cleanUsername)', visibility: \(visibility))")
+                    print("   🚫 Added '\(removedKey)' to removedUsernames set (original: '\(cleanUsername)', visibility: \(visibilityValue))")
                     saveRemovedUsernamesToUserDefaults()
                     
                     // If backend says "not found", it means it was already removed or never existed
