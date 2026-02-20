@@ -2059,7 +2059,7 @@ struct ChannelDetailView: View {
             UserDefaults.standard.set(encoded, forKey: key)
             UserDefaults.standard.synchronize() // Force immediate write
             print("💾 [ChannelDetailView] Saved \(addedUsernames.count) added usernames to UserDefaults (key: \(key))")
-            print("   📋 Usernames: \(addedUsernames.map { $0.streamerUsername }.joined(separator: ", "))")
+            print("   📋 Usernames: \(addedUsernames.map { "\($0.streamerUsername) (visibility: \($0.streamerVisibility ?? "public"))" }.joined(separator: ", "))")
         } catch {
             print("❌ [ChannelDetailView] Error saving added usernames to UserDefaults: \(error)")
             print("   Key used: \(key)")
@@ -2181,7 +2181,7 @@ struct ChannelDetailView: View {
             let decoder = JSONDecoder()
             let cached = try decoder.decode([AddedUsername].self, from: data)
             print("📂 [ChannelDetailView] Loaded \(cached.count) added usernames from UserDefaults (key: \(key))")
-            print("   📋 Usernames: \(cached.map { $0.streamerUsername }.joined(separator: ", "))")
+            print("   📋 Usernames: \(cached.map { "\($0.streamerUsername) (visibility: \($0.streamerVisibility ?? "public"))" }.joined(separator: ", "))")
             return cached
         } catch {
             print("❌ [ChannelDetailView] Error loading added usernames from UserDefaults: \(error)")
@@ -2350,10 +2350,48 @@ struct ChannelDetailView: View {
                         }
                         
                         if !serverUsernames.isEmpty {
-                            // Server has data - use it (already filtered)
-                            addedUsernames = serverUsernames
+                            // Server has data - merge with cache to preserve private usernames that might not be in server response
+                            // CRITICAL: Merge server data with cached data (like merge path) to preserve private entries
+                            let cached = loadAddedUsernamesFromUserDefaults()
+                            var mergedUsernames: [AddedUsername] = []
+                            
+                            // Track entries by username+visibility to avoid duplicates
+                            var seenEntries = Set<String>()
+                            
+                            // First, add all server usernames (server is source of truth for what exists)
+                            for serverUsername in serverUsernames {
+                                let serverVisibility = serverUsername.streamerVisibility?.lowercased() ?? "public"
+                                let entryKey = "\(serverUsername.streamerUsername.lowercased()):\(serverVisibility)"
+                                if !seenEntries.contains(entryKey) {
+                                    mergedUsernames.append(serverUsername)
+                                    seenEntries.insert(entryKey)
+                                    print("   ➕ Added server username: \(serverUsername.streamerUsername) (visibility: \(serverVisibility))")
+                                }
+                            }
+                            
+                            // Then, add cached usernames that aren't in server (preserve private entries that server might not return)
+                            for cachedUsername in cached {
+                                let cachedVisibility = cachedUsername.streamerVisibility?.lowercased() ?? "public"
+                                let entryKey = "\(cachedUsername.streamerUsername.lowercased()):\(cachedVisibility)"
+                                let isInServer = serverUsernames.contains(where: {
+                                    $0.streamerUsername.lowercased() == cachedUsername.streamerUsername.lowercased() &&
+                                    ($0.streamerVisibility?.lowercased() ?? "public") == cachedVisibility
+                                })
+                                let isRemoved = removedUsernames.contains(cachedUsername.streamerUsername.lowercased())
+                                
+                                if !seenEntries.contains(entryKey) && !isRemoved {
+                                    // Only add if it's a private entry not in server (preserve private status)
+                                    if cachedVisibility == "private" && !isInServer {
+                                        mergedUsernames.append(cachedUsername)
+                                        seenEntries.insert(entryKey)
+                                        print("   🔒 Preserved cached private username: \(cachedUsername.streamerUsername) (visibility: \(cachedVisibility))")
+                                    }
+                                }
+                            }
+                            
+                            addedUsernames = mergedUsernames
                             let originalCount = allServerUsernames.count
-                            print("✅ [ChannelDetailView] Loaded \(addedUsernames.count) added usernames from server (initial load, filtered from \(originalCount), excluded \(originalCount - addedUsernames.count) removed)")
+                            print("✅ [ChannelDetailView] Loaded \(addedUsernames.count) added usernames from server + cache (initial load, filtered from \(originalCount), preserved \(mergedUsernames.count - serverUsernames.count) private from cache)")
                         } else {
                             // Server returned empty - preserve cache if it exists (might contain optimistic updates)
                             // Only clear cache if we don't have any cached data
