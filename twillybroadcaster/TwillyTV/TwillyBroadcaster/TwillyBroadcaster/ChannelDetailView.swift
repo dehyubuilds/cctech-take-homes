@@ -193,13 +193,58 @@ struct ChannelDetailView: View {
         .sheet(isPresented: $showingSettings) {
             StreamerSettingsView()
         }
-        // TODO: Uncomment after adding PrivateAccessInboxView.swift and PrivateUsernameManagementView.swift to Xcode target
+        // TODO: Uncomment these after adding PrivateAccessInboxView.swift and PrivateUsernameManagementView.swift to Xcode target
+        // To add files: Right-click TwillyBroadcaster folder in Xcode > Add Files to TwillyBroadcaster > Select both .swift files > Check "Add to targets: TwillyBroadcaster"
         // .sheet(isPresented: $showingPrivateInbox) {
         //     PrivateAccessInboxView()
         // }
         // .sheet(isPresented: $showingPrivateManagement) {
         //     PrivateUsernameManagementView()
         // }
+        
+        // Temporary placeholder sheets until files are added to target
+        .sheet(isPresented: $showingPrivateInbox) {
+            NavigationView {
+                VStack {
+                    Text("Private Access Inbox")
+                        .font(.title)
+                        .foregroundColor(.white)
+                    Text("Add PrivateAccessInboxView.swift to Xcode target to enable this feature")
+                        .foregroundColor(.white.opacity(0.7))
+                        .padding()
+                }
+                .navigationTitle("Private Access")
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button("Done") {
+                            showingPrivateInbox = false
+                        }
+                        .foregroundColor(.twillyTeal)
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showingPrivateManagement) {
+            NavigationView {
+                VStack {
+                    Text("Manage Private Viewers")
+                        .font(.title)
+                        .foregroundColor(.white)
+                    Text("Add PrivateUsernameManagementView.swift to Xcode target to enable this feature")
+                        .foregroundColor(.white.opacity(0.7))
+                        .padding()
+                }
+                .navigationTitle("Manage Private Viewers")
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button("Done") {
+                            showingPrivateManagement = false
+                        }
+                        .foregroundColor(.twillyTeal)
+                    }
+                }
+            }
+        }
         .sheet(isPresented: $showingUsernameSearch) {
             UsernameSearchView(
                 channelName: currentChannel.channelName,
