@@ -8488,6 +8488,7 @@ struct ContentCard: View {
                                         .fontWeight(.semibold)
                                         .foregroundColor(.twillyCyan)
                                         .lineLimit(1) // Force single line
+                                        .minimumScaleFactor(0.8) // Scale down if needed
                                         .fixedSize(horizontal: true, vertical: false) // Allow horizontal expansion, prevent wrapping
                                     
                                     // Lock icon overlay - positioned absolutely, doesn't take layout space
