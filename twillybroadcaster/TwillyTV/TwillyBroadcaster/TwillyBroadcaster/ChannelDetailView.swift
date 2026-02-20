@@ -5127,51 +5127,44 @@ struct ChannelDetailView: View {
         let privateResult = results.first(where: { $0.isPrivate == true })
         let displayUsername = publicResult?.username ?? privateResult?.username.replacingOccurrences(of: "🔒", with: "") ?? baseUsernameKey
         
-        // Only show buttons if user has public (with or without private)
-        // If user only has private (no public), show nothing
-        let hasPublic = publicResult != nil
-        let hasOnlyPrivate = privateResult != nil && publicResult == nil
-        
-        // Don't show row if user only has private (no public)
-        if hasOnlyPrivate {
-            EmptyView()
-        } else {
-            HStack(spacing: 8) {
-                Image(systemName: "person.circle.fill")
-                    .foregroundColor(.twillyTeal)
-                    .frame(width: 20) // Fixed width for icon
-                
-                Text(displayUsername)
-                    .foregroundColor(.white)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false) // Allow full width, no scaling
-                    .layoutPriority(1) // Give username priority to expand
-                
-                Spacer(minLength: 8) // Minimum spacing before buttons
-                
-                // Show buttons based on what exists
-                HStack(spacing: 8) {
-                    // Only show Add button if public exists (and no private, or both exist)
-                    if let publicResult = publicResult {
-                        publicAccountButton(for: publicResult)
-                    }
-                    
-                    // Show Request🔒 button if private exists (only if public also exists)
-                    if let privateResult = privateResult, publicResult != nil {
-                        privateAccountButton(for: privateResult)
-                    }
-                }
-                .layoutPriority(0) // Buttons have lower priority
-                .fixedSize(horizontal: false, vertical: false) // Allow buttons to shrink if needed
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(Color.white.opacity(0.05))
+        // Show row for any user (public, private, or both)
+        // Previously hidden users with only private accounts - now showing them
+        HStack(spacing: 8) {
+            Image(systemName: "person.circle.fill")
+                .foregroundColor(.twillyTeal)
+                .frame(width: 20) // Fixed width for icon
             
-            if baseUsernameKey != groupedResults.keys.sorted().last {
-                Divider()
-                    .background(Color.white.opacity(0.1))
+            Text(displayUsername)
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false) // Allow full width, no scaling
+                .layoutPriority(1) // Give username priority to expand
+            
+            Spacer(minLength: 8) // Minimum spacing before buttons
+            
+            // Show buttons based on what exists
+            HStack(spacing: 8) {
+                // Show Add button if public exists
+                if let publicResult = publicResult {
+                    publicAccountButton(for: publicResult)
+                }
+                
+                // Show Add to Private / Remove from Private button if private exists
+                // Now shows even if user only has private (no public)
+                if let privateResult = privateResult {
+                    privateAccountButton(for: privateResult)
+                }
             }
+            .layoutPriority(0) // Buttons have lower priority
+            .fixedSize(horizontal: false, vertical: false) // Allow buttons to shrink if needed
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color.white.opacity(0.05))
+        
+        if baseUsernameKey != groupedResults.keys.sorted().last {
+            Divider()
+                .background(Color.white.opacity(0.1))
         }
     }
     
