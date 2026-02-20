@@ -5139,11 +5139,12 @@ struct ChannelDetailView: View {
             HStack(spacing: 8) {
                 Image(systemName: "person.circle.fill")
                     .foregroundColor(.twillyTeal)
+                    .frame(width: 20) // Fixed width for icon
                 
                 Text(displayUsername)
                     .foregroundColor(.white)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .fixedSize(horizontal: true, vertical: false) // Allow full width, no scaling
                     .layoutPriority(1) // Give username priority to expand
                 
                 Spacer(minLength: 8) // Minimum spacing before buttons
@@ -5161,6 +5162,7 @@ struct ChannelDetailView: View {
                     }
                 }
                 .layoutPriority(0) // Buttons have lower priority
+                .fixedSize(horizontal: false, vertical: false) // Allow buttons to shrink if needed
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -5287,9 +5289,9 @@ struct ChannelDetailView: View {
                         .fontWeight(.semibold)
                         .foregroundColor(.white)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .frame(minWidth: 120)
-                        .padding(.horizontal, 8)
+                        .minimumScaleFactor(0.7)
+                        .frame(minWidth: 100) // Reduced further
+                        .padding(.horizontal, 6) // Reduced padding
                         .padding(.vertical, 6)
                         .background(Color.red.opacity(0.8))
                         .cornerRadius(6)
@@ -5306,9 +5308,9 @@ struct ChannelDetailView: View {
                         .fontWeight(.semibold)
                         .foregroundColor(.white)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .frame(minWidth: 120)
-                        .padding(.horizontal, 8)
+                        .minimumScaleFactor(0.7)
+                        .frame(minWidth: 100)
+                        .padding(.horizontal, 6)
                         .padding(.vertical, 6)
                         .background(
                             LinearGradient(
