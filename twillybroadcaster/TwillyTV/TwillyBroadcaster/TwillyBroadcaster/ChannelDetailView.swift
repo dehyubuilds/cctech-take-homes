@@ -40,6 +40,8 @@ struct ChannelDetailView: View {
     @State private var showingInviteCodeEntry = false // Show invite code entry sheet
     @State private var showingSettings = false // Show streamer settings
     @State private var showingUsernameSearch = false // Show username search/add sheet
+    @State private var showingPrivateInbox = false // Show private access notifications inbox
+    @State private var showingPrivateManagement = false // Show private username management
     @State private var addedUsernames: [AddedUsername] = [] // List of added usernames for Twilly TV
     @State private var isLoadingAddedUsernames = false
     @State private var usernameSearchText = "" // Search text for inline search
@@ -48,7 +50,7 @@ struct ChannelDetailView: View {
     @State private var showSearchDropdown = false // Show search results dropdown
     @State private var showAddedUsernamesDropdown = false // Show added usernames dropdown
     @State private var showEmptyMessage = false // Show flash message when all usernames are removed
-    @State private var removedUsernames: Set<String> = [] // Track usernames that were explicitly removed (to prevent them from being added back)
+    @State private var removedUsernames: Set<String> = [] // Track usernames that were explicitly removed (format: "username:visibility" or "username" for backward compatibility)
     @State private var addingUsernames: Set<String> = [] // Track which usernames are currently being added
     @State private var searchVisibilityFilter: String = "all" // Always show all results (public and private together)
     @State private var sentFollowRequests: [SentFollowRequest] = [] // Track follow requests sent by current user
@@ -190,6 +192,12 @@ struct ChannelDetailView: View {
         viewWithNavigationAndToolbar
         .sheet(isPresented: $showingSettings) {
             StreamerSettingsView()
+        }
+        .sheet(isPresented: $showingPrivateInbox) {
+            PrivateAccessInboxView()
+        }
+        .sheet(isPresented: $showingPrivateManagement) {
+            PrivateUsernameManagementView()
         }
         .sheet(isPresented: $showingUsernameSearch) {
             UsernameSearchView(
@@ -655,6 +663,27 @@ struct ChannelDetailView: View {
                         .offset(x: 8, y: -8)
                 }
             }
+        }
+        
+        // Private access inbox button (for notifications when added to private)
+        Button(action: {
+            showingPrivateInbox = true
+        }) {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "envelope.fill")
+                    .foregroundColor(.white)
+                
+                // TODO: Add badge count for unread private access notifications
+                // Badge will be added when notification system is integrated
+            }
+        }
+        
+        // Private username management button
+        Button(action: {
+            showingPrivateManagement = true
+        }) {
+            Image(systemName: "person.circle")
+                .foregroundColor(.white)
         }
         
         // Settings button
@@ -2210,12 +2239,15 @@ struct ChannelDetailView: View {
                 let cached = loadAddedUsernamesFromUserDefaults()
                 print("🔍 [DEBUG] Cached usernames from UserDefaults: \(cached.map { $0.streamerUsername }.joined(separator: ", "))")
                 
-                // CRITICAL: Filter out removed usernames from cache
+                // CRITICAL: Filter out removed usernames from cache (check by username:visibility)
                 let filteredCached = cached.filter { username in
                     let lowercased = username.streamerUsername.lowercased()
-                    let isRemoved = removedUsernames.contains(lowercased)
+                    let visibility = username.streamerVisibility?.lowercased() ?? "public"
+                    let entryKey = "\(lowercased):\(visibility)"
+                    // Check both specific visibility and general username (for backward compatibility)
+                    let isRemoved = removedUsernames.contains(entryKey) || removedUsernames.contains(lowercased)
                     if isRemoved {
-                        print("🚫 [DEBUG] Filtering out removed username from cache: '\(username.streamerUsername)' (lowercased: '\(lowercased)')")
+                        print("🚫 [DEBUG] Filtering out removed username from cache: '\(username.streamerUsername)' (visibility: \(visibility), key: \(entryKey))")
                     }
                     return !isRemoved
                 }
@@ -2241,12 +2273,15 @@ struct ChannelDetailView: View {
                             print("🔍 [DEBUG] Delayed load - Cached usernames: \(cached.map { $0.streamerUsername }.joined(separator: ", "))")
                             print("🔍 [DEBUG] Delayed load - removedUsernames: \(removedUsernames.map { $0 }.joined(separator: ", "))")
                             
-                            // CRITICAL: Filter out removed usernames from cache
+                            // CRITICAL: Filter out removed usernames from cache (check by username:visibility)
                             let filteredCached = cached.filter { username in
                                 let lowercased = username.streamerUsername.lowercased()
-                                let isRemoved = removedUsernames.contains(lowercased)
+                                let visibility = username.streamerVisibility?.lowercased() ?? "public"
+                                let entryKey = "\(lowercased):\(visibility)"
+                                // Check both specific visibility and general username (for backward compatibility)
+                                let isRemoved = removedUsernames.contains(entryKey) || removedUsernames.contains(lowercased)
                                 if isRemoved {
-                                    print("🚫 [DEBUG] Delayed load - Filtering out removed username: '\(username.streamerUsername)' (lowercased: '\(lowercased)')")
+                                    print("🚫 [DEBUG] Delayed load - Filtering out removed username: '\(username.streamerUsername)' (visibility: \(visibility), key: \(entryKey))")
                                 }
                                 return !isRemoved
                             }
@@ -2342,9 +2377,12 @@ struct ChannelDetailView: View {
                         
                         let serverUsernames = allServerUsernames.filter { username in
                             let lowercased = username.streamerUsername.lowercased()
-                            let isRemoved = removedUsernames.contains(lowercased)
+                            let visibility = username.streamerVisibility?.lowercased() ?? "public"
+                            let entryKey = "\(lowercased):\(visibility)"
+                            // Check both specific visibility and general username (for backward compatibility)
+                            let isRemoved = removedUsernames.contains(entryKey) || removedUsernames.contains(lowercased)
                             if isRemoved {
-                                print("🚫 [DEBUG] Filtering out removed username from server: '\(username.streamerUsername)' (lowercased: '\(lowercased)')")
+                                print("🚫 [DEBUG] Filtering out removed username from server: '\(username.streamerUsername)' (visibility: \(visibility), key: \(entryKey))")
                             }
                             return !isRemoved
                         }
@@ -5183,14 +5221,9 @@ struct ChannelDetailView: View {
             // Show buttons based on what exists
             HStack(spacing: 8) {
                 // Show Add button if public exists
+                // Private management moved to top toolbar person icon
                 if let publicResult = publicResult {
                     publicAccountButton(for: publicResult)
-                }
-                
-                // Show Add to Private / Remove from Private button if private exists
-                // Now shows even if user only has private (no public)
-                if let privateResult = privateResult {
-                    privateAccountButton(for: privateResult)
                 }
             }
             .layoutPriority(0) // Buttons have lower priority
