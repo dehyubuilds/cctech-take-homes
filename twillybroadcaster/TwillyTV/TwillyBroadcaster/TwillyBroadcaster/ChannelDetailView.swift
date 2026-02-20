@@ -193,12 +193,13 @@ struct ChannelDetailView: View {
         .sheet(isPresented: $showingSettings) {
             StreamerSettingsView()
         }
-        .sheet(isPresented: $showingPrivateInbox) {
-            PrivateAccessInboxView()
-        }
-        .sheet(isPresented: $showingPrivateManagement) {
-            PrivateUsernameManagementView()
-        }
+        // TODO: Uncomment after adding PrivateAccessInboxView.swift and PrivateUsernameManagementView.swift to Xcode target
+        // .sheet(isPresented: $showingPrivateInbox) {
+        //     PrivateAccessInboxView()
+        // }
+        // .sheet(isPresented: $showingPrivateManagement) {
+        //     PrivateUsernameManagementView()
+        // }
         .sheet(isPresented: $showingUsernameSearch) {
             UsernameSearchView(
                 channelName: currentChannel.channelName,
