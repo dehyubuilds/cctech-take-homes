@@ -1026,6 +1026,8 @@ struct ChannelDetailView: View {
                 await MainActor.run {
                     isCurrentUserPrivate = !(response.isPublic ?? true) // Default to public if not set
                     print("✅ [ChannelDetailView] Loaded current user visibility: \(isCurrentUserPrivate ? "private" : "public")")
+                    print("   🔍 isCurrentUserPrivate state updated to: \(isCurrentUserPrivate)")
+                    print("   🔍 This will trigger button re-render to show 'Add to Private' instead of 'Request🔒'")
                 }
             } catch {
                 await MainActor.run {
@@ -3318,92 +3320,324 @@ struct ChannelDetailView: View {
     
     // Add a user as a private viewer (for private account owners)
     private func addPrivateViewerInline(username: String, email: String?) {
-        guard let ownerEmail = authService.userEmail else {
-            print("❌ [ChannelDetailView] Cannot add private viewer - missing owner email")
+        print("🟢 [ChannelDetailView] ========== ADD TO PRIVATE START ==========")
+        print("   Viewer Username: \(username)")
+        
+        guard let ownerUsername = authService.username else {
+            print("❌ [ChannelDetailView] Cannot add private viewer - missing owner username")
             return
         }
         
+        print("   Owner Username: \(ownerUsername)")
+        
         let privateKey = "\(username.lowercased()):private"
         addingUsernames.insert(privateKey)
+        print("   Added to addingUsernames set: \(privateKey)")
         
         Task {
             do {
+                print("   📤 Calling API: addPrivateViewer(ownerUsername: \(ownerUsername), viewerUsername: \(username))")
                 let response = try await ChannelService.shared.addPrivateViewer(
-                    ownerEmail: ownerEmail,
+                    ownerUsername: ownerUsername,
                     viewerUsername: username
                 )
+                print("   ✅ API call succeeded")
                 
                 await MainActor.run {
+                    print("🟢 [ChannelDetailView] ========== ADD TO PRIVATE SUCCESS ==========")
                     addingUsernames.remove(privateKey)
+                    print("   ✅ Removed '\(privateKey)' from addingUsernames set")
                     
-                    // Optimistically update addedUsernames
+                    // Log response for debugging
+                    print("   📥 API response: \(response)")
+                    print("   📊 Current addedUsernames count BEFORE update: \(addedUsernames.count)")
+                    
+                    // Optimistically update addedUsernames (same pattern as public Add)
                     let newAdded = AddedUsername(
                         streamerEmail: email ?? "",
                         streamerUsername: username,
                         addedAt: ISO8601DateFormatter().string(from: Date()),
                         streamerVisibility: "private"
                     )
-                    if !addedUsernames.contains(where: { 
+                    
+                    // Check if already exists with private visibility
+                    let existingIndex = addedUsernames.firstIndex(where: { 
                         $0.streamerUsername.lowercased() == username.lowercased() && 
                         $0.streamerVisibility?.lowercased() == "private"
-                    }) {
+                    })
+                    
+                    if let index = existingIndex {
+                        // Update existing entry
+                        addedUsernames[index] = newAdded
+                        print("   🔄 Updated existing entry at index \(index) with private visibility")
+                    } else {
+                        // Add new entry
                         addedUsernames.append(newAdded)
+                        print("   ➕ Added new entry to addedUsernames array with private visibility")
                     }
+                    
+                    print("   📊 Current addedUsernames count AFTER update: \(addedUsernames.count)")
+                    
+                    // Verify the entry is in the array
+                    let isNowInArray = addedUsernames.contains(where: { 
+                        $0.streamerUsername.lowercased() == username.lowercased() && 
+                        $0.streamerVisibility?.lowercased() == "private"
+                    })
+                    print("   ✅ Verification: username is now in addedUsernames: \(isNowInArray)")
+                    
+                    // CRITICAL: Save to UserDefaults to persist the change
+                    saveAddedUsernamesToUserDefaults()
+                    print("   💾 Saved addedUsernames to UserDefaults")
+                    
+                    // SwiftUI will automatically refresh the UI when @State addedUsernames changes
+                    // The button check (isPrivateViewer) will be recalculated automatically
                     
                     // Refresh content to show new viewer's content
                     Task {
+                        print("   🔄 Refreshing channel content...")
                         try? await refreshChannelContent()
                     }
                     
                     print("✅ [ChannelDetailView] Successfully added \(username) as private viewer")
+                    print("🟢 [ChannelDetailView] ========== ADD TO PRIVATE END ==========")
                 }
             } catch {
                 await MainActor.run {
                     addingUsernames.remove(privateKey)
                     print("❌ [ChannelDetailView] Error adding private viewer: \(error)")
+                    print("   Error details: \(error.localizedDescription)")
+                    if let channelError = error as? ChannelServiceError {
+                        print("   ChannelServiceError: \(channelError)")
+                    }
+                    
+                    // Determine error type to decide if we should keep optimistic update
+                    // Extract error message - handle ChannelServiceError.serverError(String) properly
+                    var errorMessageText = error.localizedDescription.lowercased()
+                    if let channelError = error as? ChannelServiceError {
+                        switch channelError {
+                        case .serverError(let message):
+                            errorMessageText = message.lowercased()
+                            print("   🔍 Extracted server error message: \(message)")
+                        case .invalidURL, .invalidResponse:
+                            // Use localizedDescription for these
+                            break
+                        }
+                    }
+                    
+                    // Clear failures - operation definitely did NOT succeed:
+                    let isUserNotFound = errorMessageText.contains("not found")
+                    let isSecurityTokenError = errorMessageText.contains("security token")
+                    let isInvalidRequest = errorMessageText.contains("invalid") && !errorMessageText.contains("timeout")
+                    let isBadRequest = errorMessageText.contains("bad request") || errorMessageText.contains("400")
+                    let isNotPrivateAccount = errorMessageText.contains("only private accounts") || errorMessageText.contains("private account")
+                    
+                    // Ambiguous errors - operation MIGHT have succeeded (network issues, timeouts):
+                    let isTimeout = errorMessageText.contains("timeout") || errorMessageText.contains("timed out")
+                    let isNetworkError = errorMessageText.contains("network") || errorMessageText.contains("connection")
+                    let isServerError = errorMessageText.contains("500") || errorMessageText.contains("internal server")
+                    
+                    let isClearFailure = isUserNotFound || isSecurityTokenError || (isInvalidRequest && !isTimeout) || isBadRequest || isNotPrivateAccount
+                    let isAmbiguousError = isTimeout || isNetworkError || isServerError
+                    
+                    print("   🔍 Error analysis:")
+                    print("      Error message: \(errorMessageText)")
+                    print("      isUserNotFound: \(isUserNotFound)")
+                    print("      isSecurityTokenError: \(isSecurityTokenError)")
+                    print("      isInvalidRequest: \(isInvalidRequest)")
+                    print("      isBadRequest: \(isBadRequest)")
+                    print("      isTimeout: \(isTimeout)")
+                    print("      isNetworkError: \(isNetworkError)")
+                    print("      isServerError: \(isServerError)")
+                    print("      isClearFailure: \(isClearFailure)")
+                    print("      isAmbiguousError: \(isAmbiguousError)")
+                    
+                    if isClearFailure {
+                        // Operation definitely failed - DO NOT keep optimistic update
+                        // Remove any optimistic update we might have made
+                        print("   ❌ Clear failure detected - operation did NOT succeed")
+                        print("   🔄 Removing any optimistic updates...")
+                        
+                        // Remove from addedUsernames if it was added optimistically
+                        let removedCount = addedUsernames.count
+                        addedUsernames.removeAll(where: { 
+                            $0.streamerUsername.lowercased() == username.lowercased() && 
+                            $0.streamerVisibility?.lowercased() == "private"
+                        })
+                        let newCount = addedUsernames.count
+                        
+                        if removedCount != newCount {
+                            print("   ✅ Removed \(removedCount - newCount) optimistic entry(ies)")
+                            saveAddedUsernamesToUserDefaults()
+                        }
+                        
+                        // Show clear error message
+                        errorMessage = "Failed to add \(username) to private viewers: \(error.localizedDescription)"
+                        print("   📝 Error message shown to user")
+                    } else if isAmbiguousError {
+                        // Ambiguous error - operation MIGHT have succeeded (timeout, network issue)
+                        // Keep optimistic update but warn user
+                        print("   ⚠️ Ambiguous error (timeout/network) - keeping optimistic update (operation may have succeeded)")
+                        print("      Error type: \(error.localizedDescription)")
+                        
+                        // Check if already in addedUsernames (might have been added optimistically before)
+                        let alreadyAdded = addedUsernames.contains(where: { 
+                            $0.streamerUsername.lowercased() == username.lowercased() && 
+                            $0.streamerVisibility?.lowercased() == "private"
+                        })
+                        
+                        if !alreadyAdded {
+                            // Only add if not already there (don't duplicate)
+                            let newAdded = AddedUsername(
+                                streamerEmail: email ?? "",
+                                streamerUsername: username,
+                                addedAt: ISO8601DateFormatter().string(from: Date()),
+                                streamerVisibility: "private"
+                            )
+                            addedUsernames.append(newAdded)
+                            print("   ➕ Added optimistic entry (operation may have succeeded)")
+                            saveAddedUsernamesToUserDefaults()
+                        }
+                        
+                        // Show warning but don't block UI
+                        errorMessage = "Add may have encountered a network issue, but was processed. Please check your connection."
+                        Task {
+                            try? await Task.sleep(nanoseconds: 3_000_000_000)
+                            await MainActor.run {
+                                errorMessage = nil
+                            }
+                        }
+                    } else {
+                        // Unknown error type - be conservative, don't keep optimistic update
+                        print("   ❓ Unknown error type - not keeping optimistic update")
+                        errorMessage = "Failed to add \(username) to private viewers: \(error.localizedDescription)"
+                    }
                 }
             }
         }
     }
     
-    // Remove a user from private viewers (for private account owners)
+    // Remove a user from private viewers
     private func removePrivateViewerInline(username: String, email: String?) {
         guard let ownerEmail = authService.userEmail else {
             print("❌ [ChannelDetailView] Cannot remove private viewer - missing owner email")
             return
         }
         
-        let privateKey = "\(username.lowercased()):private"
-        addingUsernames.insert(privateKey)
+        let cleanUsername = username.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces)
+        let privateKey = "\(cleanUsername.lowercased()):private"
         
-        Task {
-            do {
-                try await ChannelService.shared.removePrivateViewer(
-                    ownerEmail: ownerEmail,
-                    viewerEmail: email ?? ""
-                )
+        // Find the email from addedUsernames if not provided
+        var viewerEmail = email
+        if viewerEmail == nil || viewerEmail?.isEmpty == true {
+            if let addedEntry = addedUsernames.first(where: { 
+                $0.streamerUsername.lowercased() == cleanUsername.lowercased() && 
+                ($0.streamerVisibility?.lowercased() ?? "public") == "private"
+            }) {
+                viewerEmail = addedEntry.streamerEmail
+                print("   📧 Found email from addedUsernames: \(viewerEmail ?? "nil")")
+            }
+        }
+        
+        // If still no email, try to look it up
+        if viewerEmail == nil || viewerEmail?.isEmpty == true {
+            print("   ⚠️ Email not found, attempting lookup...")
+            Task {
+                do {
+                    let searchResults = try await ChannelService.shared.searchUsernames(query: cleanUsername, limit: 1)
+                    if let foundUser = searchResults.first(where: { $0.username.lowercased() == cleanUsername.lowercased() }),
+                       let foundEmail = foundUser.email, !foundEmail.isEmpty {
+                        viewerEmail = foundEmail
+                        print("   ✅ Found email from search: \(viewerEmail ?? "nil")")
+                    } else {
+                        print("   ❌ Could not find email for username: \(cleanUsername)")
+                        await MainActor.run {
+                            errorMessage = "Could not find email for \(cleanUsername). Cannot remove without email."
+                        }
+                        return
+                    }
+                } catch {
+                    print("   ❌ Error looking up email: \(error.localizedDescription)")
+                    await MainActor.run {
+                        errorMessage = "Failed to look up email for \(cleanUsername): \(error.localizedDescription)"
+                    }
+                    return
+                }
                 
-                await MainActor.run {
-                    addingUsernames.remove(privateKey)
+                // Continue with removal using looked-up email
+                await performRemovePrivateViewer(username: cleanUsername, viewerEmail: viewerEmail ?? "", ownerEmail: ownerEmail, privateKey: privateKey)
+            }
+            return
+        }
+        
+        // Email is available, proceed with removal
+        Task {
+            await performRemovePrivateViewer(username: cleanUsername, viewerEmail: viewerEmail ?? "", ownerEmail: ownerEmail, privateKey: privateKey)
+        }
+    }
+    
+    // Helper to perform the actual removal
+    private func performRemovePrivateViewer(username: String, viewerEmail: String, ownerEmail: String, privateKey: String) async {
+        // Add to removing set to show spinner
+        let removingKey = "\(username.lowercased()):private"
+        await MainActor.run {
+            addingUsernames.insert(removingKey)
+        }
+        
+        do {
+            print("🔴 [ChannelDetailView] ========== REMOVE FROM PRIVATE START ==========")
+            print("   Viewer Username: \(username)")
+            print("   Viewer Email: \(viewerEmail)")
+            print("   Owner Email: \(ownerEmail)")
+            
+            let response = try await ChannelService.shared.removePrivateViewer(
+                ownerEmail: ownerEmail,
+                viewerEmail: viewerEmail
+            )
+            
+            await MainActor.run {
+                addingUsernames.remove(removingKey)
+                print("✅ [ChannelDetailView] Remove API response: \(response)")
+                
+                // Optimistically remove from addedUsernames
+                let removedCount = addedUsernames.count
+                addedUsernames.removeAll(where: { 
+                    $0.streamerUsername.lowercased() == username.lowercased() && 
+                    ($0.streamerVisibility?.lowercased() ?? "public") == "private"
+                })
+                let newCount = addedUsernames.count
+                
+                if removedCount != newCount {
+                    print("✅ [ChannelDetailView] Removed \(removedCount - newCount) entry(ies) from addedUsernames")
                     
-                    // Optimistically remove from addedUsernames
-                    addedUsernames.removeAll(where: { 
-                        $0.streamerUsername.lowercased() == username.lowercased() && 
-                        $0.streamerVisibility?.lowercased() == "private"
-                    })
+                    // Add to removedUsernames set to prevent re-adding immediately
+                    removedUsernames.insert(username.lowercased())
+                    saveRemovedUsernamesToUserDefaults()
+                    
+                    // CRITICAL: Save to UserDefaults to persist the change
+                    saveAddedUsernamesToUserDefaults()
+                    print("✅ [ChannelDetailView] Saved updated addedUsernames to UserDefaults")
                     
                     // Refresh content to remove viewer's content
                     Task {
+                        print("   🔄 Refreshing channel content...")
                         try? await refreshChannelContent()
                     }
-                    
-                    print("✅ [ChannelDetailView] Successfully removed \(username) from private viewers")
+                } else {
+                    print("⚠️ [ChannelDetailView] No entries found to remove for \(username)")
                 }
-            } catch {
-                await MainActor.run {
-                    addingUsernames.remove(privateKey)
-                    print("❌ [ChannelDetailView] Error removing private viewer: \(error)")
+                
+                print("🔴 [ChannelDetailView] ========== REMOVE FROM PRIVATE END ==========")
+            }
+        } catch {
+            await MainActor.run {
+                addingUsernames.remove(removingKey)
+                print("❌ [ChannelDetailView] Error removing private viewer: \(error)")
+                print("   Error details: \(error.localizedDescription)")
+                if let channelError = error as? ChannelServiceError {
+                    print("   ChannelServiceError: \(channelError)")
                 }
+                // Show error to user
+                errorMessage = "Failed to remove \(username) from private viewers: \(error.localizedDescription)"
             }
         }
     }
@@ -4961,6 +5195,7 @@ struct ChannelDetailView: View {
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.twillyCyan)
+                    .frame(minWidth: 60)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .background(Color.twillyCyan.opacity(0.2))
@@ -4989,6 +5224,7 @@ struct ChannelDetailView: View {
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(.white)
+                        .frame(minWidth: 60)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(
@@ -5022,8 +5258,9 @@ struct ChannelDetailView: View {
             return usernameMatches && itemVisibility == "private"
         })
         
-        // If current user is private account owner and not viewing self, show Add/Remove buttons
-        if isCurrentUserPrivate && !isViewingSelf {
+        // ANY user can add others to view their private streams (not just private account owners)
+        // Only restriction: can't add yourself
+        if !isViewingSelf {
             let privateKey = "\(cleanPrivateUsername.lowercased()):private"
             let isBeingAdded = addingUsernames.contains(privateKey)
             
@@ -5041,6 +5278,9 @@ struct ChannelDetailView: View {
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(minWidth: 140)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(Color.red.opacity(0.8))
@@ -5049,13 +5289,17 @@ struct ChannelDetailView: View {
             } else {
                 // User is not a private viewer - show "Add to Private"
                 Button(action: {
-                    print("🟢 [ChannelDetailView] ADD TO PRIVATE - \(cleanPrivateUsername)")
+                    print("🟢 [ChannelDetailView] ADD TO PRIVATE BUTTON TAPPED - \(cleanPrivateUsername)")
+                    print("   Email: \(result.email ?? "nil")")
                     addPrivateViewerInline(username: cleanPrivateUsername, email: result.email)
                 }) {
                     Text("Add to Private")
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(minWidth: 140)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(
@@ -5072,118 +5316,8 @@ struct ChannelDetailView: View {
                 }
             }
         } else {
-            // OLD FLOW: Request/Requested/Approved (for non-private account owners or legacy flow)
-            // Priority order: Approved (with remove) > Requested > Being Added (spinner) > Request🔒 button
-            // Standard lifecycle (like Instagram/Snapchat):
-            // Request → Requested (pending/declined) → Approved (accepted, in addedUsernames) → Rejected (if removed)
-            // CRITICAL: Once "Requested", can't go back to "Request" (one-way flow)
-            // If declined, requester still sees "Requested" (can't request again)
-            
-            // Check if request was approved AND user is in addedUsernames with PRIVATE visibility (has access)
-            // CRITICAL: Only show "Approved" if the username is added with "private" visibility
-            // If it's added with "public" visibility, don't show "Approved" for the private button
-            let isApproved = isFollowRequestApproved(result.username)
-            let isInAddedUsernames = addedUsernames.contains(where: { 
-                let usernameMatches = $0.streamerUsername.lowercased() == cleanPrivateUsername.lowercased()
-                // Only match if visibility is "private"
-                let itemVisibility = $0.streamerVisibility?.lowercased() ?? "public"
-                return usernameMatches && itemVisibility == "private"
-            })
-            
-            // DEBUG: Log button state determination (execute before ViewBuilder)
-            let _ = {
-            print("🔍 [ChannelDetailView] Button state for '\(cleanPrivateUsername)':")
-            print("   isApproved: \(isApproved)")
-            print("   isInAddedUsernames: \(isInAddedUsernames)")
-            print("   sentFollowRequests count: \(sentFollowRequests.count)")
-            print("   addedUsernames count: \(addedUsernames.count)")
-            if isApproved {
-                let approvedRequest = sentFollowRequests.first(where: { 
-                    $0.requestedUsername.lowercased() == cleanPrivateUsername.lowercased() && 
-                    $0.status.lowercased() == "accepted"
-                })
-                print("   Approved request found: \(approvedRequest != nil ? "YES" : "NO")")
-                if let req = approvedRequest {
-                    print("   Request details: username=\(req.requestedUsername), status=\(req.status)")
-                }
-            }
-            if !isInAddedUsernames {
-                let matchingAdded = addedUsernames.filter { 
-                    $0.streamerUsername.lowercased() == cleanPrivateUsername.lowercased() 
-                }
-                print("   Matching addedUsernames: \(matchingAdded.count)")
-                print("   All addedUsernames: \(addedUsernames.map { $0.streamerUsername }.joined(separator: ", "))")
-            }
-            }()
-            
-            if isApproved && isInAddedUsernames {
-            // Request was approved - show "Approved" with remove option
-            // User is in addedUsernames, can remove which sets status to "rejected"
-            Button(action: {
-                print("🟡 [ChannelDetailView] APPROVED BUTTON TAPPED (PRIVATE) - removing")
-                deselectAddedUsername(result.username, email: result.email, visibility: "private")
-            }) {
-                Text("Approved")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.green)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Color.green.opacity(0.2))
-                    .cornerRadius(6)
-            }
-        } else if isFollowRequestSent(result.username) {
-            // Request was sent but not yet approved (or declined) - show "Requested" (one-way, can't go back)
-            // CRITICAL: Once "Requested", button should NOT allow deselection (one-way flow)
-            // This includes: pending (waiting), declined (still shows "Requested" from requester's perspective)
-            // Only show "Requested" - no action button (can't cancel once requested)
-                Text("Requested")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.orange)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Color.orange.opacity(0.2))
-                    .cornerRadius(6)
-        } else {
-            // Check if THIS SPECIFIC private button is being added (not public)
-            // Only show spinner for private button if it's the private key being added
-            let privateKey = "\(cleanPrivateUsername.lowercased()):private"
-            let isPrivateBeingAdded = addingUsernames.contains(privateKey)
-            
-            if isPrivateBeingAdded {
-                // Show spinner while THIS private request is being processed
-                ProgressView()
-                    .tint(.white)
-                    .scaleEffect(0.8)
-            } else {
-                // Private exists, show Request🔒 button
-                Button(action: {
-                    print("🟢 [ChannelDetailView] REQUEST🔒 BUTTON TAPPED (private)")
-                    print("   Username: '\(result.username)'")
-                    print("   Email: \(result.email ?? "nil")")
-                    addUsernameInline(result.username, email: result.email)
-                }) {
-                    Text("Request🔒")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(
-                            LinearGradient(
-                                gradient: Gradient(colors: [
-                                    Color.orange.opacity(0.8),
-                                    Color.orange
-                                ]),
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .cornerRadius(6)
-                }
-            }
-            }
+            // If viewing self, don't show button (can't add yourself)
+            EmptyView()
         }
     }
     
