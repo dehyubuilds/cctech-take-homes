@@ -5136,7 +5136,7 @@ struct ChannelDetailView: View {
         if hasOnlyPrivate {
             EmptyView()
         } else {
-            HStack {
+            HStack(spacing: 8) {
                 Image(systemName: "person.circle.fill")
                     .foregroundColor(.twillyTeal)
                 
@@ -5144,8 +5144,9 @@ struct ChannelDetailView: View {
                     .foregroundColor(.white)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
+                    .layoutPriority(1) // Give username priority to expand
                 
-                Spacer()
+                Spacer(minLength: 8) // Minimum spacing before buttons
                 
                 // Show buttons based on what exists
                 HStack(spacing: 8) {
@@ -5159,6 +5160,7 @@ struct ChannelDetailView: View {
                         privateAccountButton(for: privateResult)
                     }
                 }
+                .layoutPriority(0) // Buttons have lower priority
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -5286,8 +5288,8 @@ struct ChannelDetailView: View {
                         .foregroundColor(.white)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
-                        .frame(minWidth: 140)
-                        .padding(.horizontal, 12)
+                        .frame(minWidth: 120)
+                        .padding(.horizontal, 8)
                         .padding(.vertical, 6)
                         .background(Color.red.opacity(0.8))
                         .cornerRadius(6)
@@ -5305,8 +5307,8 @@ struct ChannelDetailView: View {
                         .foregroundColor(.white)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
-                        .frame(minWidth: 140)
-                        .padding(.horizontal, 12)
+                        .frame(minWidth: 120)
+                        .padding(.horizontal, 8)
                         .padding(.vertical, 6)
                         .background(
                             LinearGradient(
