@@ -2337,6 +2337,23 @@ struct ChannelDetailView: View {
                         ($0.streamerVisibility?.lowercased() ?? "public") == "private"
                     }
                     
+                    // CRITICAL: If server returns empty and we have cached private usernames,
+                    // check if they should be cleared (database is clean)
+                    if allPrivate.isEmpty && !cached.isEmpty {
+                        print("⚠️ [ChannelDetailView] Server returned 0 private usernames but cache has \(cached.count) entries")
+                        print("   🧹 Clearing stale private username cache - database is clean")
+                        
+                        // Clear the cache since database is clean
+                        addedPrivateUsernames = []
+                        if let userEmail = authService.userEmail {
+                            let key = addedPrivateUsernamesKey(for: userEmail)
+                            UserDefaults.standard.removeObject(forKey: key)
+                            UserDefaults.standard.synchronize()
+                            print("   ✅ Cleared private username cache (key: \(key))")
+                        }
+                        return
+                    }
+                    
                     // Merge with cache (preserve optimistic updates)
                     var merged: [AddedUsername] = []
                     var seenEntries = Set<String>()
