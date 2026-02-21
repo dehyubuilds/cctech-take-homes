@@ -1494,10 +1494,11 @@ struct ChannelDetailView: View {
     }
     
     // Added usernames dropdown (extracted for reuse)
-    // Shows both "Added" (public) and "Requested" (private) usernames with deselection buttons
+    // Shows ONLY public added usernames with deselection buttons
+    // CRITICAL: Does NOT show follow requests - those are for private accounts only
     private var addedUsernamesDropdown: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Combine added usernames and requested usernames for display
+            // Get public added usernames only
             let allUsernames = getAllUsernamesForDropdown()
             
             if allUsernames.isEmpty {
@@ -1511,7 +1512,7 @@ struct ChannelDetailView: View {
                         .transition(.opacity.combined(with: .scale))
                         .animation(.easeInOut(duration: 0.3), value: showEmptyMessage)
                 } else {
-                    Text("No added or requested usernames")
+                    Text("No added usernames")
                         .font(.subheadline)
                         .foregroundColor(.gray)
                         .padding(.horizontal, 16)
@@ -1534,25 +1535,10 @@ struct ChannelDetailView: View {
                 } else {
                     ForEach(filteredUsernames) { item in
                         HStack {
-                            // Icon based on state
-                            if item.isAdded && item.isRequested {
-                                // Both states - show both icons
-                                HStack(spacing: 4) {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundColor(.twillyCyan)
-                                    Image(systemName: "lock.fill")
-                                        .foregroundColor(.orange)
-                                        .font(.caption2)
-                                }
-                            } else if item.isAdded {
-                                // Only added
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.twillyCyan)
-                            } else if item.isRequested {
-                                // Only requested
-                                Image(systemName: "lock.fill")
-                                    .foregroundColor(.orange)
-                            }
+                            // Icon - only show checkmark for added (public) usernames
+                            // CRITICAL: This dropdown only shows public added usernames, no follow requests
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.twillyCyan)
                             
                             Text(item.username)
                                 .foregroundColor(.white)
