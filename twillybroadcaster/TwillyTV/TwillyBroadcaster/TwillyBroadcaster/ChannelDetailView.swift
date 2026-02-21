@@ -2547,7 +2547,30 @@ struct ChannelDetailView: View {
                     print("🚫 [ChannelDetailView] Filtering out private username from cache load: '\(username.streamerUsername)' (visibility: \(visibility))")
                     return false
                 }
+                
+                // Also filter out user's own username
+                let lowercased = username.streamerUsername.lowercased()
+                if let currentUsername = authService.username?.lowercased(), lowercased == currentUsername {
+                    print("🚫 [ChannelDetailView] Filtering out user's own username from cache load: '\(username.streamerUsername)'")
+                    return false
+                }
+                
                 return true
+            }
+            
+            // If we filtered out any usernames, update the cache to remove them permanently
+            if filtered.count != cached.count {
+                print("🧹 [ChannelDetailView] Found \(cached.count - filtered.count) private/invalid usernames in cache - cleaning cache")
+                // Save the cleaned version back to cache
+                do {
+                    let encoder = JSONEncoder()
+                    let encoded = try encoder.encode(filtered)
+                    UserDefaults.standard.set(encoded, forKey: key)
+                    UserDefaults.standard.synchronize()
+                    print("✅ [ChannelDetailView] Cleaned cache - removed private/invalid entries")
+                } catch {
+                    print("⚠️ [ChannelDetailView] Could not clean cache: \(error)")
+                }
             }
             
             // CRITICAL: Clean lock emoji from all cached usernames
@@ -2935,27 +2958,45 @@ struct ChannelDetailView: View {
                     
                     // CRITICAL: Clean up any private usernames or user's own username that might have been cached
                     // Filter out private usernames, locks, and user's own username before saving
+                    // This ensures the cache NEVER contains private usernames
                     let cleanedUsernames = addedUsernames.filter { username in
-                        // Filter out private usernames and locks
+                        // CRITICAL: Filter out private usernames and usernames with locks
                         let visibility = username.streamerVisibility?.lowercased() ?? "public"
                         if visibility == "private" || username.streamerUsername.contains("🔒") {
-                            print("🧹 [ChannelDetailView] Cleaning up private username from cache: '\(username.streamerUsername)'")
+                            print("🚫 [ChannelDetailView] Filtering out private username before saving to cache: '\(username.streamerUsername)' (visibility: \(visibility))")
                             return false
                         }
                         
-                        // Filter out user's own username
-                        let usernameLower = username.streamerUsername.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces).lowercased()
-                        if let currentUsername = authService.username?.lowercased(), usernameLower == currentUsername {
-                            print("🧹 [ChannelDetailView] Cleaning up user's own username from cache: '\(username.streamerUsername)'")
+                        // CRITICAL: Filter out user's own username
+                        let lowercased = username.streamerUsername.lowercased()
+                        if let currentUsername = authService.username?.lowercased(), lowercased == currentUsername {
+                            print("🚫 [ChannelDetailView] Filtering out user's own username before saving to cache: '\(username.streamerUsername)'")
                             return false
                         }
                         
                         return true
                     }
                     
-                    // Update addedUsernames with cleaned list
+                    // Only save if we have cleaned usernames (don't save empty arrays with private entries)
                     if cleanedUsernames.count != addedUsernames.count {
-                        print("🧹 [ChannelDetailView] Cleaned \(addedUsernames.count - cleanedUsernames.count) invalid usernames from cache")
+                        print("🧹 [ChannelDetailView] Removed \(addedUsernames.count - cleanedUsernames.count) private/invalid usernames before saving to cache")
+                        // Update addedUsernames to the cleaned version
+                        addedUsernames = cleanedUsernames
+                    }
+                    
+                    // Now filter for removed usernames (final check)
+                    let finalUsernames = cleanedUsernames.filter { username in
+                        let lowercased = username.streamerUsername.lowercased()
+                        let entryKey = "\(lowercased):\(username.streamerVisibility?.lowercased() ?? "public")"
+                        let isRemoved = removedUsernames.contains(entryKey) || removedUsernames.contains(lowercased)
+                        return !isRemoved
+                    }
+                    
+                    // Update addedUsernames with final cleaned list
+                    if finalUsernames.count != cleanedUsernames.count {
+                        print("🧹 [ChannelDetailView] Removed \(cleanedUsernames.count - finalUsernames.count) removed usernames from final list")
+                        addedUsernames = finalUsernames
+                    } else {
                         addedUsernames = cleanedUsernames
                     }
                     
