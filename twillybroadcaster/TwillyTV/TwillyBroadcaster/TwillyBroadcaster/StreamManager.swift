@@ -1234,9 +1234,13 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
     private func applyZoomFactor(_ factor: CGFloat) {
         guard let camera = currentCamera else { return }
         
+        // CRITICAL: Never stop streaming due to zoom errors - zoom is non-critical
+        // Only log errors but continue streaming
         do {
             try camera.lockForConfiguration()
-            defer { camera.unlockForConfiguration() }
+            defer { 
+                camera.unlockForConfiguration()
+            }
             
             camera.videoZoomFactor = factor
             currentZoomFactor = factor
@@ -1249,10 +1253,13 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
                     recordingCamera.device.unlockForConfiguration()
                 } catch {
                     print("⚠️ Failed to set zoom on recording camera: \(error)")
+                    // Don't stop recording or streaming - zoom is non-critical
                 }
             }
         } catch {
-            print("❌ Failed to set zoom: \(error)")
+            print("⚠️ Failed to set zoom: \(error) - continuing stream (zoom is non-critical)")
+            // CRITICAL: Do NOT stop streaming on zoom errors - zoom failures should not interrupt the stream
+            // The stream should continue even if zoom fails
         }
     }
     
@@ -2257,13 +2264,24 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
                 }
                 
                 // Check for other error codes
-                if code.contains("error") || code.contains("failed") || code.contains("rejected") || code.contains("Error") || code.contains("Failed") {
+                // CRITICAL: Only stop streaming for critical errors, not transient issues
+                // Don't stop on minor errors that might occur during normal operation (like zoom)
+                let criticalErrorKeywords = ["Connection", "Publish", "Stream"]
+                let isCriticalError = criticalErrorKeywords.contains { keyword in
+                    code.contains(keyword) && (code.contains("error") || code.contains("failed") || code.contains("rejected") || code.contains("Error") || code.contains("Failed"))
+                }
+                
+                if isCriticalError {
+                    print("❌ Critical RTMP error detected: \(code) - stopping stream")
                     self.pendingPublish = false
                     self.status = .error("Stream error: \(code)")
                     self.isStreaming = false
                     self.stopDurationTimer()
                     // Re-enable idle timer on error
                     UIApplication.shared.isIdleTimerDisabled = false
+                } else {
+                    // Non-critical error - log but don't stop streaming
+                    print("⚠️ Non-critical RTMP status: \(code) - continuing stream")
                 }
             }
         }
