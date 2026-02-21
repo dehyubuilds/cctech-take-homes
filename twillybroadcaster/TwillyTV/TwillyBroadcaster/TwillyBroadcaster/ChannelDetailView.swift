@@ -2538,8 +2538,20 @@ struct ChannelDetailView: View {
             let cached = try decoder.decode([AddedUsername].self, from: data)
             print("📂 [ChannelDetailView] Loaded \(cached.count) added usernames from UserDefaults (key: \(key))")
             print("   📋 Usernames: \(cached.map { "\($0.streamerUsername) (visibility: \($0.streamerVisibility ?? "public"))" }.joined(separator: ", "))")
+            
+            // CRITICAL: Filter out private usernames and usernames with locks BEFORE returning
+            // This ensures private usernames never appear in the public list, even if cached
+            let filtered = cached.filter { username in
+                let visibility = username.streamerVisibility?.lowercased() ?? "public"
+                if visibility == "private" || username.streamerUsername.contains("🔒") {
+                    print("🚫 [ChannelDetailView] Filtering out private username from cache load: '\(username.streamerUsername)' (visibility: \(visibility))")
+                    return false
+                }
+                return true
+            }
+            
             // CRITICAL: Clean lock emoji from all cached usernames
-            return cached.map { username in
+            return filtered.map { username in
                 AddedUsername(
                     streamerEmail: username.streamerEmail,
                     streamerUsername: username.streamerUsername.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces),
