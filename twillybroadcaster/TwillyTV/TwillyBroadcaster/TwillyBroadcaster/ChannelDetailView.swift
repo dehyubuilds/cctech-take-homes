@@ -2632,10 +2632,23 @@ struct ChannelDetailView: View {
                             print("🔍 [DEBUG] Delayed load - Cached usernames: \(cached.map { $0.streamerUsername }.joined(separator: ", "))")
                             print("🔍 [DEBUG] Delayed load - removedUsernames: \(removedUsernames.map { $0 }.joined(separator: ", "))")
                             
-                            // CRITICAL: Filter out removed usernames from cache (check by username:visibility)
+                            // CRITICAL: Filter out removed usernames, private usernames, and locks from cache
                             let filteredCached = cached.filter { username in
-                                let lowercased = username.streamerUsername.lowercased()
+                                // CRITICAL: Filter out private usernames and usernames with locks
                                 let visibility = username.streamerVisibility?.lowercased() ?? "public"
+                                if visibility == "private" || username.streamerUsername.contains("🔒") {
+                                    print("🚫 [DEBUG] Delayed load - Filtering out private username: '\(username.streamerUsername)' (visibility: \(visibility))")
+                                    return false
+                                }
+                                
+                                let lowercased = username.streamerUsername.lowercased()
+                                
+                                // CRITICAL: Filter out user's own username
+                                if let currentUsername = authService.username?.lowercased(), lowercased == currentUsername {
+                                    print("🚫 [DEBUG] Delayed load - Filtering out user's own username: '\(username.streamerUsername)'")
+                                    return false
+                                }
+                                
                                 let entryKey = "\(lowercased):\(visibility)"
                                 // Check both specific visibility and general username (for backward compatibility)
                                 let isRemoved = removedUsernames.contains(entryKey) || removedUsernames.contains(lowercased)
