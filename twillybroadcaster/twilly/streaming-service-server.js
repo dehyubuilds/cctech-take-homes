@@ -1864,14 +1864,32 @@ async function generateSingleVariant(inputPath, outputDir, streamName, uploadId 
     
     console.log(`⚡ Generating ${variant} variant using ${threads} threads`);
     
+    // CRITICAL: Check if input has audio track before mapping
+    // If no audio, use -an (no audio) instead of -map '0:a' to prevent FFmpeg errors
+    let audioMap = ['-map', '0:a', '-c:a', 'aac', '-b:a', '128k'];
+    try {
+      const { execSync } = require('child_process');
+      const ffprobeCmd = `ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${inputPath}"`;
+      const hasAudio = execSync(ffprobeCmd, { encoding: 'utf8', timeout: 5000 }).trim();
+      if (!hasAudio || hasAudio !== 'audio') {
+        console.warn(`⚠️ [${variant}] No audio track found in input file - encoding without audio`);
+        audioMap = ['-an']; // No audio
+      } else {
+        console.log(`✅ [${variant}] Audio track found - will encode with audio`);
+      }
+    } catch (audioCheckError) {
+      console.warn(`⚠️ [${variant}] Could not verify audio track (${audioCheckError.message}) - attempting to map audio anyway`);
+      // Continue with audio mapping - FFmpeg will handle it
+    }
+    
     const ffmpegArgs = [
       '-noautorotate',
       '-i', inputPath,
       '-filter_complex', scaleFilter,
-      '-map', '[v_scaled]', '-map', '0:a',
-      '-c:v', 'libx264', '-c:a', 'aac',
+      '-map', '[v_scaled]', ...audioMap,
+      '-c:v', 'libx264',
       '-map_metadata', '-1',
-      '-crf', '20', '-preset', 'veryfast', '-threads', String(threads), '-b:a', '128k', '-tune', 'fastdecode',
+      '-crf', '20', '-preset', 'veryfast', '-threads', String(threads), '-tune', 'fastdecode',
       '-f', 'hls', '-hls_time', '6', '-hls_list_size', '0',
       '-hls_segment_filename', path.join(outputDir, `${uniquePrefix}_${variant}_%03d.ts`),
       path.join(outputDir, `${uniquePrefix}_${variant}.m3u8`)
@@ -1947,30 +1965,50 @@ async function generateRemainingVariants(inputPath, outputDir, streamName, uploa
     const cpuCores = require('os').cpus().length;
     const threads = Math.max(1, Math.floor(cpuCores * 0.95));
     
+    // CRITICAL: Check if input has audio track before mapping
+    // If no audio, use -an (no audio) instead of -map '0:a' to prevent FFmpeg errors
+    let audioMap = ['-map', '0:a', '-c:a', 'aac'];
+    let audioBitrates = ['-b:a', '128k', '-b:a', '96k', '-b:a', '64k'];
+    try {
+      const { execSync } = require('child_process');
+      const ffprobeCmd = `ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${inputPath}"`;
+      const hasAudio = execSync(ffprobeCmd, { encoding: 'utf8', timeout: 5000 }).trim();
+      if (!hasAudio || hasAudio !== 'audio') {
+        console.warn(`⚠️ [remaining variants] No audio track found in input file - encoding without audio`);
+        audioMap = ['-an']; // No audio
+        audioBitrates = []; // No audio bitrates needed
+      } else {
+        console.log(`✅ [remaining variants] Audio track found - will encode with audio`);
+      }
+    } catch (audioCheckError) {
+      console.warn(`⚠️ [remaining variants] Could not verify audio track (${audioCheckError.message}) - attempting to map audio anyway`);
+      // Continue with audio mapping - FFmpeg will handle it
+    }
+    
     console.log(`⚡ Generating remaining variants (720p, 480p, 360p) in background using ${threads} threads`);
     
     const ffmpegArgs = [
       '-noautorotate',
       '-i', inputPath,
       '-filter_complex', filterComplex,
-      '-map', '[v2_scaled]', '-map', '0:a',
-      '-c:v', 'libx264', '-c:a', 'aac',
+      '-map', '[v2_scaled]', ...audioMap,
+      '-c:v', 'libx264', ...audioBitrates.slice(0, 2),
       '-map_metadata', '-1',
-      '-crf', '22', '-preset', 'veryfast', '-threads', String(threads), '-b:a', '128k', '-tune', 'fastdecode',
+      '-crf', '22', '-preset', 'veryfast', '-threads', String(threads), '-tune', 'fastdecode',
       '-f', 'hls', '-hls_time', '6', '-hls_list_size', '0',
       '-hls_segment_filename', path.join(outputDir, `${uniquePrefix}_720p_%03d.ts`),
       path.join(outputDir, `${uniquePrefix}_720p.m3u8`),
-      '-map', '[v3_scaled]', '-map', '0:a',
-      '-c:v', 'libx264', '-c:a', 'aac',
+      '-map', '[v3_scaled]', ...audioMap,
+      '-c:v', 'libx264', ...audioBitrates.slice(2, 4),
       '-map_metadata', '-1',
-      '-crf', '24', '-preset', 'veryfast', '-threads', String(threads), '-b:a', '96k', '-tune', 'fastdecode',
+      '-crf', '24', '-preset', 'veryfast', '-threads', String(threads), '-tune', 'fastdecode',
       '-f', 'hls', '-hls_time', '6', '-hls_list_size', '0',
       '-hls_segment_filename', path.join(outputDir, `${uniquePrefix}_480p_%03d.ts`),
       path.join(outputDir, `${uniquePrefix}_480p.m3u8`),
-      '-map', '[v4_scaled]', '-map', '0:a',
-      '-c:v', 'libx264', '-c:a', 'aac',
+      '-map', '[v4_scaled]', ...audioMap,
+      '-c:v', 'libx264', ...audioBitrates.slice(4, 6),
       '-map_metadata', '-1',
-      '-crf', '26', '-preset', 'veryfast', '-threads', String(threads), '-b:a', '64k', '-tune', 'fastdecode',
+      '-crf', '26', '-preset', 'veryfast', '-threads', String(threads), '-tune', 'fastdecode',
       '-f', 'hls', '-hls_time', '6', '-hls_list_size', '0',
       '-hls_segment_filename', path.join(outputDir, `${uniquePrefix}_360p_%03d.ts`),
       path.join(outputDir, `${uniquePrefix}_360p.m3u8`)
@@ -2100,6 +2138,26 @@ async function generateAdaptiveHLS(inputPath, outputDir, streamName, uploadId = 
     const cpuCores = require('os').cpus().length;
     const threads = Math.max(1, Math.floor(cpuCores * 0.95)); // Use 95% of CPU cores (more aggressive)
     
+    // CRITICAL: Check if input has audio track before mapping
+    // If no audio, use -an (no audio) instead of -map '0:a' to prevent FFmpeg errors
+    let audioMap = ['-map', '0:a', '-c:a', 'aac'];
+    let audioBitrates = ['-b:a', '128k', '-b:a', '128k', '-b:a', '96k', '-b:a', '64k'];
+    try {
+      const { execSync } = require('child_process');
+      const ffprobeCmd = `ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${inputPath}"`;
+      const hasAudio = execSync(ffprobeCmd, { encoding: 'utf8', timeout: 5000 }).trim();
+      if (!hasAudio || hasAudio !== 'audio') {
+        console.warn(`⚠️ [generateAdaptiveHLS] No audio track found in input file - encoding without audio`);
+        audioMap = ['-an']; // No audio
+        audioBitrates = []; // No audio bitrates needed
+      } else {
+        console.log(`✅ [generateAdaptiveHLS] Audio track found - will encode with audio`);
+      }
+    } catch (audioCheckError) {
+      console.warn(`⚠️ [generateAdaptiveHLS] Could not verify audio track (${audioCheckError.message}) - attempting to map audio anyway`);
+      // Continue with audio mapping - FFmpeg will handle it
+    }
+    
     console.log(`⚡ Using ${threads} threads for encoding (${cpuCores} CPU cores available)`);
     console.log(`⚡ Using 'veryfast' preset for maximum encoding speed (prioritizing speed over quality)`);
     
@@ -2112,31 +2170,31 @@ async function generateAdaptiveHLS(inputPath, outputDir, streamName, uploadId = 
       '-noautorotate', // Prevent FFmpeg from auto-applying rotation metadata
       '-i', inputPath,
       '-filter_complex', filterComplex,
-      '-map', '[v1_scaled]', '-map', '0:a',
-      '-c:v', 'libx264', '-c:a', 'aac',
+      '-map', '[v1_scaled]', ...audioMap,
+      '-c:v', 'libx264', ...audioBitrates.slice(0, 1),
       '-map_metadata', '-1', // Remove all metadata (including rotation) from output
-      '-crf', '20', '-preset', 'veryfast', '-threads', String(threads), '-b:a', '128k', '-tune', 'fastdecode',
+      '-crf', '20', '-preset', 'veryfast', '-threads', String(threads), '-tune', 'fastdecode',
       '-f', 'hls', '-hls_time', '6', '-hls_list_size', '0',
       '-hls_segment_filename', path.join(outputDir, `${uniquePrefix}_1080p_%03d.ts`),
       path.join(outputDir, `${uniquePrefix}_1080p.m3u8`),
-      '-map', '[v2_scaled]', '-map', '0:a',
-      '-c:v', 'libx264', '-c:a', 'aac',
+      '-map', '[v2_scaled]', ...audioMap,
+      '-c:v', 'libx264', ...audioBitrates.slice(1, 2),
       '-map_metadata', '-1', // Remove all metadata (including rotation) from output
-      '-crf', '22', '-preset', 'veryfast', '-threads', String(threads), '-b:a', '128k', '-tune', 'fastdecode',
+      '-crf', '22', '-preset', 'veryfast', '-threads', String(threads), '-tune', 'fastdecode',
       '-f', 'hls', '-hls_time', '6', '-hls_list_size', '0',
       '-hls_segment_filename', path.join(outputDir, `${uniquePrefix}_720p_%03d.ts`),
       path.join(outputDir, `${uniquePrefix}_720p.m3u8`),
-      '-map', '[v3_scaled]', '-map', '0:a',
-      '-c:v', 'libx264', '-c:a', 'aac',
+      '-map', '[v3_scaled]', ...audioMap,
+      '-c:v', 'libx264', ...audioBitrates.slice(2, 3),
       '-map_metadata', '-1', // Remove all metadata (including rotation) from output
-      '-crf', '24', '-preset', 'veryfast', '-threads', String(threads), '-b:a', '96k', '-tune', 'fastdecode',
+      '-crf', '24', '-preset', 'veryfast', '-threads', String(threads), '-tune', 'fastdecode',
       '-f', 'hls', '-hls_time', '6', '-hls_list_size', '0',
       '-hls_segment_filename', path.join(outputDir, `${uniquePrefix}_480p_%03d.ts`),
       path.join(outputDir, `${uniquePrefix}_480p.m3u8`),
-      '-map', '[v4_scaled]', '-map', '0:a',
-      '-c:v', 'libx264', '-c:a', 'aac',
+      '-map', '[v4_scaled]', ...audioMap,
+      '-c:v', 'libx264', ...audioBitrates.slice(3, 4),
       '-map_metadata', '-1', // Remove all metadata (including rotation) from output
-      '-crf', '26', '-preset', 'veryfast', '-threads', String(threads), '-b:a', '64k', '-tune', 'fastdecode',
+      '-crf', '26', '-preset', 'veryfast', '-threads', String(threads), '-tune', 'fastdecode',
       '-f', 'hls', '-hls_time', '6', '-hls_list_size', '0',
       '-hls_segment_filename', path.join(outputDir, `${uniquePrefix}_360p_%03d.ts`),
       path.join(outputDir, `${uniquePrefix}_360p.m3u8`)
