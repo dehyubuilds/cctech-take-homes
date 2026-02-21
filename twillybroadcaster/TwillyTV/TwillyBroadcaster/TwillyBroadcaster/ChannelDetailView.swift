@@ -2789,8 +2789,8 @@ struct ChannelDetailView: View {
                         }
                         
                         if !serverUsernames.isEmpty {
-                            // Server has data - merge with cache to preserve private usernames that might not be in server response
-                            // CRITICAL: Merge server data with cached data (like merge path) to preserve private entries
+                            // Server has data - merge with cache to preserve optimistic updates (ONLY public usernames)
+                            // CRITICAL: NEVER preserve private entries in the public added users list
                             let cached = loadAddedUsernamesFromUserDefaults()
                             var mergedUsernames: [AddedUsername] = []
                             
@@ -2821,22 +2821,35 @@ struct ChannelDetailView: View {
                                 }
                             }
                             
-                            // Then, add cached usernames that aren't in server (preserve private entries that server might not return)
+                            // Then, add cached usernames that aren't in server (ONLY public usernames - never private)
                             for cachedUsername in cached {
                                 let cachedVisibility = cachedUsername.streamerVisibility?.lowercased() ?? "public"
-                                let entryKey = "\(cachedUsername.streamerUsername.lowercased()):\(cachedVisibility)"
+                                
+                                // CRITICAL: Filter out private usernames and usernames with locks - NEVER add them to public list
+                                if cachedVisibility == "private" || cachedUsername.streamerUsername.contains("🔒") {
+                                    print("🚫 [DEBUG] Filtering out private username from cache merge: '\(cachedUsername.streamerUsername)' (visibility: \(cachedVisibility))")
+                                    continue
+                                }
+                                
+                                // CRITICAL: Filter out user's own username - users should never see themselves
+                                let cachedUsernameLower = cachedUsername.streamerUsername.lowercased()
+                                if let currentUsername = authService.username?.lowercased(), cachedUsernameLower == currentUsername {
+                                    print("🚫 [DEBUG] Filtering out user's own username '\(cachedUsername.streamerUsername)' from cache merge")
+                                    continue
+                                }
+                                
+                                let entryKey = "\(cachedUsernameLower):\(cachedVisibility)"
                                 let isInServer = serverUsernames.contains(where: {
-                                    $0.streamerUsername.lowercased() == cachedUsername.streamerUsername.lowercased() &&
+                                    $0.streamerUsername.lowercased() == cachedUsernameLower &&
                                     ($0.streamerVisibility?.lowercased() ?? "public") == cachedVisibility
                                 })
                                 // Check removal by username:visibility (and legacy format for backward compatibility)
-                                let cachedUsernameLower = cachedUsername.streamerUsername.lowercased()
                                 let cachedRemovedKey = "\(cachedUsernameLower):\(cachedVisibility)"
                                 let isRemoved = removedUsernames.contains(cachedRemovedKey) || removedUsernames.contains(cachedUsernameLower)
                                 
-                                if !seenEntries.contains(entryKey) && !isRemoved {
-                                    // CRITICAL: Do NOT preserve private usernames - only show public usernames in added users list
-                                    // Private usernames should be managed separately in the private viewers section
+                                if !seenEntries.contains(entryKey) && !isRemoved && !isInServer {
+                                    // CRITICAL: Only preserve public usernames that aren't in server (optimistic updates)
+                                    // Private usernames should NEVER be in the public added users list
                                     if cachedVisibility == "private" || cachedUsername.streamerUsername.contains("🔒") {
                                         print("   🚫 Skipping private username from cache: \(cachedUsername.streamerUsername) (visibility: \(cachedVisibility))")
                                         continue
@@ -2851,7 +2864,7 @@ struct ChannelDetailView: View {
                             
                             addedUsernames = mergedUsernames
                             let originalCount = allServerUsernames.count
-                            print("✅ [ChannelDetailView] Loaded \(addedUsernames.count) added usernames from server + cache (initial load, filtered from \(originalCount), preserved \(mergedUsernames.count - serverUsernames.count) private from cache)")
+                            print("✅ [ChannelDetailView] Loaded \(addedUsernames.count) added usernames from server + cache (initial load, filtered from \(originalCount) server entries, preserved \(mergedUsernames.count - serverUsernames.count) public optimistic updates from cache)")
                         } else {
                             // Server returned empty - preserve cache if it exists (might contain optimistic updates)
                             // Only clear cache if we don't have any cached data
