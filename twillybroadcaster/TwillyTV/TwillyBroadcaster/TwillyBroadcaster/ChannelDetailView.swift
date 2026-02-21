@@ -1635,8 +1635,8 @@ struct ChannelDetailView: View {
         let addedVisibility: String? // Track visibility for added entries (public/private)
     }
     
-    // Get all usernames (both added and requested) for dropdown display
-    // CRITICAL: Only show public usernames (no private, no locks)
+    // Get all usernames for dropdown display
+    // CRITICAL: ONLY show public added usernames - NO follow requests, NO private usernames
     private func getAllUsernamesForDropdown() -> [UsernameDropdownItem] {
         var usernameMap: [String: UsernameDropdownItem] = [:]
         
@@ -1677,87 +1677,9 @@ struct ChannelDetailView: View {
             )
         }
         
-        // Add or update with requested usernames (filter out empty usernames)
-        for sentRequest in sentFollowRequests {
-            let cleanUsername = sentRequest.requestedUsername.trimmingCharacters(in: .whitespaces)
-            // Skip empty usernames
-            guard !cleanUsername.isEmpty else {
-                print("⚠️ [ChannelDetailView] Skipping empty username in sentFollowRequests")
-                continue
-            }
-            
-            let usernameLower = cleanUsername.lowercased()
-            
-            // CRITICAL: Filter out user's own username - users should never see themselves in the added users list
-            if let currentUsername = authService.username?.lowercased(), usernameLower == currentUsername {
-                print("🚫 [ChannelDetailView] Filtering out user's own username '\(cleanUsername)' from sentFollowRequests dropdown")
-                continue
-            }
-            
-            let status = sentRequest.status.lowercased()
-            
-            // Only include pending, active, or accepted requests
-            if status == "pending" || status == "active" || status == "accepted" {
-                // Check if there's an existing entry for this username (could be public or private)
-                // Private requests should be associated with private added entries
-                // We'll check for both public and private entries
-                let publicKey = "\(usernameLower):public"
-                let privateKey = "\(usernameLower):private"
-                
-                // Prefer private entry if it exists (since this is a private request)
-                if let existing = usernameMap[privateKey] {
-                    // Update private entry to include requested state
-                    usernameMap[privateKey] = UsernameDropdownItem(
-                        id: existing.id,
-                        username: existing.username,
-                        email: existing.email ?? sentRequest.requestedUserEmail,
-                        isAdded: existing.isAdded,
-                        isRequested: true,
-                        addedVisibility: existing.addedVisibility
-                    )
-                } else if let existing = usernameMap[publicKey] {
-                    // Update public entry to include requested state (less common, but possible)
-                    usernameMap[publicKey] = UsernameDropdownItem(
-                        id: existing.id,
-                        username: existing.username,
-                        email: existing.email ?? sentRequest.requestedUserEmail,
-                        isAdded: existing.isAdded,
-                        isRequested: true,
-                        addedVisibility: existing.addedVisibility
-                    )
-                } else {
-                    // New entry for requested only (no added entry exists)
-                    // CRITICAL: Only add to public dropdown if this is NOT a private account
-                    // Check if the requested username is a private account by checking search results
-                    // If it's a private account, don't add it to the public dropdown
-                    let isPrivateAccount = usernameSearchResults.contains(where: { 
-                        $0.username.lowercased() == usernameLower && ($0.isPrivate == true || $0.username.contains("🔒"))
-                    })
-                    
-                    // Also check if it's in addedPrivateUsernames (definitely private)
-                    let isInPrivateList = addedPrivateUsernames.contains(where: {
-                        $0.streamerUsername.lowercased() == usernameLower && 
-                        ($0.streamerVisibility?.lowercased() ?? "public") == "private"
-                    })
-                    
-                    // CRITICAL: Don't add private follow requests to the public dropdown
-                    if isPrivateAccount || isInPrivateList {
-                        print("🚫 [ChannelDetailView] Filtering out private follow request '\(cleanUsername)' from public dropdown")
-                        continue
-                    }
-                    
-                    // Use username as key (no visibility suffix for requested-only entries)
-                    usernameMap[usernameLower] = UsernameDropdownItem(
-                        id: "requested-\(usernameLower)",
-                        username: cleanUsername,
-                        email: sentRequest.requestedUserEmail,
-                        isAdded: false,
-                        isRequested: true,
-                        addedVisibility: nil
-                    )
-                }
-            }
-        }
+        // CRITICAL: DO NOT include sentFollowRequests in the public dropdown
+        // Follow requests are for private accounts and should NOT appear in the public added usernames list
+        // The public dropdown should ONLY show public added usernames
         
         // Filter out any items with empty usernames (safety check)
         let validItems = Array(usernameMap.values).filter { !$0.username.trimmingCharacters(in: .whitespaces).isEmpty }
