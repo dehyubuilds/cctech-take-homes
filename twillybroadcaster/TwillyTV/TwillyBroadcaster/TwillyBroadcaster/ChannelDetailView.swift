@@ -1727,6 +1727,25 @@ struct ChannelDetailView: View {
                     )
                 } else {
                     // New entry for requested only (no added entry exists)
+                    // CRITICAL: Only add to public dropdown if this is NOT a private account
+                    // Check if the requested username is a private account by checking search results
+                    // If it's a private account, don't add it to the public dropdown
+                    let isPrivateAccount = usernameSearchResults.contains(where: { 
+                        $0.username.lowercased() == usernameLower && ($0.isPrivate == true || $0.username.contains("🔒"))
+                    })
+                    
+                    // Also check if it's in addedPrivateUsernames (definitely private)
+                    let isInPrivateList = addedPrivateUsernames.contains(where: {
+                        $0.streamerUsername.lowercased() == usernameLower && 
+                        ($0.streamerVisibility?.lowercased() ?? "public") == "private"
+                    })
+                    
+                    // CRITICAL: Don't add private follow requests to the public dropdown
+                    if isPrivateAccount || isInPrivateList {
+                        print("🚫 [ChannelDetailView] Filtering out private follow request '\(cleanUsername)' from public dropdown")
+                        continue
+                    }
+                    
                     // Use username as key (no visibility suffix for requested-only entries)
                     usernameMap[usernameLower] = UsernameDropdownItem(
                         id: "requested-\(usernameLower)",
