@@ -2377,16 +2377,40 @@ struct ChannelDetailView: View {
             return
         }
         
+        // CRITICAL: Filter out private usernames BEFORE saving to cache
+        // This ensures the cache NEVER contains private entries
+        let cleanedForCache = addedUsernames.filter { username in
+            let visibility = username.streamerVisibility?.lowercased() ?? "public"
+            if visibility == "private" || username.streamerUsername.contains("🔒") {
+                print("🚫 [ChannelDetailView] Preventing private username from being saved to cache: '\(username.streamerUsername)' (visibility: \(visibility))")
+                return false
+            }
+            
+            // Also filter out user's own username
+            let lowercased = username.streamerUsername.lowercased()
+            if let currentUsername = authService.username?.lowercased(), lowercased == currentUsername {
+                print("🚫 [ChannelDetailView] Preventing user's own username from being saved to cache: '\(username.streamerUsername)'")
+                return false
+            }
+            
+            return true
+        }
+        
         let key = addedUsernamesKey(for: userEmail)
         print("🔑 [ChannelDetailView] Saving to UserDefaults with key: \(key)")
         
+        // If we filtered out any usernames, log it
+        if cleanedForCache.count != addedUsernames.count {
+            print("🧹 [ChannelDetailView] Filtered out \(addedUsernames.count - cleanedForCache.count) private/invalid usernames before saving to cache")
+        }
+        
         do {
             let encoder = JSONEncoder()
-            let encoded = try encoder.encode(addedUsernames)
+            let encoded = try encoder.encode(cleanedForCache)
             UserDefaults.standard.set(encoded, forKey: key)
             UserDefaults.standard.synchronize() // Force immediate write
-            print("💾 [ChannelDetailView] Saved \(addedUsernames.count) added usernames to UserDefaults (key: \(key))")
-            print("   📋 Usernames: \(addedUsernames.map { "\($0.streamerUsername) (visibility: \($0.streamerVisibility ?? "public"))" }.joined(separator: ", "))")
+            print("💾 [ChannelDetailView] Saved \(cleanedForCache.count) added usernames to UserDefaults (key: \(key))")
+            print("   📋 Usernames: \(cleanedForCache.map { "\($0.streamerUsername) (visibility: \($0.streamerVisibility ?? "public"))" }.joined(separator: ", "))")
         } catch {
             print("❌ [ChannelDetailView] Error saving added usernames to UserDefaults: \(error)")
             print("   Key used: \(key)")
