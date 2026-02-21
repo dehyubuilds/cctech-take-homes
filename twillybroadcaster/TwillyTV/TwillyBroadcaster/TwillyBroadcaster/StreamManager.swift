@@ -60,6 +60,9 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
     @Published var currentCameraPosition: AVCaptureDevice.Position = .back
     private var currentCamera: AVCaptureDevice?
     private var isAttachingCamera = false // Prevent multiple simultaneous attachments
+    private let cameraQueue = DispatchQueue(label: "com.twilly.camera", qos: .userInitiated) // Serial queue for camera operations
+    private var cameraSetupAttempts = 0
+    private let maxCameraSetupAttempts = 3
     
     // Zoom support
     @Published var currentZoomFactor: CGFloat = 1.0
@@ -285,33 +288,55 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
     // MARK: - Camera Setup
     
     func setupCameraPreview() {
-        // Don't set up if already attaching or recording
-        guard !isAttachingCamera, !isRecording else {
-            print("⚠️ Skipping setupCameraPreview - attachment in progress or recording")
-            return
-        }
-        
-        // Enable orientation notifications
-        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
-        
-        // Check if we already have permissions - if so, attach immediately
-        let authStatus = AVCaptureDevice.authorizationStatus(for: .video)
-        if authStatus == .authorized {
-            // Permissions already granted - attach camera immediately
-            print("📷 Camera permissions already granted - attaching immediately")
-            attachCamera()
-        } else {
-            // Request permissions (non-blocking)
-            requestPermissions { [weak self] granted in
-                guard let self = self else { return }
-                
-                if granted {
-                    // Attach camera immediately on main thread
-                    DispatchQueue.main.async {
-                        self.attachCamera()
+        // Serialize camera setup operations to prevent race conditions
+        cameraQueue.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Don't set up if already attaching or recording
+            guard !self.isAttachingCamera, !self.isRecording else {
+                print("⚠️ Skipping setupCameraPreview - attachment in progress or recording")
+                return
+            }
+            
+            // Reset attempts if we've exceeded max (allows retry after delay)
+            if self.cameraSetupAttempts >= self.maxCameraSetupAttempts {
+                // Reset after a delay to allow retry
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    self.cameraSetupAttempts = 0
+                }
+                print("⚠️ Max camera setup attempts reached, will retry after delay")
+                return
+            }
+            
+            self.cameraSetupAttempts += 1
+            
+            // Enable orientation notifications on main thread
+            DispatchQueue.main.async {
+                UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+            }
+            
+            // Check if we already have permissions - if so, attach immediately
+            let authStatus = AVCaptureDevice.authorizationStatus(for: .video)
+            if authStatus == .authorized {
+                // Permissions already granted - attach camera immediately on main thread
+                print("📷 Camera permissions already granted - attaching immediately (attempt \(self.cameraSetupAttempts))")
+                DispatchQueue.main.async {
+                    self.attachCamera()
+                }
+            } else {
+                // Request permissions (non-blocking)
+                self.requestPermissions { [weak self] granted in
+                    guard let self = self else { return }
+                    
+                    if granted {
+                        // Attach camera immediately on main thread
+                        DispatchQueue.main.async {
+                            self.attachCamera()
+                        }
+                    } else {
+                        print("⚠️ Camera permissions not granted")
+                        self.cameraSetupAttempts = 0 // Reset on permission denial
                     }
-                } else {
-                    print("⚠️ Camera permissions not granted")
                 }
             }
         }
@@ -1056,6 +1081,14 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
     }
     
     private func attachCamera(_ device: AVCaptureDevice? = nil) {
+        // Ensure we're on the main thread for UI-related operations
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.attachCamera(device)
+            }
+            return
+        }
+        
         // Prevent multiple simultaneous attachments
         guard !isAttachingCamera else {
             print("⚠️ Camera attachment already in progress, skipping duplicate request")
@@ -1067,10 +1100,51 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
         if let device = device {
             cameraDevice = device
         } else {
-            cameraDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: currentCameraPosition) ?? AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)!
+            guard let defaultCamera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: currentCameraPosition) ?? AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+                print("❌ Camera device not available, retrying setup...")
+                // Retry camera setup after a delay
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.cameraSetupAttempts = 0 // Reset attempts for retry
+                    self?.setupCameraPreview()
+                }
+                return
+            }
+            cameraDevice = defaultCamera
         }
         
         currentCamera = cameraDevice
+        
+        // SNAPCHAT-STYLE: For front camera, use wider field of view (less zoom)
+        // Try to use the widest available format for more natural selfie view
+        if cameraDevice.position == .front {
+            do {
+                try cameraDevice.lockForConfiguration()
+                
+                // Find the widest available format (largest field of view)
+                var widestFormat: AVCaptureDevice.Format?
+                var maxFieldOfView: Float = 0
+                
+                for format in cameraDevice.formats {
+                    let videoDimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                    // Calculate field of view (approximate - wider = larger diagonal)
+                    let diagonal = sqrt(Float(videoDimensions.width * videoDimensions.width + videoDimensions.height * videoDimensions.height))
+                    if diagonal > maxFieldOfView {
+                        maxFieldOfView = diagonal
+                        widestFormat = format
+                    }
+                }
+                
+                // Use widest format if available (gives wider field of view, less zoom)
+                if let widestFormat = widestFormat, cameraDevice.activeFormat != widestFormat {
+                    cameraDevice.activeFormat = widestFormat
+                    print("📷 [Snapchat-style] Set front camera to widest format for natural selfie view")
+                }
+                
+                cameraDevice.unlockForConfiguration()
+            } catch {
+                print("⚠️ Could not configure front camera for Snapchat-style: \(error)")
+            }
+        }
         
         // Reset zoom when camera changes
         currentZoomFactor = 1.0
@@ -1078,6 +1152,9 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
         
         print("📷 Attaching camera: \(cameraDevice.position == .back ? "Back" : "Front")")
         isAttachingCamera = true
+        
+        // Reset attempts on successful start
+        cameraSetupAttempts = 0
         
         // Attach camera to stream (for preview and streaming)
         rtmpStream.attachCamera(cameraDevice) { [weak self] captureUnit, error in
@@ -1088,6 +1165,15 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
             if let error = error {
                 DispatchQueue.main.async {
                     print("❌ Camera attachment error: \(error)")
+                    // Retry camera setup after a delay if we haven't exceeded max attempts
+                    if self.cameraSetupAttempts < self.maxCameraSetupAttempts {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            self.setupCameraPreview()
+                        }
+                    } else {
+                        print("❌ Max camera setup attempts reached, giving up")
+                        self.cameraSetupAttempts = 0 // Reset for next manual attempt
+                    }
                 }
             } else {
                 DispatchQueue.main.async {
@@ -1685,6 +1771,11 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
     // Get preview layer for recording session (to keep preview live during recording)
     func getRecordingPreviewLayer() -> AVCaptureVideoPreviewLayer? {
         return recordingPreviewLayer
+    }
+    
+    // Get current camera device (for checking if camera is ready)
+    func getCurrentCamera() -> AVCaptureDevice? {
+        return currentCamera
     }
     
     private func startRecordingTimer() {

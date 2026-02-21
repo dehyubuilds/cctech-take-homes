@@ -348,67 +348,21 @@
         private var topControls: some View {
             VStack {
                 HStack {
-                    // Twilly Streamer logo at top left - Production-ready design
-                    HStack(spacing: 8) {
-                        // Animated gradient orb
-                        Circle()
-                            .fill(
-                                LinearGradient(
-                                    gradient: Gradient(colors: [
-                                        Color.twillyTeal,
-                                        Color.twillyCyan,
-                                        Color.twillyTeal
-                                    ]),
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
+                    // Twilly Streamer text - Clean, solid color design
+                    Text("Twilly Streamer")
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                        .foregroundStyle(
+                            LinearGradient(
+                                gradient: Gradient(colors: [
+                                    Color.twillyTeal,
+                                    Color.twillyCyan
+                                ]),
+                                startPoint: .leading,
+                                endPoint: .trailing
                             )
-                            .frame(width: 8, height: 8)
-                            .shadow(color: Color.twillyCyan.opacity(0.8), radius: 4)
-                            .overlay(
-                                Circle()
-                                    .stroke(Color.white.opacity(0.3), lineWidth: 1)
-                            )
-                        
-                        Text("Twilly Streamer")
-                            .font(.system(size: 24, weight: .heavy, design: .rounded))
-                            .foregroundStyle(
-                                LinearGradient(
-                                    gradient: Gradient(colors: [
-                                        Color.white,
-                                        Color.twillyTeal,
-                                        Color.twillyCyan,
-                                        Color.white
-                                    ]),
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .shadow(color: Color.twillyCyan.opacity(0.9), radius: 8, x: 0, y: 2)
-                            .shadow(color: Color.black.opacity(0.3), radius: 4, x: 0, y: 1)
-                    }
+                        )
+                        .shadow(color: Color.twillyCyan.opacity(0.5), radius: 6, x: 0, y: 2)
                     .padding(.leading, 16)
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color.black.opacity(0.4))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(
-                                        LinearGradient(
-                                            gradient: Gradient(colors: [
-                                                Color.twillyTeal.opacity(0.6),
-                                                Color.twillyCyan.opacity(0.4)
-                                            ]),
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        ),
-                                        lineWidth: 1
-                                    )
-                            )
-                            .blur(radius: 0.5)
-                    )
                     
                     Spacer()
                     
@@ -1187,7 +1141,10 @@
                         endPoint: .trailing
                     )
                 )
-                .shadow(color: shadowColor.opacity(0.6), radius: 4, x: 0, y: 2)
+                .shadow(color: shadowColor.opacity(0.9), radius: 10, x: 0, y: 2)
+                .shadow(color: shadowColor.opacity(0.8), radius: 20, x: 0, y: 0)
+                .shadow(color: shadowColor.opacity(0.6), radius: 30, x: 0, y: 0)
+                .shadow(color: shadowColor.opacity(0.4), radius: 40, x: 0, y: 0)
                 .onAppear {
                     // Check if time has expired
                     if timeRemaining <= 0 {

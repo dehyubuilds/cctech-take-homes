@@ -2,8 +2,10 @@ import SwiftUI
 
 struct PrivateAccessInboxView: View {
     @Environment(\.dismiss) var dismiss
+    @StateObject private var authService = AuthService.shared
     @State private var notifications: [PrivateAccessNotification] = []
     @State private var isLoading = false
+    var onDismiss: (() -> Void)? = nil
     
     var body: some View {
         NavigationView {
@@ -48,11 +50,12 @@ struct PrivateAccessInboxView: View {
                     }
                 }
             }
-            .navigationTitle("Private Access")
+            .navigationTitle("Access Inbox")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") {
+                        onDismiss?()
                         dismiss()
                     }
                     .foregroundColor(.twillyTeal)
@@ -65,14 +68,44 @@ struct PrivateAccessInboxView: View {
     }
     
     private func loadNotifications() {
+        guard let userEmail = authService.userEmail else {
+            print("⚠️ [PrivateAccessInboxView] Cannot load notifications - userEmail is nil")
+            return
+        }
+        
         isLoading = true
-        // TODO: Load private access notifications from backend
-        // This should fetch notifications where type is "private_access_granted"
         Task {
-            // Placeholder - implement actual API call
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            await MainActor.run {
-                isLoading = false
+            do {
+                let response = try await ChannelService.shared.getNotifications(userEmail: userEmail, limit: 100, unreadOnly: false)
+                await MainActor.run {
+                    // Filter to only show private_access_granted notifications
+                    let privateAccessNotifications = (response.notifications ?? []).filter { notification in
+                        notification.type == "private_access_granted"
+                    }
+                    
+                    // Convert AppNotification to PrivateAccessNotification
+                    notifications = privateAccessNotifications.map { notification in
+                        let ownerUsername = notification.metadata?["ownerUsername"] ?? "Unknown"
+                        let dateFormatter = ISO8601DateFormatter()
+                        let date = dateFormatter.date(from: notification.createdAt) ?? Date()
+                        
+                        return PrivateAccessNotification(
+                            id: notification.id,
+                            message: notification.message,
+                            timestamp: date,
+                            ownerUsername: ownerUsername
+                        )
+                    }
+                    .sorted { $0.timestamp > $1.timestamp } // Most recent first
+                    
+                    isLoading = false
+                    print("✅ [PrivateAccessInboxView] Loaded \(notifications.count) private access notifications")
+                }
+            } catch {
+                print("❌ [PrivateAccessInboxView] Error loading notifications: \(error)")
+                await MainActor.run {
+                    isLoading = false
+                }
             }
         }
     }

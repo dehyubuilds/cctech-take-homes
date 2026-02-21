@@ -1577,7 +1577,8 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         creatorEmail: String,
         viewerEmail: String? = nil,
         limit: Int = 20,
-        forceRefresh: Bool = false
+        forceRefresh: Bool = false,
+        clientAddedUsernames: [String]? = nil
     ) async throws -> BothViewsContent {
         // FAST PATH: Check cache first
         if !forceRefresh {
@@ -1661,6 +1662,12 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         
         if let viewerEmail = viewerEmail {
             body["viewerEmail"] = viewerEmail
+        }
+        
+        // Send client-added usernames as fallback if server doesn't have them (e.g., auth error prevented add)
+        if let clientAddedUsernames = clientAddedUsernames, !clientAddedUsernames.isEmpty {
+            body["clientAddedUsernames"] = clientAddedUsernames
+            print("📤 [ChannelService] Sending \(clientAddedUsernames.count) client-added usernames to backend: \(clientAddedUsernames.joined(separator: ", "))")
         }
         
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -3767,6 +3774,122 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         return followResponse
     }
     
+    // MARK: - Private Viewer Management
+    
+    func addPrivateViewer(ownerUsername: String, viewerUsername: String, viewerEmail: String? = nil) async throws -> [String: Any] {
+        guard let url = URL(string: "\(baseURL)/users/add-private-viewer") else {
+            throw ChannelServiceError.invalidURL
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        // Include ownerEmail if available (optimization - bypasses username lookup)
+        var body: [String: Any] = [
+            "ownerUsername": ownerUsername,
+            "viewerUsername": viewerUsername
+        ]
+        
+        // Add ownerEmail if we have it from auth (fastest path)
+        if let ownerEmail = AuthService.shared.userEmail {
+            body["ownerEmail"] = ownerEmail
+            print("   📧 Including ownerEmail in request: \(ownerEmail)")
+        }
+        
+        // Do NOT include viewerEmail - backend will do GSI lookup by username
+        // The search already validated the username exists, so backend can find it
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await urlSession.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ChannelServiceError.invalidResponse
+        }
+        
+        guard httpResponse.statusCode == 200 else {
+            let responseBody = String(data: data, encoding: .utf8) ?? "Unable to decode response"
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let message = json["message"] as? String {
+                throw ChannelServiceError.serverError(message)
+            }
+            throw ChannelServiceError.serverError("Server error: HTTP \(httpResponse.statusCode)")
+        }
+        
+        return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+    }
+    
+    func removePrivateViewer(ownerEmail: String, viewerEmail: String?, ownerUsername: String? = nil, viewerUsername: String? = nil) async throws -> [String: Any] {
+        guard let url = URL(string: "\(baseURL)/users/remove-private-viewer") else {
+            throw ChannelServiceError.invalidURL
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        var body: [String: Any] = [
+            "ownerEmail": ownerEmail
+        ]
+        
+        // Prefer email if available, otherwise use username
+        if let viewerEmail = viewerEmail, !viewerEmail.isEmpty {
+            body["viewerEmail"] = viewerEmail
+        } else if let viewerUsername = viewerUsername {
+            body["viewerUsername"] = viewerUsername
+        }
+        
+        // Include ownerUsername if provided (for backend lookup optimization)
+        if let ownerUsername = ownerUsername {
+            body["ownerUsername"] = ownerUsername
+        }
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await urlSession.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ChannelServiceError.invalidResponse
+        }
+        
+        guard httpResponse.statusCode == 200 else {
+            let responseBody = String(data: data, encoding: .utf8) ?? "Unable to decode response"
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let message = json["message"] as? String {
+                throw ChannelServiceError.serverError(message)
+            }
+            throw ChannelServiceError.serverError("Server error: HTTP \(httpResponse.statusCode)")
+        }
+        
+        return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+    }
+    
+    func getPrivateViewers(ownerEmail: String) async throws -> [String: Any] {
+        guard let url = URL(string: "\(baseURL)/users/get-private-viewers") else {
+            throw ChannelServiceError.invalidURL
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body: [String: Any] = [
+            "ownerEmail": ownerEmail
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await urlSession.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw ChannelServiceError.invalidResponse
+        }
+        
+        return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+    }
+    
     func acceptFollowRequest(userEmail: String, requesterEmail: String) async throws -> FollowRequestResponse {
         guard let url = URL(string: "\(baseURL)/users/accept-follow") else {
             throw ChannelServiceError.invalidURL
@@ -4352,7 +4475,7 @@ struct NotificationsResponse: Codable {
 struct AppNotification: Codable, Identifiable {
     let id: String // SK without NOTIFICATION# prefix
     let type: String // 'follow_request', 'follow_accepted', 'follow_declined', 'video_ready', etc.
-    let title: String
+    let title: String? // Optional to handle old notifications without title
     let message: String
     let metadata: [String: String]?
     let isRead: Bool
@@ -4366,6 +4489,7 @@ struct AppNotification: Codable, Identifiable {
         case message
         case metadata
         case isRead
+        case read // Handle old format
         case createdAt
     }
     
@@ -4380,11 +4504,29 @@ struct AppNotification: Codable, Identifiable {
             self.id = UUID().uuidString
         }
         self.type = try container.decode(String.self, forKey: .type)
-        self.title = try container.decode(String.self, forKey: .title)
+        self.title = try? container.decode(String.self, forKey: .title) // Optional - handle missing title
         self.message = try container.decode(String.self, forKey: .message)
         self.metadata = try? container.decode([String: String].self, forKey: .metadata)
-        self.isRead = try container.decode(Bool.self, forKey: .isRead)
+        // Handle both isRead and read fields (for backward compatibility)
+        if let isRead = try? container.decode(Bool.self, forKey: .isRead) {
+            self.isRead = isRead
+        } else if let read = try? container.decode(Bool.self, forKey: .read) {
+            self.isRead = read
+        } else {
+            self.isRead = false // Default to unread if neither field exists
+        }
         self.createdAt = try container.decode(String.self, forKey: .createdAt)
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(SK, forKey: .SK)
+        try container.encode(type, forKey: .type)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encode(message, forKey: .message)
+        try container.encodeIfPresent(metadata, forKey: .metadata)
+        try container.encode(isRead, forKey: .isRead)
+        try container.encode(createdAt, forKey: .createdAt)
     }
 }
 

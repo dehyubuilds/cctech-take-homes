@@ -1,24 +1,22 @@
 //
-//  SignUpView.swift
+//  SignInView.swift
 //  TwillyBroadcaster
 //
-//  Sign up screen - Instagram/Snapchat style
+//  Sign in screen - Instagram/Snapchat style
 //
 
 import SwiftUI
 
-struct SignUpView: View {
+struct SignInView: View {
     @ObservedObject var authService = AuthService.shared
     @Environment(\.dismiss) var dismiss
     
     @State private var email = ""
     @State private var password = ""
-    @State private var confirmPassword = ""
-    @State private var showingConfirmSignUp = false
     @State private var errorMessage: String?
-    @State private var isSigningUp = false
+    @State private var isSigningIn = false
     @State private var showPassword = false
-    @State private var showConfirmPassword = false
+    @State private var showingForgotPassword = false
     
     var body: some View {
         ZStack {
@@ -44,13 +42,12 @@ struct SignUpView: View {
                     
                     Spacer()
                     
-                    Text("Sign Up")
+                    Text("Sign In")
                         .font(.system(size: 20, weight: .bold))
                         .foregroundColor(.white)
                     
                     Spacer()
                     
-                    // Balance the back button
                     Color.clear
                         .frame(width: 44, height: 44)
                 }
@@ -61,11 +58,11 @@ struct SignUpView: View {
                     VStack(spacing: 32) {
                         // Title
                         VStack(spacing: 8) {
-                            Text("Create Account")
+                            Text("Welcome Back")
                                 .font(.system(size: 32, weight: .bold))
                                 .foregroundColor(.white)
                             
-                            Text("Sign up to start streaming")
+                            Text("Sign in to continue")
                                 .font(.system(size: 16))
                                 .foregroundColor(.gray)
                         }
@@ -103,11 +100,11 @@ struct SignUpView: View {
                                 HStack {
                                     if showPassword {
                                         TextField("", text: $password)
-                                            .textContentType(.newPassword)
+                                            .textContentType(.password)
                                             .foregroundColor(.white)
                                     } else {
                                         SecureField("", text: $password)
-                                            .textContentType(.newPassword)
+                                            .textContentType(.password)
                                             .foregroundColor(.white)
                                     }
                                     
@@ -127,62 +124,38 @@ struct SignUpView: View {
                                         .stroke(Color.white.opacity(0.2), lineWidth: 1)
                                 )
                             }
-                            
-                            // Confirm Password Field
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Confirm Password")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundColor(.gray)
-                                
-                                HStack {
-                                    if showConfirmPassword {
-                                        TextField("", text: $confirmPassword)
-                                            .textContentType(.newPassword)
-                                            .foregroundColor(.white)
-                                    } else {
-                                        SecureField("", text: $confirmPassword)
-                                            .textContentType(.newPassword)
-                                            .foregroundColor(.white)
-                                    }
-                                    
-                                    Button(action: {
-                                        showConfirmPassword.toggle()
-                                    }) {
-                                        Image(systemName: showConfirmPassword ? "eye.slash.fill" : "eye.fill")
-                                            .foregroundColor(.gray)
-                                            .padding(.trailing, 4)
-                                    }
-                                }
-                                .padding(16)
-                                .background(Color.white.opacity(0.1))
-                                .cornerRadius(12)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                                )
-                            }
                         }
                         .padding(.horizontal, 32)
                         
+                        // Forgot Password Link
+                        Button(action: {
+                            showingForgotPassword = true
+                        }) {
+                            Text("Forgot Password?")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.twillyTeal)
+                        }
+                        .padding(.horizontal, 32)
+                        .padding(.top, 8)
+                        
                         // Error Message
-                        if let error = errorMessage ?? authService.errorMessage {
+                        if let error = errorMessage {
                             Text(error)
                                 .font(.system(size: 14))
                                 .foregroundColor(.red)
                                 .padding(.horizontal, 32)
-                                .multilineTextAlignment(.center)
                         }
                         
-                        // Sign Up Button
+                        // Sign In Button
                         Button(action: {
-                            handleSignUp()
+                            handleSignIn()
                         }) {
                             HStack {
-                                if isSigningUp {
+                                if isSigningIn {
                                     ProgressView()
                                         .progressViewStyle(CircularProgressViewStyle(tint: .black))
                                 } else {
-                                    Text("Sign Up")
+                                    Text("Sign In")
                                         .font(.system(size: 18, weight: .semibold))
                                 }
                             }
@@ -199,7 +172,7 @@ struct SignUpView: View {
                             .cornerRadius(16)
                             .shadow(color: .twillyCyan.opacity(0.3), radius: 10, x: 0, y: 5)
                         }
-                        .disabled(isSigningUp || !isFormValid)
+                        .disabled(isSigningIn || !isFormValid)
                         .opacity(isFormValid ? 1.0 : 0.6)
                         .padding(.horizontal, 32)
                         .padding(.top, 8)
@@ -214,92 +187,38 @@ struct SignUpView: View {
             errorMessage = nil
             authService.errorMessage = nil
         }
-        .fullScreenCover(isPresented: $showingConfirmSignUp) {
-            ConfirmSignUpView(email: email, password: password)
+        .fullScreenCover(isPresented: $showingForgotPassword) {
+            ForgotPasswordView()
         }
     }
     
     private var isFormValid: Bool {
         !email.isEmpty &&
         !password.isEmpty &&
-        !confirmPassword.isEmpty &&
-        password == confirmPassword &&
-        password.count >= 8 &&
         email.contains("@")
     }
     
-    private func handleSignUp() {
+    private func handleSignIn() {
         guard isFormValid else {
-            errorMessage = "Please fill in all fields correctly"
+            errorMessage = "Please fill in all fields"
             return
         }
         
-        guard password == confirmPassword else {
-            errorMessage = "Passwords do not match"
-            return
-        }
-        
-        guard password.count >= 8 else {
-            errorMessage = "Password must be at least 8 characters"
-            return
-        }
-        
-        isSigningUp = true
+        isSigningIn = true
         errorMessage = nil
         
         Task {
             do {
-                let result = try await authService.signUp(email: email, password: password)
+                try await authService.signIn(email: email, password: password)
                 await MainActor.run {
-                    isSigningUp = false
-                    if result.isSignupComplete {
-                        // User is already confirmed, proceed to username setup
-                        showingConfirmSignUp = false
-                    } else {
-                        // Need to confirm email
-                        showingConfirmSignUp = true
-                    }
+                    isSigningIn = false
+                    dismiss()
                 }
             } catch {
-                // Extract friendly error message directly from the thrown error
-                // This ensures we get the correct message even if there's a timing issue
-                let friendlyMessage = authService.getFriendlyErrorMessage(
-                    from: error,
-                    defaultMessage: "Sign up failed. Please try again."
-                )
-                
-                // Log detailed error information for debugging
-                print("❌ [SignUpView] Sign up error caught:")
-                print("   - Error: \(error)")
-                print("   - Error type: \(type(of: error))")
-                if let authError = error as? AuthError {
-                    print("   - AuthError errorDescription: \(authError.errorDescription ?? "nil")")
-                    print("   - AuthError recoverySuggestion: \(authError.recoverySuggestion ?? "nil")")
-                }
-                if let nsError = error as NSError? {
-                    print("   - NSError domain: \(nsError.domain), code: \(nsError.code)")
-                    print("   - NSError description: \(nsError.localizedDescription)")
-                    print("   - NSError userInfo: \(nsError.userInfo)")
-                    if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
-                        print("   - Underlying error: \(underlyingError.localizedDescription)")
-                        print("   - Underlying error domain: \(underlyingError.domain), code: \(underlyingError.code)")
-                    }
-                }
-                print("   - Extracted friendly message: \(friendlyMessage)")
-                
-                // Small delay to ensure UI has time to update before showing error
-                // This helps with any race conditions in SwiftUI updates
-                try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
-                
                 await MainActor.run {
-                    isSigningUp = false
-                    // Use the friendly error message extracted directly from the error
-                    errorMessage = friendlyMessage
-                    
-                    // Also set it in authService for consistency
-                    authService.errorMessage = friendlyMessage
-                    
-                    print("✅ [SignUpView] Error message set in UI: \(friendlyMessage)")
+                    isSigningIn = false
+                    // Use the friendly error message from AuthService (already set)
+                    errorMessage = authService.errorMessage ?? "Sign in failed. Please try again."
                 }
             }
         }
@@ -307,6 +226,5 @@ struct SignUpView: View {
 }
 
 #Preview {
-    SignUpView()
+    SignInView()
 }
-
