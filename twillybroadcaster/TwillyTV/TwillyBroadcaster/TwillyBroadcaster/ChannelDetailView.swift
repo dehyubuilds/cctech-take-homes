@@ -4406,12 +4406,10 @@ struct ChannelDetailView: View {
                             }
                         }
                         
-                        sentFollowRequests = finalRequests
-                        print("✅ [ChannelDetailView] Loaded \(sentFollowRequests.count) sent follow requests (\(pendingResult.requests?.count ?? 0) pending + \(activeRequests.count) active)")
-                        
                         // CRITICAL: If server returns empty and we have cached requests, check if they should be cleared
                         // This handles the case where the database is clean but cache has stale entries
-                        if finalRequests.isEmpty && !sentFollowRequests.isEmpty {
+                        let hadCachedRequests = !sentFollowRequests.isEmpty
+                        if finalRequests.isEmpty && hadCachedRequests {
                             let cachedCount = sentFollowRequests.count
                             print("⚠️ [ChannelDetailView] Server returned 0 follow requests but cache has \(cachedCount) entries")
                             print("   🧹 Clearing stale follow requests cache - database is clean")
@@ -4424,6 +4422,9 @@ struct ChannelDetailView: View {
                                 UserDefaults.standard.synchronize()
                                 print("   ✅ Cleared follow requests cache (key: \(key))")
                             }
+                        } else {
+                            sentFollowRequests = finalRequests
+                            print("✅ [ChannelDetailView] Loaded \(sentFollowRequests.count) sent follow requests (\(pendingResult.requests?.count ?? 0) pending + \(activeRequests.count) active)")
                         }
                     }
                     
