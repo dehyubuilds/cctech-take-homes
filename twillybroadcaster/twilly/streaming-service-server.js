@@ -283,6 +283,39 @@ app.post('/stream/stop', async (req, res) => {
   }
 });
 
+// Manual processing endpoint for orphaned stream files
+app.post('/stream/process-manual', async (req, res) => {
+  const { streamName, schedulerId, uploadId } = req.body;
+  
+  console.log(`🔧 Manual processing requested: streamName=${streamName}, schedulerId=${schedulerId || 'N/A'}, uploadId=${uploadId || 'AUTO'}`);
+  
+  if (!streamName) {
+    return res.status(400).json({ error: 'Missing required field: streamName' });
+  }
+  
+  try {
+    // Generate uploadId if not provided
+    const finalUploadId = uploadId || `rtmp-${Date.now()}-${process.hrtime.bigint()}-${Math.random().toString(36).substr(2, 9)}`;
+    const finalSchedulerId = schedulerId || `manual-${Date.now()}`;
+    
+    console.log(`📤 Processing with uploadId: ${finalUploadId}`);
+    
+    // Process the stream (this will find the most recent file matching the streamName)
+    await processStream(streamName, finalSchedulerId, finalUploadId);
+    
+    console.log(`✅ Manual processing completed for ${streamName}`);
+    res.json({ 
+      success: true, 
+      message: `Stream ${streamName} processing started`,
+      uploadId: finalUploadId
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error in manual processing for ${streamName}:`, error);
+    res.status(500).json({ error: `Failed to process stream: ${error.message}` });
+  }
+});
+
 // Stop stream handler (for nginx exec hooks)
 app.post('/stop-stream', async (req, res) => {
   const { streamId } = req.body;
@@ -1312,7 +1345,8 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
           `${uniquePrefix}_480p_*.ts`,
           `${uniquePrefix}_360p.m3u8`,
           `${uniquePrefix}_360p_*.ts`,
-          `${uniquePrefix}_master.m3u8`
+          `${uniquePrefix}_master.m3u8`,
+          `${uniquePrefix}_thumb.jpg`  // CRITICAL: Include thumbnail in upload patterns
         ]);
         
         console.log(`🎉 All variants uploaded successfully! Adaptive streaming is now fully available.`);
@@ -1416,6 +1450,80 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
         console.log(`✅ [RTMP] Defaulting to PUBLIC (not in global map, no mapping lookup needed)`);
       }
     }
+    
+    // LAMBDA-BASED PARALLEL PROCESSING: Upload FLV to processing bucket to trigger Lambda
+    // This allows parallel processing instead of sequential server-side processing
+    console.log(`🚀 [LAMBDA PROCESSING] Uploading FLV to processing bucket to trigger Lambda...`);
+    const PROCESSING_BUCKET = 'twilly-streaming-processing';
+    
+    // Generate unique filename for Lambda processing
+    // Lambda expects: clips/{streamKey}/{streamName}_{timestamp}_{uniqueId}.flv
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const uniqueId = Math.random().toString(36).substr(2, 9);
+    const flvFileName = `${streamName}_${timestamp}_${uniqueId}.flv`;
+    const s3Key = `clips/${streamName}/${flvFileName}`;
+    
+    console.log(`📤 [LAMBDA PROCESSING] Uploading FLV to s3://${PROCESSING_BUCKET}/${s3Key}`);
+    console.log(`   Format: clips/{streamKey}/{streamName}_{timestamp}_{uniqueId}.flv`);
+    
+    try {
+      // Upload FLV file to processing bucket (this triggers stream-processor Lambda)
+      const flvContent = fs.readFileSync(recordingPath);
+      await s3.upload({
+        Bucket: PROCESSING_BUCKET,
+        Key: s3Key,
+        Body: flvContent,
+        ContentType: 'video/x-flv'
+      }).promise();
+      
+      console.log(`✅ [LAMBDA PROCESSING] FLV uploaded successfully - Lambda will process in parallel`);
+      console.log(`   ✅ stream-processor Lambda will be triggered by S3 event`);
+      console.log(`   ✅ Lambda will generate HLS variants and thumbnail`);
+      console.log(`   ✅ Lambda will upload to theprivatecollection bucket`);
+      console.log(`   ✅ s3todynamo-fixed Lambda will create DynamoDB entry when HLS files are uploaded`);
+      
+      // Store metadata for Lambda to use (for DynamoDB entry creation)
+      const uniquePrefix = `${streamName}_${timestamp}_${uniqueId}`;
+      
+      // Create metadata entry for Lambda (if needed)
+      if (finalUserEmail && finalUploadId) {
+        try {
+          const metadataItem = {
+            PK: `METADATA#${finalUploadId}`,
+            SK: 'INFO',
+            userEmail: finalUserEmail,
+            channelName: finalChannelName || streamName,
+            streamKey: streamName,
+            uploadId: finalUploadId,
+            isPrivateUsername: finalIsPrivateUsername || false,
+            uniquePrefix: uniquePrefix,
+            createdAt: new Date().toISOString()
+          };
+          
+          await dynamodb.put({
+            TableName: 'Twilly',
+            Item: metadataItem
+          }).promise();
+          
+          console.log(`✅ [LAMBDA PROCESSING] Metadata stored for Lambda processing`);
+        } catch (metadataError) {
+          console.error(`⚠️ [LAMBDA PROCESSING] Failed to store metadata: ${metadataError.message}`);
+        }
+      }
+      
+      // Return early - Lambda will handle the rest (parallel processing)
+      console.log(`✅ [LAMBDA PROCESSING] Processing delegated to Lambda - server is free for next stream`);
+      return;
+      
+    } catch (uploadError) {
+      console.error(`❌ [LAMBDA PROCESSING] Failed to upload FLV to processing bucket: ${uploadError.message}`);
+      console.error(`   Error details:`, uploadError);
+      console.error(`   Falling back to server-side processing...`);
+      // Fall through to old server-side processing as backup
+    }
+    
+    // FALLBACK: Server-side processing if Lambda upload fails
+    console.log(`⚠️ [FALLBACK] Using server-side processing...`);
     
     // CRITICAL: For RTMP streams, use NULL uploadId to match the working pattern (old format)
     // Files are uploaded to: clips/{streamName}/{file} (NOT clips/{streamName}/{uploadId}/{file})
