@@ -434,6 +434,7 @@
             return isAdmin
         }
         
+        @ViewBuilder
         private var bottomControlsOverlay: some View {
             VStack {
                 Spacer()
@@ -639,31 +640,31 @@
                             .padding(.top, 8)
                     }
                     .padding(.bottom, 12) // Snapchat-style positioning - close to bottom edge
-                        } else {
-                            // Non-admin: Show info message
-                            VStack(spacing: 12) {
-                                VStack(spacing: 8) {
-                                    Image(systemName: "tv.fill")
-                                        .font(.title2)
-                                        .foregroundColor(.twillyTeal)
-                                    Text("Twilly TV")
-                                        .font(.title2)
-                                        .fontWeight(.bold)
-                                        .foregroundColor(.white)
-                                    Text("Configure your streaming setup in Settings")
-                                        .font(.subheadline)
-                                        .foregroundColor(.gray)
-                                        .multilineTextAlignment(.center)
-                                        .padding(.horizontal)
-                                }
-                                .padding(.vertical, 20)
-                                .frame(maxWidth: .infinity)
-                                .background(Color.black.opacity(0.4))
-                                .cornerRadius(20)
-                                .padding(.horizontal, 20)
-                            }
-                            .padding(.bottom, 40)
+                } else {
+                    // Non-admin: Show info message
+                    VStack(spacing: 12) {
+                        VStack(spacing: 8) {
+                            Image(systemName: "tv.fill")
+                                .font(.title2)
+                                .foregroundColor(.twillyTeal)
+                            Text("Twilly TV")
+                                .font(.title2)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                            Text("Configure your streaming setup in Settings")
+                                .font(.subheadline)
+                                .foregroundColor(.gray)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal)
                         }
+                        .padding(.vertical, 20)
+                        .frame(maxWidth: .infinity)
+                        .background(Color.black.opacity(0.4))
+                        .cornerRadius(20)
+                        .padding(.horizontal, 20)
+                    }
+                    .padding(.bottom, 40)
+                }
             }
         }
         
