@@ -76,16 +76,47 @@ struct PrivateAccessInboxView: View {
         isLoading = true
         Task {
             do {
+                print("🔍 [PrivateAccessInboxView] Fetching notifications for: \(userEmail)")
                 let response = try await ChannelService.shared.getNotifications(userEmail: userEmail, limit: 100, unreadOnly: false)
                 await MainActor.run {
+                    print("📬 [PrivateAccessInboxView] Received \(response.notifications?.count ?? 0) total notifications")
+                    
+                    // Debug: Log all notification types
+                    if let allNotifications = response.notifications {
+                        let types = Dictionary(grouping: allNotifications, by: { $0.type })
+                        for (type, notifs) in types {
+                            print("   📋 Type '\(type)': \(notifs.count) notifications")
+                        }
+                    }
+                    
                     // Filter to only show private_access_granted notifications
                     let privateAccessNotifications = (response.notifications ?? []).filter { notification in
-                        notification.type == "private_access_granted"
+                        let matches = notification.type == "private_access_granted"
+                        if !matches {
+                            print("   ⏭️ Skipping notification type: '\(notification.type)'")
+                        }
+                        return matches
                     }
+                    
+                    print("🔒 [PrivateAccessInboxView] Found \(privateAccessNotifications.count) private_access_granted notifications")
                     
                     // Convert AppNotification to PrivateAccessNotification
                     notifications = privateAccessNotifications.map { notification in
-                        let ownerUsername = notification.metadata?["ownerUsername"] ?? "Unknown"
+                        print("   📝 Processing notification: id=\(notification.id), message='\(notification.message)', metadata=\(notification.metadata ?? [:])")
+                        
+                        // Extract ownerUsername from metadata, or try to parse from message
+                        var ownerUsername = notification.metadata?["ownerUsername"] ?? "Unknown"
+                        if ownerUsername == "Unknown" && !notification.message.isEmpty {
+                            // Try to extract from message: "You were added to {username}'s private timeline"
+                            let message = notification.message
+                            if let range = message.range(of: "to ") {
+                                let afterTo = String(message[range.upperBound...])
+                                if let apostropheRange = afterTo.range(of: "'s") {
+                                    ownerUsername = String(afterTo[..<apostropheRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+                                }
+                            }
+                        }
+                        
                         let dateFormatter = ISO8601DateFormatter()
                         let date = dateFormatter.date(from: notification.createdAt) ?? Date()
                         
@@ -96,6 +127,7 @@ struct PrivateAccessInboxView: View {
                             ownerUsername: ownerUsername
                         )
                     }
+                    .filter { !$0.message.isEmpty } // Filter out any invalid notifications
                     .sorted { $0.timestamp > $1.timestamp } // Most recent first
                     
                     isLoading = false
@@ -103,6 +135,10 @@ struct PrivateAccessInboxView: View {
                 }
             } catch {
                 print("❌ [PrivateAccessInboxView] Error loading notifications: \(error)")
+                print("   Error details: \(error.localizedDescription)")
+                if let decodingError = error as? DecodingError {
+                    print("   Decoding error: \(decodingError)")
+                }
                 await MainActor.run {
                     isLoading = false
                 }
