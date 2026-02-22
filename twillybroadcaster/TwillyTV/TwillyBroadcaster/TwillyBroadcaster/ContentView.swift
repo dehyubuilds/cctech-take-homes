@@ -482,9 +482,8 @@
                                     // SNAPCHAT-STYLE: Progress ring when recording (shows recording progress)
                                     if streamManager.isRecording {
                                         // Use recordingDuration for recording, with a max of 15 minutes for visual feedback
-                                        let recordingProgress = min(1.0, CGFloat(streamManager.recordingDuration) / CGFloat(15 * 60))
                                         Circle()
-                                            .trim(from: 0, to: recordingProgress)
+                                            .trim(from: 0, to: min(1.0, CGFloat(streamManager.recordingDuration) / CGFloat(15 * 60)))
                                             .stroke(
                                                 LinearGradient(
                                                     gradient: Gradient(colors: [Color.twillyTeal, Color.twillyCyan]),
