@@ -4294,9 +4294,34 @@ struct ChannelDetailView: View {
                     saveAddedUsernamesToUserDefaults()
                     print("✅ [ChannelDetailView] Saved updated addedUsernames to UserDefaults")
                     
-                    // Refresh content to remove viewer's content
+                    // CRITICAL: Immediately filter out removed user's private content from cached arrays
+                    let normalizedRemovedUsername = username.lowercased()
+                    let beforePrivateCount = privateContent.count
+                    privateContent.removeAll { item in
+                        let itemUsername = (item.creatorUsername ?? "").replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces).lowercased()
+                        let isPrivate = item.isPrivateUsername == true || (item.creatorUsername?.contains("🔒") ?? false)
+                        return isPrivate && itemUsername == normalizedRemovedUsername
+                    }
+                    let afterPrivateCount = privateContent.count
+                    if beforePrivateCount != afterPrivateCount {
+                        print("✅ [ChannelDetailView] Optimistically removed \(beforePrivateCount - afterPrivateCount) private content item(s) from cache for \(username)")
+                        
+                        // Update displayed content if we're viewing private
+                        if showPrivateContent {
+                            content = privateContent
+                        }
+                    }
+                    
+                    // Clear cache for this channel to force fresh fetch
+                    channelService.clearBothViewsCache(
+                        channelName: currentChannel.channelName,
+                        creatorEmail: currentChannel.creatorEmail,
+                        viewerEmail: viewerEmail
+                    )
+                    
+                    // Refresh content to remove viewer's content from server
                     Task {
-                        print("   🔄 Refreshing channel content...")
+                        print("   🔄 Refreshing channel content from server...")
                         try? await refreshChannelContent()
                     }
                 } else {

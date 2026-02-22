@@ -3820,7 +3820,7 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
     }
     
-    func removePrivateViewer(ownerEmail: String, viewerEmail: String?, ownerUsername: String? = nil, viewerUsername: String? = nil) async throws -> [String: Any] {
+    func removePrivateViewer(ownerEmail: String, viewerEmail: String?, ownerUsername: String? = nil, viewerUsername: String? = nil, authenticatedUserEmail: String? = nil) async throws -> [String: Any] {
         guard let url = URL(string: "\(baseURL)/users/remove-private-viewer") else {
             throw ChannelServiceError.invalidURL
         }
@@ -3832,6 +3832,17 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         var body: [String: Any] = [
             "ownerEmail": ownerEmail
         ]
+        
+        // CRITICAL SECURITY: Send authenticated user email for backend verification
+        // Backend will verify that authenticated user is the owner
+        if let authenticatedUserEmail = authenticatedUserEmail, !authenticatedUserEmail.isEmpty {
+            body["authenticatedUserEmail"] = authenticatedUserEmail
+            body["userEmail"] = authenticatedUserEmail // Alternative field name
+        } else {
+            // Fallback: use ownerEmail (will be verified by backend)
+            body["authenticatedUserEmail"] = ownerEmail
+            body["userEmail"] = ownerEmail
+        }
         
         // Prefer email if available, otherwise use username
         if let viewerEmail = viewerEmail, !viewerEmail.isEmpty {
