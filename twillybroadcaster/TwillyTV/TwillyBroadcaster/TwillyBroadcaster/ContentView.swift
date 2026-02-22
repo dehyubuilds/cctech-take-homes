@@ -1142,8 +1142,8 @@
             // Use separate views to avoid property access issues with @EnvironmentObject
             StreamDurationDisplayView(streamManager: streamManager)
         }
-        
-        // Separate view to avoid property access issues with @EnvironmentObject
+    
+    // Separate view to avoid property access issues with @EnvironmentObject
     struct StreamDurationDisplayView: View {
         @ObservedObject var streamManager: StreamManager
         
@@ -1266,7 +1266,8 @@
             return String(format: "%d:%02d", minutes, seconds)
         }
     }
-
+    
+    // ContentView struct continues with helper methods in extension below
     extension ContentView {
         
         // MARK: - Helper Functions
