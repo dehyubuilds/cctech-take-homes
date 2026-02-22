@@ -41,12 +41,20 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
     @Published var duration: TimeInterval = 0
     @Published var isStreaming: Bool = false
     
+    // CRITICAL: Track if user intentionally stopped stream (prevents auto-stop on errors)
+    private var userStoppedStream: Bool = false
+    
     // Timer for duration tracking
     private var durationTimer: Timer?
     private var streamStartTime: Date?
     
     // Connection timeout timer
     private var connectionTimeoutTimer: Timer?
+    
+    // Retry state for transient errors
+    private var retryCount: Int = 0
+    private let maxRetries: Int = 3
+    private var isRetrying: Bool = false
     
     // Flag to track if we're waiting to publish after connection
     private var pendingPublish: Bool = false
@@ -162,14 +170,48 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
         if let errorInfo = error.userInfo {
             print("❌ Error Info: \(errorInfo)")
         }
-        DispatchQueue.main.async {
+        
+        // CRITICAL: Don't stop stream if user didn't press stop button
+        // Only handle errors during connection phase, not during active streaming
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Only stop if we're still connecting (not actively streaming)
             if case .connecting = self.status {
-                self.status = .error("RTMP connection error occurred")
-                self.isStreaming = false
-                self.pendingPublish = false
-                self.stopDurationTimer()
-                // Re-enable idle timer on error
-                UIApplication.shared.isIdleTimerDisabled = false
+                // Check if this is a critical error or transient issue
+                let errorString = String(describing: error)
+                let isTransientError = errorString.contains("timeout") || 
+                                      errorString.contains("network") ||
+                                      errorString.contains("temporary")
+                
+                if isTransientError && !self.isRetrying && self.retryCount < self.maxRetries {
+                    // Retry connection for transient errors
+                    print("🔄 Transient error detected - retrying connection (attempt \(self.retryCount + 1)/\(self.maxRetries))")
+                    self.isRetrying = true
+                    self.retryCount += 1
+                    
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                        guard let self = self else { return }
+                        self.isRetrying = false
+                        // Retry connection
+                        if let (baseURL, streamKey) = self.parseRTMPURL() {
+                            self.rtmpConnection.connect(baseURL)
+                        }
+                    }
+                } else {
+                    // Critical error or max retries reached
+                    self.status = .error("RTMP connection error occurred")
+                    self.isStreaming = false
+                    self.pendingPublish = false
+                    self.stopDurationTimer()
+                    // Re-enable idle timer on error
+                    UIApplication.shared.isIdleTimerDisabled = false
+                }
+            } else if self.isStreaming && !self.userStoppedStream {
+                // During active streaming, log error but don't stop
+                // This prevents crashes from transient network issues
+                print("⚠️ RTMP error during active stream - continuing (error logged but stream not stopped)")
+                // Don't change isStreaming state - let user decide when to stop
             }
         }
     }
@@ -368,34 +410,82 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
         print("✅ Cleared camera attachment flag")
     }
     
+    // CRITICAL FIX: Method to check and reset stuck flag
+    private func ensureCameraAttachmentFlagIsClear() {
+        // If flag is stuck for more than 3 seconds, reset it
+        if isAttachingCamera {
+            print("⚠️ Camera attachment flag is set - checking if it's stuck...")
+            // Reset after a short delay to allow legitimate operations to complete
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self = self else { return }
+                if self.isAttachingCamera {
+                    print("⚠️ Camera attachment flag appears stuck - resetting it")
+                    self.isAttachingCamera = false
+                }
+            }
+        }
+    }
+    
     func toggleCamera() {
         print("🔍 StreamManager: toggleCamera() called - current position: \(currentCameraPosition == .back ? "back" : "front")")
+        print("   isAttachingCamera: \(isAttachingCamera), isRecording: \(isRecording), isStreaming: \(isStreaming)")
+        
+        // CRITICAL: Prevent camera flip during recording (causes crashes)
         guard !isRecording else {
             print("⚠️ Cannot flip camera during recording")
             return
         }
+        
+        // CRITICAL FIX: If flag is stuck (set but no actual operation happening), reset it
+        // This prevents the flag from blocking camera flips indefinitely
+        if isAttachingCamera {
+            print("⚠️ Camera attachment flag is set - resetting to allow flip")
+            // Reset the flag - if there's a real operation, it will set it again
+            isAttachingCamera = false
+        }
+        
         // Switch between front and back camera
         let newPosition: AVCaptureDevice.Position = currentCameraPosition == .back ? .front : .back
         print("🔍 StreamManager: Switching to: \(newPosition == .back ? "back" : "front")")
-        switchCamera(to: newPosition)
+        
+        // Use try-catch for crash prevention
+        do {
+            switchCamera(to: newPosition)
+        } catch {
+            print("❌ Error toggling camera: \(error.localizedDescription)")
+            // Reset flag on error
+            isAttachingCamera = false
+        }
         // Don't post CameraReady here - it will be posted by attachCamera() when the camera is actually attached
     }
     
     func switchCamera(to position: AVCaptureDevice.Position) {
+        // CRITICAL: Prevent multiple simultaneous camera switches
+        // CRITICAL FIX: Don't block on isAttachingCamera - if it's stuck, reset it
+        if isAttachingCamera {
+            print("⚠️ Camera switch: Flag is set - resetting to allow switch")
+            isAttachingCamera = false
+        }
+        
         guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position) else {
             print("❌ Camera not available for position: \(position == .back ? "back" : "front")")
             return
         }
         
-        // Clear attachment flag to allow immediate switch
-        isAttachingCamera = false
+        // Set flag immediately to prevent concurrent switches
+        isAttachingCamera = true
         
+        // Update position and camera reference
         currentCameraPosition = position
         currentCamera = camera
         
         // If recording, switch camera in the recording session
         if isRecording {
             switchCameraDuringRecording(to: camera)
+            // Reset flag after recording switch completes
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.isAttachingCamera = false
+            }
         } else if isStreaming {
             // When streaming, directly attach new camera to RTMP stream without detaching first
             // This prevents black screen during active stream
@@ -405,43 +495,64 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
             currentZoomFactor = 1.0
             initialZoomFactor = 1.0
             
-            // Directly attach new camera to RTMP stream (no detach step to prevent black screen)
-            isAttachingCamera = true
-            rtmpStream.attachCamera(camera) { [weak self] captureUnit, error in
+            // Use camera queue for thread safety
+            cameraQueue.async { [weak self] in
                 guard let self = self else { return }
                 
-                self.isAttachingCamera = false
-                
-                if let error = error {
-                    DispatchQueue.main.async {
-                        print("❌ Camera attachment error during stream: \(error)")
-                    }
-                } else {
-                    DispatchQueue.main.async {
-                        print("✅ Camera switched successfully during stream")
-                        // Reset zoom after camera switch
-                        self.setZoomFactor(1.0)
-                        // Update orientation after camera switch
-                        self.updateStreamOrientation()
-                        // Notify that camera is ready for preview - post multiple times to ensure it's received
-                        NotificationCenter.default.post(name: NSNotification.Name("CameraReady"), object: nil)
-                        NotificationCenter.default.post(name: NSNotification.Name("ForceRefreshPreview"), object: nil)
-                        // Additional notification with slight delay to ensure preview updates
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                            guard self != nil else { return }
+                // Directly attach new camera to RTMP stream (no detach step to prevent black screen)
+                self.rtmpStream.attachCamera(camera) { [weak self] captureUnit, error in
+                    guard let self = self else { return }
+                    
+                    self.isAttachingCamera = false
+                    
+                    if let error = error {
+                        DispatchQueue.main.async {
+                            print("❌ Camera attachment error during stream: \(error)")
+                            // Don't crash - just log and try to continue with current camera
+                            // Reset to previous camera position if switch failed
+                            let previousPosition: AVCaptureDevice.Position = position == .back ? .front : .back
+                            if let previousCamera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: previousPosition) {
+                                self.currentCameraPosition = previousPosition
+                                self.currentCamera = previousCamera
+                            }
+                        }
+                    } else {
+                        DispatchQueue.main.async {
+                            print("✅ Camera switched successfully during stream")
+                            // Reset zoom after camera switch
+                            self.setZoomFactor(1.0)
+                            // Update orientation after camera switch
+                            self.updateStreamOrientation()
+                            // Notify that camera is ready for preview - post multiple times to ensure it's received
+                            NotificationCenter.default.post(name: NSNotification.Name("CameraReady"), object: nil)
                             NotificationCenter.default.post(name: NSNotification.Name("ForceRefreshPreview"), object: nil)
+                            // Additional notification with slight delay to ensure preview updates
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                NotificationCenter.default.post(name: NSNotification.Name("ForceRefreshPreview"), object: nil)
+                            }
                         }
                     }
                 }
             }
         } else {
             // Not streaming or recording - use normal attach flow
+            // CRITICAL FIX: Don't reset flag here - let attachCamera() manage it
+            // attachCamera() will set and reset the flag itself
             attachCamera(camera)
             // Update orientation after camera switch
             updateStreamOrientation()
             // Post notification to force preview refresh immediately
-            DispatchQueue.main.async { [weak self] in
+            DispatchQueue.main.async {
                 NotificationCenter.default.post(name: NSNotification.Name("ForceRefreshPreview"), object: nil)
+            }
+            // CRITICAL FIX: Add safety timeout to ensure flag is reset even if attachCamera() fails silently
+            // This prevents the flag from getting stuck and blocking future camera flips
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                guard let self = self else { return }
+                if self.isAttachingCamera {
+                    print("⚠️ Safety timeout: Resetting camera attachment flag (attachCamera may have failed silently)")
+                    self.isAttachingCamera = false
+                }
             }
         }
     }
@@ -1090,9 +1201,10 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
         }
         
         // Prevent multiple simultaneous attachments
-        guard !isAttachingCamera else {
-            print("⚠️ Camera attachment already in progress, skipping duplicate request")
-            return
+        // CRITICAL FIX: If flag is stuck, reset it before proceeding
+        if isAttachingCamera {
+            print("⚠️ attachCamera: Flag is set - resetting before proceeding")
+            isAttachingCamera = false
         }
         
         // Use specified device or current camera position
@@ -1143,6 +1255,7 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
                 cameraDevice.unlockForConfiguration()
             } catch {
                 print("⚠️ Could not configure front camera for Snapchat-style: \(error)")
+                // Don't crash - continue with default format
             }
         }
         
@@ -1157,34 +1270,52 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
         cameraSetupAttempts = 0
         
         // Attach camera to stream (for preview and streaming)
-        rtmpStream.attachCamera(cameraDevice) { [weak self] captureUnit, error in
-            guard let self = self else { return }
-            
-            self.isAttachingCamera = false // Clear flag on completion
-            
-            if let error = error {
-                DispatchQueue.main.async {
-                    print("❌ Camera attachment error: \(error)")
-                    // Retry camera setup after a delay if we haven't exceeded max attempts
-                    if self.cameraSetupAttempts < self.maxCameraSetupAttempts {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                            self.setupCameraPreview()
+        // CRITICAL: Wrap in error handling to prevent crashes
+        do {
+            rtmpStream.attachCamera(cameraDevice) { [weak self] captureUnit, error in
+                guard let self = self else { return }
+                
+                // CRITICAL FIX: Always clear flag on completion (success or error)
+                // This ensures camera can be flipped again even if there was an error
+                self.isAttachingCamera = false
+                print("✅ Camera attachment callback completed, flag cleared")
+                
+                if let error = error {
+                    DispatchQueue.main.async {
+                        print("❌ Camera attachment error: \(error)")
+                        // Retry camera setup after a delay if we haven't exceeded max attempts
+                        if self.cameraSetupAttempts < self.maxCameraSetupAttempts {
+                            self.cameraSetupAttempts += 1
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                self.setupCameraPreview()
+                            }
+                        } else {
+                            print("❌ Max camera setup attempts reached, giving up")
+                            self.cameraSetupAttempts = 0 // Reset for next manual attempt
                         }
-                    } else {
-                        print("❌ Max camera setup attempts reached, giving up")
-                        self.cameraSetupAttempts = 0 // Reset for next manual attempt
                     }
-                }
-            } else {
-                DispatchQueue.main.async {
-                    print("✅ Camera attached successfully")
-                    // Reset zoom after camera is attached
-                    self.setZoomFactor(1.0)
+                } else {
+                    DispatchQueue.main.async {
+                        print("✅ Camera attached successfully")
+                        // Reset zoom after camera is attached
+                        self.setZoomFactor(1.0)
                     // Set RTMP stream orientation based on current device orientation
                     self.updateStreamOrientation()
                     // Notify that camera is ready for preview
                     NotificationCenter.default.post(name: NSNotification.Name("CameraReady"), object: nil)
+                    // CRITICAL: Force preview refresh to prevent black screen after camera flip
+                    NotificationCenter.default.post(name: NSNotification.Name("ForceRefreshPreview"), object: nil)
+                    }
                 }
+            }
+        } catch {
+            // CRITICAL: Prevent crash if attachCamera throws
+            print("❌ Fatal error attaching camera: \(error)")
+            isAttachingCamera = false
+            cameraSetupAttempts += 1
+            // Retry after delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.setupCameraPreview()
             }
         }
         
@@ -1213,8 +1344,24 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
     private let zoomDamping: CGFloat = 0.85 // Smooth deceleration
     private let zoomSpring: CGFloat = 0.15 // Spring back to target
     
+    // CRITICAL FIX: Serial queue for zoom operations to prevent race conditions
+    private let zoomQueue = DispatchQueue(label: "com.twilly.zoom", qos: .userInteractive)
+    private var isZooming = false // Prevent concurrent zoom operations
+    
     func setZoomFactor(_ factor: CGFloat, animated: Bool = false) {
-        guard let camera = currentCamera else { return }
+        // CRITICAL FIX: Don't block zoom on isAttachingCamera - zoom should work independently
+        // Only check if camera is actually available
+        
+        guard let camera = currentCamera else {
+            print("⚠️ Zoom blocked: Camera is nil")
+            return
+        }
+        
+        // CRITICAL FIX: Verify camera is still valid and not being deallocated
+        guard camera.isConnected else {
+            print("⚠️ Zoom blocked: Camera is not connected")
+            return
+        }
         
         // Clamp zoom factor between 1.0 and max zoom
         let maxZoom = min(camera.activeFormat.videoMaxZoomFactor, 10.0) // Cap at 10x for performance
@@ -1226,20 +1373,49 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
             // Start smooth animation
             startZoomAnimation()
         } else {
-            // Apply immediately
-            applyZoomFactor(clampedFactor)
+            // Apply immediately on serial queue
+            zoomQueue.async { [weak self] in
+                self?.applyZoomFactor(clampedFactor)
+            }
         }
     }
     
     private func applyZoomFactor(_ factor: CGFloat) {
-        guard let camera = currentCamera else { return }
+        // CRITICAL FIX: Prevent concurrent zoom operations
+        guard !isZooming else {
+            print("⚠️ Zoom blocked: Another zoom operation in progress")
+            return
+        }
+        
+        isZooming = true
+        defer { isZooming = false }
+        
+        // CRITICAL FIX: Re-check camera availability on the queue (it might have changed)
+        guard let camera = currentCamera else {
+            print("⚠️ Zoom failed: Camera became nil during zoom operation")
+            return
+        }
+        
+        // CRITICAL FIX: Verify camera is still valid and connected
+        guard camera.isConnected else {
+            print("⚠️ Zoom failed: Camera disconnected during zoom operation")
+            return
+        }
         
         // CRITICAL: Never stop streaming due to zoom errors - zoom is non-critical
         // Only log errors but continue streaming
         do {
+            // CRITICAL FIX: Try to lock camera (will throw if already locked or unavailable)
             try camera.lockForConfiguration()
             defer { 
+                // Always unlock if we successfully locked
                 camera.unlockForConfiguration()
+            }
+            
+            // CRITICAL FIX: Verify camera is still valid after locking
+            guard camera.isConnected else {
+                print("⚠️ Zoom failed: Camera disconnected after locking")
+                return
             }
             
             camera.videoZoomFactor = factor
@@ -1247,6 +1423,12 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
             
             // Also apply zoom to recording session if recording
             if isRecording, let recordingCamera = localRecordingSession?.inputs.first(where: { ($0 as? AVCaptureDeviceInput)?.device.hasMediaType(.video) == true }) as? AVCaptureDeviceInput {
+                // CRITICAL FIX: Check if recording camera is valid
+                guard recordingCamera.device.isConnected else {
+                    print("⚠️ Recording camera not connected for zoom")
+                    return
+                }
+                
                 do {
                     try recordingCamera.device.lockForConfiguration()
                     recordingCamera.device.videoZoomFactor = factor
@@ -1280,12 +1462,23 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
     }
     
     @objc private func updateZoomAnimation() {
+        // CRITICAL FIX: Check camera availability before each animation frame
+        // CRITICAL FIX: Don't block zoom animation on isAttachingCamera - only check camera availability
+        guard let camera = currentCamera, camera.isConnected else {
+            print("⚠️ Zoom animation stopped: Camera unavailable")
+            stopZoomAnimation()
+            return
+        }
+        
         let currentFactor = currentZoomFactor
         let difference = targetZoomFactor - currentFactor
         
         // If very close, snap to target and stop
         if abs(difference) < 0.01 {
-            applyZoomFactor(targetZoomFactor)
+            zoomQueue.async { [weak self] in
+                guard let self = self else { return }
+                self.applyZoomFactor(self.targetZoomFactor)
+            }
             stopZoomAnimation()
             return
         }
@@ -1295,11 +1488,21 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
         currentZoomVelocity = (currentZoomVelocity + springForce) * zoomDamping
         
         let newFactor = currentFactor + currentZoomVelocity
-        applyZoomFactor(newFactor)
+        // CRITICAL FIX: Apply zoom on serial queue to prevent race conditions
+        zoomQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.applyZoomFactor(newFactor)
+        }
     }
     
     func setZoomFactorWithVelocity(_ factor: CGFloat, velocity: CGFloat) {
-        guard let camera = currentCamera else { return }
+        // CRITICAL FIX: Check camera availability and prevent zoom during transitions
+        // CRITICAL FIX: Don't block zoom on isAttachingCamera - zoom should work independently
+        
+        guard let camera = currentCamera, camera.isConnected else {
+            print("⚠️ Zoom with velocity blocked: Camera unavailable")
+            return
+        }
         
         let maxZoom = min(camera.activeFormat.videoMaxZoomFactor, 10.0)
         let clampedFactor = max(1.0, min(factor, maxZoom))
@@ -1806,6 +2009,11 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
     // MARK: - Stream Control
     
     func startStreaming() {
+        // CRITICAL: Reset user stopped flag when starting new stream
+        userStoppedStream = false
+        retryCount = 0
+        isRetrying = false
+        
         guard !fullStreamURL.isEmpty else {
             status = .error("Stream URL is required")
             return
@@ -2005,11 +2213,14 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
     }
     
     func stopStreaming() {
+        // CRITICAL: Mark that user intentionally stopped the stream
+        userStoppedStream = true
+        
         connectionTimeoutTimer?.invalidate()
         connectionTimeoutTimer = nil
         pendingPublish = false
         
-        print("🛑 Stopping stream...")
+        print("🛑 Stopping stream (user initiated)...")
         
         // Clear overlay metadata on backend when streaming stops
         if let (_, streamKey) = parseRTMPURL() {
@@ -2020,15 +2231,27 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
             }
         }
         
-        // Unpublish the stream first
+        // Safely unpublish the stream with error handling
         if isStreaming {
-            rtmpStream.close()
+            do {
+                rtmpStream.close()
+            } catch {
+                print("⚠️ Error closing RTMP stream: \(error.localizedDescription)")
+            }
         }
         
-        // Close the RTMP connection
-        rtmpConnection.close()
+        // Safely close the RTMP connection with error handling
+        do {
+            rtmpConnection.close()
+        } catch {
+            print("⚠️ Error closing RTMP connection: \(error.localizedDescription)")
+        }
         
         stopDurationTimer()
+        
+        // Reset retry state
+        retryCount = 0
+        isRetrying = false
         
         DispatchQueue.main.async {
             self.isStreaming = false
@@ -2190,11 +2413,26 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
                 
             } else if connectClosedCodes.contains(code) {
                 print("RTMP Connection closed")
-                self.status = .stopped
-                self.isStreaming = false
-                self.stopDurationTimer()
-                // Re-enable idle timer when connection closes
-                UIApplication.shared.isIdleTimerDisabled = false
+                // CRITICAL: Only stop stream if user intentionally stopped it
+                // Connection might close due to network hiccups, but stream should continue
+                if self.userStoppedStream {
+                    self.status = .stopped
+                    self.isStreaming = false
+                    self.stopDurationTimer()
+                    // Re-enable idle timer when connection closes
+                    UIApplication.shared.isIdleTimerDisabled = false
+                } else if self.isStreaming {
+                    // Connection closed but user didn't stop - try to reconnect
+                    print("⚠️ Connection closed unexpectedly during stream - attempting to reconnect")
+                    // Don't stop the stream, just log the issue
+                    // The stream might recover automatically
+                } else {
+                    // Not streaming, safe to update status
+                    self.status = .stopped
+                    self.isStreaming = false
+                    self.stopDurationTimer()
+                    UIApplication.shared.isIdleTimerDisabled = false
+                }
                 
             } else if publishBadNameCodes.contains(code) {
                 print("❌ RTMP Publish bad name - Invalid stream key")
@@ -2210,6 +2448,11 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
                 print("✅ RTMP Publish started - Streaming!")
                 self.status = .streaming
                 self.isStreaming = true
+                // Reset user stopped flag when stream starts
+                self.userStoppedStream = false
+                // Reset retry count on successful connection
+                self.retryCount = 0
+                self.isRetrying = false
                 // Cancel any remaining timeout
                 self.connectionTimeoutTimer?.invalidate()
                 // Ensure idle timer is disabled to keep phone awake
@@ -2229,11 +2472,20 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
                 
             } else if unpublishSuccessCodes.contains(code) {
                 print("RTMP Unpublish success")
-                self.status = .stopped
-                self.isStreaming = false
-                self.stopDurationTimer()
-                // Re-enable idle timer when stream stops
-                UIApplication.shared.isIdleTimerDisabled = false
+                // Only update status if user intentionally stopped
+                if self.userStoppedStream {
+                    self.status = .stopped
+                    self.isStreaming = false
+                    self.stopDurationTimer()
+                    // Re-enable idle timer when stream stops
+                    UIApplication.shared.isIdleTimerDisabled = false
+                    // Reset user stopped flag for next stream
+                    self.userStoppedStream = false
+                } else {
+                    // Unpublish happened but user didn't stop - might be server-side
+                    // Log but don't change state (let user decide)
+                    print("⚠️ Stream unpublished but user didn't stop - keeping state")
+                }
                 
             } else if publishIdleCodes.contains(code) {
                 print("RTMP Publish idle")

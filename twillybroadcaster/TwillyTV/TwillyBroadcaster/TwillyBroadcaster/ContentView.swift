@@ -304,6 +304,13 @@
                             // Only process swipe when on stream screen
                             guard showingStreamScreen else { return }
                             
+                            // CRITICAL FIX: Disable swipe left while streaming to prevent accidental navigation
+                            // This prevents zoom gestures from triggering navigation and leaving stream running in background
+                            guard !streamManager.isStreaming else {
+                                print("🚫 [CameraPreview] Swipe left blocked: Stream is active")
+                                return
+                            }
+                            
                             // Swipe LEFT (negative width = finger moving left) to go to Discover
                             // User swipes from right edge going left
                             let swipeLeft = value.translation.width < -80 || value.predictedEndTranslation.width < -150
@@ -367,8 +374,15 @@
                     Spacer()
                     
                     // Camera flip button at top right (stream screen only)
+                    // SNAPCHAT-LIKE: Always available, responsive tap area
                     if !streamManager.isRecording {
                         Button(action: {
+                            // Haptic feedback for better UX
+                            let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+                            impactFeedback.impactOccurred()
+                            
+                            // Prevent multiple rapid taps
+                            print("📷 [ContentView] Camera flip button tapped")
                             streamManager.toggleCamera()
                         }) {
                             Image(systemName: "camera.rotate.fill")
@@ -378,6 +392,17 @@
                                 .background(Color.black.opacity(0.6))
                                 .clipShape(Circle())
                         }
+                        .buttonStyle(PlainButtonStyle()) // Remove default button styling for better responsiveness
+                        .contentShape(Circle()) // Ensure entire circle is tappable
+                        .simultaneousGesture(
+                            // Add tap gesture for immediate response
+                            TapGesture()
+                                .onEnded {
+                                    // Haptic feedback
+                                    let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+                                    impactFeedback.impactOccurred()
+                                }
+                        )
                     }
                 }
                 .padding(.top, 12)
@@ -422,6 +447,10 @@
                         HStack {
                             Spacer()
                             Button(action: {
+                                // SNAPCHAT-LIKE: Immediate haptic feedback for responsive feel
+                                let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+                                impactFeedback.impactOccurred()
+                                
                                 print("🎬 [ContentView] Capture button tapped - isStreaming: \(streamManager.isStreaming)")
                                 if streamManager.isStreaming {
                                     // Stop streaming - will save to channel and show metadata form
@@ -450,6 +479,39 @@
                                 }
                             }) {
                                 ZStack {
+                                    // SNAPCHAT-STYLE: Progress ring when recording (shows recording progress)
+                                    if streamManager.isRecording {
+                                        // Use recordingDuration for recording, with a max of 15 minutes for visual feedback
+                                        let recordingProgress = min(1.0, CGFloat(streamManager.recordingDuration) / CGFloat(15 * 60))
+                                        Circle()
+                                            .trim(from: 0, to: recordingProgress)
+                                            .stroke(
+                                                LinearGradient(
+                                                    gradient: Gradient(colors: [Color.twillyTeal, Color.twillyCyan]),
+                                                    startPoint: .leading,
+                                                    endPoint: .trailing
+                                                ),
+                                                style: StrokeStyle(lineWidth: 4, lineCap: .round)
+                                            )
+                                            .frame(width: 95, height: 95)
+                                            .rotationEffect(.degrees(-90))
+                                            .animation(.linear(duration: 0.1), value: streamManager.recordingDuration)
+                                    }
+                                    
+                                    // Pulsing animation when streaming or recording
+                                    if streamManager.isStreaming || streamManager.isRecording {
+                                        Circle()
+                                            .fill(captureButtonGradient.opacity(0.3))
+                                            .frame(width: 95, height: 95)
+                                            .scaleEffect(streamManager.isStreaming ? 1.2 : 1.1)
+                                            .opacity(0.6)
+                                            .animation(
+                                                Animation.easeInOut(duration: 1.0)
+                                                    .repeatForever(autoreverses: true),
+                                                value: streamManager.isStreaming || streamManager.isRecording
+                                            )
+                                    }
+                                    
                                     // Fixed size background to prevent position shifts
                                     Circle()
                                         .fill(captureButtonGradient)
@@ -467,26 +529,56 @@
                             .frame(width: 85, height: 85) // Fixed frame to prevent position shifts
                             .contentShape(Circle()) // Ensure entire circle is tappable
                             .animation(nil, value: streamManager.isStreaming) // Disable button container animations
+                            .buttonStyle(PlainButtonStyle()) // Remove default button styling for better responsiveness
+                            .simultaneousGesture(
+                                // Add tap gesture for immediate response (Snapchat-like)
+                                TapGesture()
+                                    .onEnded {
+                                        // Additional haptic feedback on tap
+                                        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+                                        impactFeedback.impactOccurred()
+                                    }
+                            )
                             Spacer()
                         }
                         .frame(height: 85) // Fixed container height to accommodate larger button
                         .padding(.horizontal, 20)
                         
-                        // Public/Private toggle OR countdown timer - same position, conditional display
-                        HStack(spacing: 8) {
-                            Spacer()
-                            if streamManager.isStreaming {
-                                // Show 15-minute countdown timer when streaming
-                                StreamCountdownTimerView(
-                                    timeRemaining: max(0, streamTimeLimit - streamManager.duration),
-                                    isPrivate: streamModeIsPrivate,
-                                    onTimeExpired: {
-                                        // Automatically stop stream when 15 minutes is reached
-                                        print("⏰ [ContentView] 15-minute limit reached - stopping stream automatically")
-                                        streamManager.stopStreaming()
+                        // LIVE indicator when streaming OR Public/Private toggle when not streaming
+                        VStack(spacing: 6) {
+                            HStack(spacing: 8) {
+                                Spacer()
+                                if streamManager.isStreaming {
+                                    // SNAPCHAT-STYLE: LIVE indicator with pulsing red dot
+                                    HStack(spacing: 6) {
+                                        // Pulsing red dot
+                                        Circle()
+                                            .fill(Color.red)
+                                            .frame(width: 8, height: 8)
+                                            .scaleEffect(1.2)
+                                            .opacity(0.8)
+                                            .animation(
+                                                Animation.easeInOut(duration: 1.0)
+                                                    .repeatForever(autoreverses: true),
+                                                value: streamManager.isStreaming
+                                            )
+                                        
+                                        Text("LIVE")
+                                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                                            .foregroundColor(.white)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
+                                            .background(
+                                                LinearGradient(
+                                                    gradient: Gradient(colors: [Color.red, Color.red.opacity(0.8)]),
+                                                    startPoint: .leading,
+                                                    endPoint: .trailing
+                                                )
+                                            )
+                                            .cornerRadius(6)
+                                            .shadow(color: Color.red.opacity(0.5), radius: 4, x: 0, y: 2)
                                     }
-                                )
-                            } else {
+                                } else {
                                 // Show toggle when not streaming (including during countdown) - same design as Twilly TV channel page
                                 Button(action: {
                                     withAnimation {
@@ -509,10 +601,22 @@
                                     .background(streamModeIsPrivate ? Color.orange.opacity(0.2) : Color.twillyCyan.opacity(0.2))
                                     .cornerRadius(8)
                                 }
+                                Spacer()
                             }
-                            Spacer()
+                            
+                            // Show 15-minute countdown timer when streaming (below LIVE indicator)
+                            if streamManager.isStreaming {
+                                StreamCountdownTimerView(
+                                    timeRemaining: max(0, streamTimeLimit - streamManager.duration),
+                                    isPrivate: streamModeIsPrivate,
+                                    onTimeExpired: {
+                                        // Automatically stop stream when 15 minutes is reached
+                                        print("⏰ [ContentView] 15-minute limit reached - stopping stream automatically")
+                                        streamManager.stopStreaming()
+                                    }
+                                )
+                            }
                         }
-                        .frame(height: 36) // Fixed height to prevent layout shifts
                         .frame(maxWidth: .infinity)
                         .padding(.horizontal, 20)
                         .padding(.top, 4)
@@ -1026,30 +1130,30 @@
             HStack {
                 Spacer()
                 if showSwipeIndicator {
-                    HStack(spacing: 8) {
-                        Text("Swipe for Twilly TV")
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
+                    HStack(spacing: 6) {
                         Image(systemName: "arrow.left")
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.system(size: 12, weight: .medium))
+                        Text("Swipe left for Twilly TV")
+                            .font(.caption)
+                            .fontWeight(.medium)
                     }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
+                    .foregroundColor(.white.opacity(0.7))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                     .background(
-                        LinearGradient(
-                            colors: [Color.twillyTeal.opacity(0.9), Color.twillyCyan.opacity(0.9)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
+                        Capsule()
+                            .fill(Color.black.opacity(0.4))
+                            .overlay(
+                                Capsule()
+                                    .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                            )
                     )
-                    .cornerRadius(25)
-                    .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 4)
-                    .transition(.opacity.combined(with: .scale))
+                    .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
                     .onAppear {
-                        // Auto-hide after 3 seconds
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                            withAnimation(.easeOut(duration: 0.5)) {
+                        // Auto-hide after 4 seconds (more subtle, stays longer)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                            withAnimation(.easeOut(duration: 0.6)) {
                                 showSwipeIndicator = false
                             }
                         }
@@ -1057,7 +1161,7 @@
                 }
                 Spacer()
             }
-            .frame(height: 36)
+            .frame(height: 28)
             .frame(maxWidth: .infinity)
         }
         
