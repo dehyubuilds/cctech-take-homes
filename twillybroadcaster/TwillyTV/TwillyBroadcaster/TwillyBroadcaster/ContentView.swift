@@ -441,11 +441,43 @@
                 
                 // TV Network Model: All authenticated users can stream from mobile
                 if authService.isAuthenticated {
-                    // Show streaming controls for "Twilly TV" channel
+                    authenticatedControlsView
+                } else {
+                    // Non-admin: Show info message
                     VStack(spacing: 12) {
-                        // Capture button - circular around icon (fixed position)
-                        // Positioned lower like Snapchat's record button
-                        HStack {
+                        VStack(spacing: 8) {
+                            Image(systemName: "tv.fill")
+                                .font(.title2)
+                                .foregroundColor(.twillyTeal)
+                            Text("Twilly TV")
+                                .font(.title2)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                            Text("Configure your streaming setup in Settings")
+                                .font(.subheadline)
+                                .foregroundColor(.gray)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal)
+                        }
+                        .padding(.vertical, 20)
+                        .frame(maxWidth: .infinity)
+                        .background(Color.black.opacity(0.4))
+                        .cornerRadius(20)
+                        .padding(.horizontal, 20)
+                    }
+                    .padding(.bottom, 40)
+                }
+            }
+            .padding(.bottom, 12) // Snapchat-style positioning - close to bottom edge
+        }
+        
+        @ViewBuilder
+        private var authenticatedControlsView: some View {
+            // Show streaming controls for "Twilly TV" channel
+            VStack(spacing: 12) {
+                // Capture button - circular around icon (fixed position)
+                // Positioned lower like Snapchat's record button
+                HStack {
                             Spacer()
                             Button(action: {
                                 // SNAPCHAT-LIKE: Immediate haptic feedback for responsive feel
@@ -635,11 +667,6 @@
                             .padding(.horizontal, 20)
                         }
                         
-                        // Swipe indicator - shows then disappears
-                        swipeIndicator
-                            .padding(.top, 8)
-                    }
-                } else {
                     // Non-admin: Show info message
                     VStack(spacing: 12) {
                         VStack(spacing: 8) {
