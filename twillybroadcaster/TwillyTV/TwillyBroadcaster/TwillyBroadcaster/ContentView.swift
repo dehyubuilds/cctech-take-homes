@@ -635,11 +635,12 @@
                             .frame(maxWidth: .infinity)
                             .padding(.horizontal, 20)
                         }
-                
-                // Swipe indicator - shows then disappears
-                swipeIndicator
-                    .padding(.top, 8)
-                    .padding(.bottom, 12) // Snapchat-style positioning - close to bottom edge
+                        
+                        // Swipe indicator - shows then disappears
+                        swipeIndicator
+                            .padding(.top, 8)
+                            .padding(.bottom, 12) // Snapchat-style positioning - close to bottom edge
+                    }
             }
         }
         
