@@ -640,7 +640,6 @@
                             .padding(.top, 8)
                     }
                     .padding(.bottom, 12) // Snapchat-style positioning - close to bottom edge
-                }
                 } else {
                     // Non-admin: Show info message
                     VStack(spacing: 12) {
