@@ -1142,7 +1142,6 @@
             // Use separate views to avoid property access issues with @EnvironmentObject
             StreamDurationDisplayView(streamManager: streamManager)
         }
-    }
     
     // Separate view to avoid property access issues with @EnvironmentObject
     struct StreamDurationDisplayView: View {
