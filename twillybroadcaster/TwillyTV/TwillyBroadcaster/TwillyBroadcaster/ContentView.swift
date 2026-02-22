@@ -1138,7 +1138,6 @@
         }
         
         @ViewBuilder
-        @ViewBuilder
         private var streamDurationView: some View {
             // Use separate views to avoid property access issues with @EnvironmentObject
             StreamDurationDisplayView(streamManager: streamManager)
