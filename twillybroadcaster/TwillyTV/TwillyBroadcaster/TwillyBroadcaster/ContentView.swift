@@ -304,14 +304,7 @@
                             // Only process swipe when on stream screen
                             guard showingStreamScreen else { return }
                             
-                            // CRITICAL FIX: Disable swipe left while streaming to prevent accidental navigation
-                            // This prevents zoom gestures from triggering navigation and leaving stream running in background
-                            guard !streamManager.isStreaming else {
-                                print("🚫 [CameraPreview] Swipe left blocked: Stream is active")
-                                return
-                            }
-                            
-                            // Swipe LEFT (negative width = finger moving left) to go to Discover
+                            // Swipe LEFT (negative width = finger moving left) to go to Twilly TV
                             // User swipes from right edge going left
                             let swipeLeft = value.translation.width < -80 || value.predictedEndTranslation.width < -150
                             
@@ -442,30 +435,6 @@
                 // TV Network Model: All authenticated users can stream from mobile
                 if authService.isAuthenticated {
                     authenticatedControlsView
-                } else {
-                    // Non-admin: Show info message
-                    VStack(spacing: 12) {
-                        VStack(spacing: 8) {
-                            Image(systemName: "tv.fill")
-                                .font(.title2)
-                                .foregroundColor(.twillyTeal)
-                            Text("Twilly TV")
-                                .font(.title2)
-                                .fontWeight(.bold)
-                                .foregroundColor(.white)
-                            Text("Configure your streaming setup in Settings")
-                                .font(.subheadline)
-                                .foregroundColor(.gray)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal)
-                        }
-                        .padding(.vertical, 20)
-                        .frame(maxWidth: .infinity)
-                        .background(Color.black.opacity(0.4))
-                        .cornerRadius(20)
-                        .padding(.horizontal, 20)
-                    }
-                    .padding(.bottom, 40)
                 }
             }
             .padding(.bottom, 12) // Snapchat-style positioning - close to bottom edge
@@ -666,33 +635,12 @@
                             .frame(maxWidth: .infinity)
                             .padding(.horizontal, 20)
                         }
-                        
-                    // Non-admin: Show info message
-                    VStack(spacing: 12) {
-                        VStack(spacing: 8) {
-                            Image(systemName: "tv.fill")
-                                .font(.title2)
-                                .foregroundColor(.twillyTeal)
-                            Text("Twilly TV")
-                                .font(.title2)
-                                .fontWeight(.bold)
-                                .foregroundColor(.white)
-                            Text("Configure your streaming setup in Settings")
-                                .font(.subheadline)
-                                .foregroundColor(.gray)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal)
-                        }
-                        .padding(.vertical, 20)
-                        .frame(maxWidth: .infinity)
-                        .background(Color.black.opacity(0.4))
-                        .cornerRadius(20)
-                        .padding(.horizontal, 20)
-                    }
-                    .padding(.bottom, 40)
-                }
+                
+                // Swipe indicator - shows then disappears
+                swipeIndicator
+                    .padding(.top, 8)
+                    .padding(.bottom, 12) // Snapchat-style positioning - close to bottom edge
             }
-            .padding(.bottom, 12) // Snapchat-style positioning - close to bottom edge
         }
         
         
