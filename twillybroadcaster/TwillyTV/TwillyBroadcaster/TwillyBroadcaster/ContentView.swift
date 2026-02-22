@@ -294,8 +294,9 @@
                 .progressViewStyle(CircularProgressViewStyle(tint: .twillyTeal))
                 .scaleEffect(1.5)
         }
+    }
         
-        private var cameraPreviewWithModifiers: some View {
+    private var cameraPreviewWithModifiers: some View {
             cameraPreviewView
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 20)
@@ -1142,7 +1143,6 @@
             // Use separate views to avoid property access issues with @EnvironmentObject
             StreamDurationDisplayView(streamManager: streamManager)
         }
-    }
     
     // Separate view to avoid property access issues with @EnvironmentObject
     struct StreamDurationDisplayView: View {
