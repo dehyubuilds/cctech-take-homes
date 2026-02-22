@@ -1143,10 +1143,7 @@
             StreamDurationDisplayView(streamManager: streamManager)
         }
         
-        // All other properties and methods are in the extension below
-    }
-
-    // Separate view to avoid property access issues with @EnvironmentObject
+        // Separate view to avoid property access issues with @EnvironmentObject
     struct StreamDurationDisplayView: View {
         @ObservedObject var streamManager: StreamManager
         
