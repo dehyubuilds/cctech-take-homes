@@ -546,40 +546,50 @@
                         .padding(.horizontal, 20)
                         
                         // LIVE indicator when streaming OR Public/Private toggle when not streaming
+                        // Aligned under the stop button (centered)
                         VStack(spacing: 6) {
-                            HStack(spacing: 8) {
-                                Spacer()
-                                if streamManager.isStreaming {
-                                    // SNAPCHAT-STYLE: LIVE indicator with pulsing red dot
-                                    HStack(spacing: 6) {
-                                        // Pulsing red dot
-                                        Circle()
-                                            .fill(Color.red)
-                                            .frame(width: 8, height: 8)
-                                            .scaleEffect(1.2)
-                                            .opacity(0.8)
-                                            .animation(
-                                                Animation.easeInOut(duration: 1.0)
-                                                    .repeatForever(autoreverses: true),
-                                                value: streamManager.isStreaming
+                            if streamManager.isStreaming {
+                                // SNAPCHAT-STYLE: LIVE indicator with pulsing red dot
+                                HStack(spacing: 6) {
+                                    // Pulsing red dot
+                                    Circle()
+                                        .fill(Color.red)
+                                        .frame(width: 8, height: 8)
+                                        .scaleEffect(1.2)
+                                        .opacity(0.8)
+                                        .animation(
+                                            Animation.easeInOut(duration: 1.0)
+                                                .repeatForever(autoreverses: true),
+                                            value: streamManager.isStreaming
+                                        )
+                                    
+                                    Text("LIVE")
+                                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(
+                                            LinearGradient(
+                                                gradient: Gradient(colors: [Color.red, Color.red.opacity(0.8)]),
+                                                startPoint: .leading,
+                                                endPoint: .trailing
                                             )
-                                        
-                                        Text("LIVE")
-                                            .font(.system(size: 13, weight: .bold, design: .rounded))
-                                            .foregroundColor(.white)
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 4)
-                                            .background(
-                                                LinearGradient(
-                                                    gradient: Gradient(colors: [Color.red, Color.red.opacity(0.8)]),
-                                                    startPoint: .leading,
-                                                    endPoint: .trailing
-                                                )
-                                            )
-                                            .cornerRadius(6)
-                                            .shadow(color: Color.red.opacity(0.5), radius: 4, x: 0, y: 2)
+                                        )
+                                        .cornerRadius(6)
+                                        .shadow(color: Color.red.opacity(0.5), radius: 4, x: 0, y: 2)
+                                }
+                                
+                                // Show 15-minute countdown timer when streaming (below LIVE indicator)
+                                StreamCountdownTimerView(
+                                    timeRemaining: max(0, streamTimeLimit - streamManager.duration),
+                                    isPrivate: streamModeIsPrivate,
+                                    onTimeExpired: {
+                                        // Automatically stop stream when 15 minutes is reached
+                                        print("⏰ [ContentView] 15-minute limit reached - stopping stream automatically")
+                                        streamManager.stopStreaming()
                                     }
-                                } else {
+                                )
+                            } else {
                                 // Show toggle when not streaming (including during countdown) - same design as Twilly TV channel page
                                 Button(action: {
                                     withAnimation {
@@ -602,20 +612,6 @@
                                     .background(streamModeIsPrivate ? Color.orange.opacity(0.2) : Color.twillyCyan.opacity(0.2))
                                     .cornerRadius(8)
                                 }
-                                Spacer()
-                            }
-                            
-                            // Show 15-minute countdown timer when streaming (below LIVE indicator)
-                            if streamManager.isStreaming {
-                                StreamCountdownTimerView(
-                                    timeRemaining: max(0, streamTimeLimit - streamManager.duration),
-                                    isPrivate: streamModeIsPrivate,
-                                    onTimeExpired: {
-                                        // Automatically stop stream when 15 minutes is reached
-                                        print("⏰ [ContentView] 15-minute limit reached - stopping stream automatically")
-                                        streamManager.stopStreaming()
-                                    }
-                                )
                             }
                         }
                         .frame(maxWidth: .infinity)
