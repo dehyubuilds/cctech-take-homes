@@ -233,7 +233,6 @@
                 print("   - showingUsernameSetup will be: \(authService.username == nil)")
             }
         }
-    }
     
     @ViewBuilder
     private var authLoadingView: some View {
