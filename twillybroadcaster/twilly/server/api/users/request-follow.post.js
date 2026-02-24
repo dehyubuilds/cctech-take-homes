@@ -265,6 +265,46 @@ export default defineEventHandler(async (event) => {
 
       await dynamodb.put(addParams).promise();
 
+      // ============================================
+      // Create notification for added user (public access granted)
+      // Only notify on first add (not re-adds) - this code only runs if existingAdded.Item was null
+      // ============================================
+      try {
+        const notificationId = `notification-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const notificationParams = {
+          TableName: table,
+          Item: {
+            PK: `USER#${requestedUserEmail.toLowerCase()}`,
+            SK: `NOTIFICATION#${notificationId}`,
+            type: 'public_access_granted',
+            title: 'Added to Public Timeline',
+            message: `You were added to ${requesterUsername || requesterEmail.split('@')[0]}'s public timeline`,
+            metadata: {
+              requesterEmail: String(requesterEmail.toLowerCase()),
+              requesterUsername: String(requesterUsername || requesterEmail.split('@')[0]),
+              requestedEmail: String(requestedUserEmail.toLowerCase()),
+              requestedUsername: String(usernameToUse)
+            },
+            isRead: false,
+            createdAt: new Date().toISOString()
+          }
+        };
+
+        await dynamodb.put(notificationParams).promise();
+        console.log(`✅ [request-follow] Notification created successfully:`);
+        console.log(`   PK: ${notificationParams.Item.PK}`);
+        console.log(`   SK: ${notificationParams.Item.SK}`);
+        console.log(`   Type: ${notificationParams.Item.type}`);
+        console.log(`   Message: ${notificationParams.Item.message}`);
+        console.log(`   Requester: ${requesterUsername || requesterEmail.split('@')[0]} (${requesterEmail})`);
+        console.log(`   Requested: ${usernameToUse} (${requestedUserEmail})`);
+        console.log(`   📬 Notification will be queryable with: PK=USER#${requestedUserEmail.toLowerCase()}`);
+      } catch (err) {
+        console.error(`❌ [request-follow] Notification creation FAILED: ${err.message}`);
+        console.error(`   Stack: ${err.stack}`);
+        // Don't throw - notification is non-blocking
+      }
+
       return {
         success: true,
         message: 'User added to timeline (public account)',
