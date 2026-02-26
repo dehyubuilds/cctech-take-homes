@@ -10,6 +10,7 @@ import AVKit
 import AVFoundation
 import UIKit
 import WebKit
+import Combine
 
 struct ChannelDetailView: View {
     let channel: DiscoverableChannel
@@ -20,6 +21,7 @@ struct ChannelDetailView: View {
     @ObservedObject var channelService = ChannelService.shared
     @ObservedObject private var authService = AuthService.shared
     @ObservedObject private var userRoleService = UserRoleService.shared
+    @ObservedObject private var websocketService = UnifiedWebSocketService.shared
     @Environment(\.dismiss) var dismiss
     
     @State private var currentChannel: DiscoverableChannel // Mutable channel for live updates
@@ -108,6 +110,8 @@ struct ChannelDetailView: View {
     @State private var showingContentManagementPopup = false // Show content management popup (title + delete)
     @State private var managingContent: ChannelContent? = nil // Content being managed
     @State private var showingTitleField = false // Whether to show the title input field
+    @State private var showingPremiumAlert = false // Show premium content alert
+    @State private var premiumContentItem: ChannelContent? = nil // Premium content item that requires payment
     // Removed placeholder and polling logic - using notification system instead
     // Removed scheduling - only done from web app
     
@@ -202,6 +206,52 @@ struct ChannelDetailView: View {
         .sheet(isPresented: $showingSettings) {
             StreamerSettingsView()
         }
+        .onChange(of: showingSettings) { isShowing in
+            // When settings is dismissed, post notification to reload premium enabled
+            if !isShowing {
+                NotificationCenter.default.post(name: NSNotification.Name("PremiumEnabledChanged"), object: nil)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToVideo"))) { notification in
+            if let videoId = notification.userInfo?["videoId"] as? String,
+               let openComments = notification.userInfo?["openComments"] as? Bool {
+                print("🔔 [ChannelDetailView] NavigateToVideo notification received: \(videoId), openComments: \(openComments)")
+                
+                // Find the video in content array
+                let fileId = videoId.replacingOccurrences(of: "FILE#", with: "")
+                let matchingContent = content.first { contentItem in
+                    // Match by SK (which is FILE#fileId) or fileId field
+                    let contentSK = contentItem.id.replacingOccurrences(of: "FILE#", with: "")
+                    return contentSK == fileId || contentItem.id == videoId
+                }
+                
+                if let foundContent = matchingContent {
+                    print("✅ [ChannelDetailView] Found video, opening player")
+                    selectedContent = foundContent
+                    showingPlayer = true
+                    
+                    // If openComments is true, we'll need to open comments after player appears
+                    // This will be handled by FloatingCommentView's initial state
+                } else {
+                    print("⚠️ [ChannelDetailView] Video not found in content array, refreshing...")
+                    // Video might not be loaded yet, refresh content
+                    Task {
+                        try? await refreshChannelContent()
+                        // Try again after refresh
+                        let refreshedMatching = content.first { contentItem in
+                            let contentSK = contentItem.id.replacingOccurrences(of: "FILE#", with: "")
+                            return contentSK == fileId || contentItem.id == videoId
+                        }
+                        if let refreshedContent = refreshedMatching {
+                            await MainActor.run {
+                                selectedContent = refreshedContent
+                                showingPlayer = true
+                            }
+                        }
+                    }
+                }
+            }
+        }
         .sheet(isPresented: $showingPrivateInbox) {
             privateAccessInboxView
         }
@@ -239,6 +289,15 @@ struct ChannelDetailView: View {
                 : "this video"
             Text("Are you sure you want to delete \"\(displayName)\"? This action cannot be undone.")
         }
+        .alert("Premium Content", isPresented: $showingPremiumAlert, presenting: premiumContentItem) { item in
+            Button("OK", role: .cancel) {
+                premiumContentItem = nil
+            }
+        } message: { item in
+            // Get creator username for the message
+            let creatorName = item.creatorUsername?.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespacesAndNewlines) ?? "this creator"
+            Text("This is a premium video from \(creatorName). You need to purchase access to unlock this content.")
+        }
         .sheet(isPresented: $showingEditModal) {
             editContentModal
         }
@@ -264,9 +323,6 @@ struct ChannelDetailView: View {
                 // (Tasks are automatically cancelled when view disappears, but explicit cancellation is safer)
             }
         .onAppear {
-            print("👁️ [ChannelDetailView] onAppear called - hasLoadedOnce: \(hasLoadedOnce), content.count: \(content.count), isLoading: \(isLoading), forceRefresh: \(forceRefresh)")
-            print("   Channel: \(currentChannel.channelName)")
-            print("   Poster URL at onAppear: \(currentChannel.posterUrl.isEmpty ? "EMPTY" : currentChannel.posterUrl)")
             
             // Load cached search results from UserDefaults for instant results
             loadSearchCacheFromUserDefaults()
@@ -287,9 +343,17 @@ struct ChannelDetailView: View {
             // Load current user's account visibility (to determine if they can add private viewers)
             loadCurrentUserVisibility()
             
-            // Load unread access inbox count and start polling
+            // Load inbox count from cache immediately for instant display
+            loadUnreadAccessInboxCountFromCache()
+            
+            // Then refresh from server in background
             loadUnreadAccessInboxCount()
+            // WebSocket handles real-time updates - polling is fallback only
+            // Reduced polling interval to 30 seconds as fallback (WebSocket is primary)
             startInboxPolling()
+            
+            // Listen for inbox count refresh requests (when thread is marked as read)
+            // This is handled via .onReceive below
             
             // Load added usernames for Twilly TV and auto-add own username
             if currentChannel.channelName.lowercased() == "twilly tv" {
@@ -306,7 +370,6 @@ struct ChannelDetailView: View {
             
             // Check for local video info to show immediately
             if let localInfo = globalLocalVideoInfo, localInfo.channelName == currentChannel.channelName {
-                print("📹 [ChannelDetailView] Found local video for this channel - showing immediately")
                 let localContent = ChannelContent(
                     SK: "local-\(UUID().uuidString)",
                     fileName: localInfo.url.lastPathComponent,
@@ -324,7 +387,6 @@ struct ChannelDetailView: View {
                 localVideoContent = localContent
                 content = [localContent] // Show local video immediately
                 isLoading = false // Don't show loading spinner - we have content
-                print("✅ [ChannelDetailView] Local video added to content list - content.count: \(content.count)")
                 
                 // Start polling for thumbnail immediately
                 startThumbnailPolling()
@@ -356,7 +418,6 @@ struct ChannelDetailView: View {
                     hasLoadedOnce = true
                     isLoading = false
                     hasConfirmedNoContent = false // Reset - we have content
-                    print("⚡ [ChannelDetailView] Showing cached content immediately - \(content.count) items")
                 }
                 
                 // Always fetch new content in background (unless forceRefresh, then show loading)
@@ -364,7 +425,6 @@ struct ChannelDetailView: View {
                 let needsReload = content.isEmpty && !isLoading
                 
                 if !hasCachedContent && (!hasLoadedOnce || forceRefresh || needsBothViewsReload || needsReload) {
-                    print("🔄 [ChannelDetailView] Loading server content... (forceRefresh: \(forceRefresh), hasCachedContent: \(hasCachedContent))")
                     // CRITICAL: Only show loading spinner if we have NO cached content
                     // This matches Instagram/TikTok behavior - never show loading if you have something to show
                     if localVideoContent == nil {
@@ -378,7 +438,6 @@ struct ChannelDetailView: View {
                     loadContent()
                 } else if hasCachedContent {
                     // We have cached content - fetch new content in background silently
-                    print("🔄 [ChannelDetailView] Fetching new content in background (cached content shown)")
                     Task {
                         do {
                             if isTwillyTV {
@@ -406,7 +465,7 @@ struct ChannelDetailView: View {
                                     func normalizeUsername(_ username: String?) -> String? {
                                         guard let username = username else { return nil }
                                         return username.replacingOccurrences(of: "🔒", with: "")
-                                            .trimmingCharacters(in: .whitespaces)
+                                            .trimmingCharacters(in: CharacterSet.whitespaces)
                                             .lowercased()
                                     }
                                     
@@ -468,7 +527,6 @@ struct ChannelDetailView: View {
                                     // This prevents any flash of wrong content when toggling
                                     
                                     cachedUnfilteredContent = publicContent + privateContent
-                                    print("✅ [ChannelDetailView] Background refresh complete - public: \(publicContent.count), private: \(privateContent.count), current view: \(content.count)")
                                 }
                             } else {
                                 // Non-Twilly TV - use single view refresh
@@ -477,7 +535,6 @@ struct ChannelDetailView: View {
                                         updateContentWith(result.content, replaceLocal: false)
                                         nextToken = result.nextToken
                                         hasMoreContent = result.hasMore
-                                        print("✅ [ChannelDetailView] Background refresh complete - \(result.content.count) items")
                                     }
                                 }
                             }
@@ -486,7 +543,6 @@ struct ChannelDetailView: View {
                         }
                     }
             } else {
-                print("✅ [ChannelDetailView] Already loaded and not forcing refresh, skipping load")
             }
             
             // Start auto-refresh to check for new videos
@@ -502,9 +558,78 @@ struct ChannelDetailView: View {
     
     private var viewWithNotificationsAndGestures: some View {
         viewWithLifecycleHandlers
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RefreshInboxCount"))) { _ in
+            // Refresh inbox count when thread is marked as read
+            loadUnreadAccessInboxCount()
+        }
+        .onReceive(websocketService.$inboxNotification) { notification in
+            // Handle real-time inbox notifications via WebSocket - SUPER FAST updates
+            if let notification = notification {
+                
+                // Check if this is a private_access_granted notification
+                if notification.notificationType == "private_access_granted" {
+                    // Update count immediately (optimistic update) - already on main actor
+                    unreadAccessInboxCount += 1
+                    saveUnreadAccessInboxCountToCache(count: unreadAccessInboxCount)
+                    // Then refresh from server to get accurate count
+                    loadUnreadAccessInboxCount()
+                } else {
+                    // For other notification types, just refresh
+                    loadUnreadAccessInboxCount()
+                }
+            }
+        }
+        .onReceive(websocketService.$timelineUpdateNotification) { notification in
+            // Handle real-time timeline updates via WebSocket
+            if let notification = notification {
+                
+                // Only process if this is for Twilly TV (main timeline)
+                guard currentChannel.channelName.lowercased() == "twilly tv" else {
+                    return
+                }
+                
+                // Convert notification to ChannelContent
+                let newContent = ChannelContent(
+                    SK: "FILE#\(notification.fileId)",
+                    fileName: notification.fileName,
+                    title: notification.title,
+                    description: notification.description,
+                    hlsUrl: notification.hlsUrl,
+                    thumbnailUrl: notification.thumbnailUrl,
+                    createdAt: notification.createdAt,
+                    isVisible: true,
+                    price: notification.price ?? 0,
+                    category: notification.category,
+                    fileId: notification.fileId,
+                    creatorUsername: notification.creatorUsername,
+                    isPrivateUsername: notification.isPrivateUsername ?? false,
+                    isPremium: notification.isPremium ?? false
+                )
+                
+                // Check if content already exists (prevent duplicates)
+                let contentExists = content.contains { $0.id == newContent.id }
+                if !contentExists {
+                    // Prepend new content to timeline (newest first in UI)
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        content.insert(newContent, at: 0)
+                        
+                        // Also update public/private content arrays if applicable
+                        let isPrivate = notification.isPrivateUsername ?? false
+                        if isPrivate {
+                            privateContent.insert(newContent, at: 0)
+                        } else {
+                            publicContent.insert(newContent, at: 0)
+                        }
+                    }
+                    
+                    print("✅ [ChannelDetailView] Added new timeline content: \(notification.fileName)")
+                } else {
+                    print("⚠️ [ChannelDetailView] Timeline content already exists, skipping: \(notification.fileName)")
+                }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RefreshTwillyTVContent"))) { _ in
             // CRITICAL: When a follow request is accepted, refresh everything to show private content
-            print("🔄 [ChannelDetailView] Received RefreshTwillyTVContent notification - follow request was accepted")
             guard currentChannel.channelName.lowercased() == "twilly tv" else { return }
             
             // Refresh added usernames to get the newly accepted private username
@@ -519,7 +644,6 @@ struct ChannelDetailView: View {
                 do {
                     try? await Task.sleep(nanoseconds: 500_000_000) // Wait 0.5s for addedUsernames to load
                     try? await refreshChannelContent()
-                    print("✅ [ChannelDetailView] Refreshed content after follow request acceptance")
                 } catch {
                     print("❌ [ChannelDetailView] Error refreshing content after acceptance: \(error.localizedDescription)")
                 }
@@ -542,7 +666,6 @@ struct ChannelDetailView: View {
                     if horizontalMovement > 50 && horizontalMovement > verticalMovement {
                         if value.translation.width > 80 || value.predictedEndTranslation.width > 150 {
                             // Post notification to show stream screen
-                            print("✅ [ChannelDetailView] Swipe RIGHT detected → Going to Stream screen")
                             NotificationCenter.default.post(
                                 name: NSNotification.Name("ShowStreamScreen"),
                                 object: nil
@@ -557,21 +680,16 @@ struct ChannelDetailView: View {
     
     private var videoPlayerFullScreenCover: some View {
             Group {
-                let _ = print("🎬 [ChannelDetailView] ========== FULLSCREEN COVER OPENED ==========")
-                let _ = print("   - showingPlayer: \(showingPlayer)")
-                let _ = print("   - selectedContent: \(selectedContent?.fileName ?? "nil")")
-                let _ = print("   - selectedContent hlsUrl: \(selectedContent?.hlsUrl ?? "nil")")
-                let _ = print("   - selectedContent thumbnailUrl: \(selectedContent?.thumbnailUrl ?? "nil")")
                 
                 if let content = selectedContent {
                     // Check for local file first, then HLS URL
                     if let localURL = content.localFileURL {
                         let _ = print("✅ [ChannelDetailView] Opening video player with LOCAL file: \(localURL.path)")
-                        VideoPlayerView(url: localURL, content: content)
+                        VideoPlayerView(url: localURL, content: content, channelCreatorEmail: currentChannel.creatorEmail)
                     } else if let hlsUrl = content.hlsUrl, !hlsUrl.isEmpty, let url = URL(string: hlsUrl) {
                         let _ = print("✅ [ChannelDetailView] Opening video player with HLS URL: \(hlsUrl)")
                         let _ = print("   - Thumbnail URL: \(content.thumbnailUrl ?? "none")")
-                        VideoPlayerView(url: url, content: content)
+                        VideoPlayerView(url: url, content: content, channelCreatorEmail: currentChannel.creatorEmail)
                 } else {
                     let _ = print("❌ [ChannelDetailView] Cannot open video player - missing content or hlsUrl")
                     let _ = print("   - selectedContent exists: \(selectedContent != nil)")
@@ -658,6 +776,73 @@ struct ChannelDetailView: View {
         viewWithNotificationsAndGestures
             .fullScreenCover(isPresented: $showingPlayer) {
                 videoPlayerFullScreenCover
+        }
+        .onAppear {
+            // LOCK TO PORTRAIT: Channel page must stay in portrait
+            AppDelegate.orientationLock = .portrait
+            
+            // Force portrait orientation (iOS 16+)
+            if #available(iOS 16.0, *) {
+                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                    windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { (error: Error?) in
+                        if let error = error {
+                            print("❌ [ChannelDetailView] Failed to lock to portrait: \(error.localizedDescription)")
+                        } else {
+                            print("✅ [ChannelDetailView] Locked to portrait mode")
+                        }
+                    }
+                }
+            } else {
+                // iOS < 16: Use UIDevice
+                UIDevice.current.setValue(UIInterfaceOrientation.portrait.rawValue, forKey: "orientation")
+                print("✅ [ChannelDetailView] Locked to portrait mode (iOS < 16)")
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+            // When device rotates to landscape, force back to portrait
+            let currentOrientation = UIDevice.current.orientation
+            if currentOrientation.isLandscape {
+                ensurePortraitOrientation()
+            }
+        }
+        .onChange(of: showingPlayer) { isShowing in
+            // Ensure portrait when player closes
+            if !isShowing {
+                ensurePortraitOrientation()
+            }
+        }
+        .onDisappear {
+            // Keep portrait lock when leaving (don't unlock)
+            // This ensures consistent portrait experience
+        }
+    }
+    
+    // MARK: - Orientation Helper
+    // LOCK TO PORTRAIT: Force portrait orientation
+    private func ensurePortraitOrientation() {
+        // Lock to portrait globally
+        AppDelegate.orientationLock = .portrait
+        
+        // Force portrait orientation
+        if #available(iOS 16.0, *) {
+            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                if !windowScene.interfaceOrientation.isPortrait {
+                    windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { (error: Error?) in
+                        if let error = error {
+                            print("❌ [ChannelDetailView] Failed to lock to portrait: \(error.localizedDescription)")
+                        } else {
+                            print("✅ [ChannelDetailView] Locked to portrait mode")
+                        }
+                    }
+                }
+            }
+        } else {
+            // iOS < 16: Use UIDevice
+            let currentOrientation = UIDevice.current.orientation
+            if currentOrientation.isLandscape {
+                UIDevice.current.setValue(UIInterfaceOrientation.portrait.rawValue, forKey: "orientation")
+                print("✅ [ChannelDetailView] Locked to portrait mode (iOS < 16)")
+            }
         }
     }
     
@@ -765,9 +950,9 @@ struct ChannelDetailView: View {
     
     private var favoritesButton: some View {
         Button(action: handleFavoritesToggle) {
-            Image(systemName: showFavoritesOnly ? "heart.fill" : "heart")
+            Image(systemName: showFavoritesOnly ? "star.fill" : "star")
                 .font(.system(size: 20))
-                .foregroundColor(showFavoritesOnly ? .red : .white)
+                .foregroundColor(showFavoritesOnly ? .yellow : .white)
         }
     }
     
@@ -1124,7 +1309,10 @@ struct ChannelDetailView: View {
         
         // CRITICAL: Toggle state AFTER content is set to prevent any flash
         // This ensures the UI reflects the correct state immediately
-        withAnimation {
+        // Use transaction to update icon immediately without animation delay
+        var transaction = Transaction(animation: .none)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
             showPrivateContent.toggle()
         }
         
@@ -1585,7 +1773,7 @@ struct ChannelDetailView: View {
                                 }
                             }
                             
-                            TextField("Add Creators to your timeline", text: $usernameSearchText)
+                            TextField("Add Streamers to your timeline", text: $usernameSearchText)
                                 .foregroundColor(.white)
                                 .autocapitalization(.none)
                                 .autocorrectionDisabled()
@@ -1737,9 +1925,10 @@ struct ChannelDetailView: View {
                                 .foregroundColor(.twillyCyan)
                             
                             Text(item.username)
+                                .font(.body) // Fixed font size for all usernames
                                 .foregroundColor(.white)
                                 .lineLimit(1)
-                                .minimumScaleFactor(0.8)
+                                .truncationMode(.tail) // Truncate with ellipsis if too long
                             
                             Spacer()
                             
@@ -2230,6 +2419,31 @@ struct ChannelDetailView: View {
         }
     }
     
+    // Cache key for inbox count
+    private func inboxCountCacheKey(for userEmail: String) -> String {
+        return "inboxCount_\(userEmail)"
+    }
+    
+    // Load inbox count from cache immediately
+    private func loadUnreadAccessInboxCountFromCache() {
+        guard let userEmail = authService.userEmail else { return }
+        
+        let key = inboxCountCacheKey(for: userEmail)
+        if let cachedCount = UserDefaults.standard.object(forKey: key) as? Int {
+            unreadAccessInboxCount = cachedCount
+            print("📬 [ChannelDetailView] Loaded inbox count from cache: \(cachedCount)")
+        }
+    }
+    
+    // Save inbox count to cache
+    private func saveUnreadAccessInboxCountToCache(count: Int) {
+        guard let userEmail = authService.userEmail else { return }
+        
+        let key = inboxCountCacheKey(for: userEmail)
+        UserDefaults.standard.set(count, forKey: key)
+        UserDefaults.standard.synchronize()
+    }
+    
     private func loadUnreadAccessInboxCount() {
         guard let userEmail = authService.userEmail else { return }
         
@@ -2240,28 +2454,16 @@ struct ChannelDetailView: View {
                 await MainActor.run {
                     let allNotifications = response.notifications ?? []
                     
-                    // Debug: Log notification types breakdown
-                    let typeCounts = Dictionary(grouping: allNotifications, by: { $0.type })
-                    print("📊 [ChannelDetailView] Notification types breakdown:")
-                    for (type, notifs) in typeCounts {
-                        let unread = notifs.filter { !$0.isRead }.count
-                        print("   - \(type): \(notifs.count) total (\(unread) unread)")
-                    }
-                    
                     // Count only unread private_access_granted notifications
                     let unreadPrivateAccess = allNotifications.filter { notification in
                         notification.type == "private_access_granted" && !notification.isRead
                     }
                     
-                    // Also log all private_access_granted notifications (read and unread)
-                    let allPrivateAccess = allNotifications.filter { $0.type == "private_access_granted" }
-                    print("🔒 [ChannelDetailView] Private access notifications: \(allPrivateAccess.count) total (\(unreadPrivateAccess.count) unread)")
-                    for (idx, notif) in allPrivateAccess.enumerated() {
-                        print("   [\(idx + 1)] \(notif.message) (read: \(notif.isRead), id: \(notif.id))")
-                    }
-                    
-                    unreadAccessInboxCount = unreadPrivateAccess.count
-                    print("📬 [ChannelDetailView] Unread access inbox count: \(unreadAccessInboxCount) (from \(allNotifications.count) total notifications)")
+                    let newCount = unreadPrivateAccess.count
+                    unreadAccessInboxCount = newCount
+                    // Save to cache for instant display on next load
+                    saveUnreadAccessInboxCountToCache(count: newCount)
+                    print("📬 [ChannelDetailView] Unread access inbox count: \(newCount) (from \(allNotifications.count) total notifications)")
                 }
             } catch {
                 print("❌ [ChannelDetailView] Error loading unread access inbox count: \(error)")
@@ -2276,10 +2478,11 @@ struct ChannelDetailView: View {
         // Cancel existing polling task
         inboxPollTask?.cancel()
         
-        // Poll every 10 seconds for new notifications
+        // WebSocket is primary - polling is fallback only (30 seconds)
+        // This ensures inbox updates even if WebSocket temporarily disconnects
         inboxPollTask = Task {
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 10_000_000_000) // 10 seconds
+                try? await Task.sleep(nanoseconds: 30_000_000_000) // 30 seconds (reduced from 10s since WebSocket is primary)
                 if !Task.isCancelled {
                     loadUnreadAccessInboxCount()
                 }
@@ -5197,7 +5400,7 @@ struct ChannelDetailView: View {
                                 }
                             }
                             
-                            TextField("Add Creators to your timeline", text: $usernameSearchText)
+                            TextField("Add Streamers to your timeline", text: $usernameSearchText)
                                 .foregroundColor(.white)
                                 .autocapitalization(.none)
                                 .autocorrectionDisabled()
@@ -5781,13 +5984,13 @@ struct ChannelDetailView: View {
     
     private var emptyStateView: some View {
         VStack(spacing: 16) {
-            Image(systemName: "video.slash")
+            Image(systemName: showFavoritesOnly ? "star" : "video.slash")
                 .font(.system(size: 40))
                 .foregroundColor(.white.opacity(0.5))
-            Text("No Content Available")
+            Text(showFavoritesOnly ? "No Favorites Yet" : "No Content Available")
                 .font(.headline)
                 .foregroundColor(.white)
-            Text("This channel doesn't have any visible content yet")
+            Text(showFavoritesOnly ? "You haven't favorited any content yet. Tap the star icon on videos to add them to your favorites." : "This channel doesn't have any visible content yet")
                 .foregroundColor(.white.opacity(0.7))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
@@ -5834,7 +6037,23 @@ struct ChannelDetailView: View {
                                 AccessInboxNotificationRow(
                                     notification: notification,
                                     onTap: {
+                                        // Mark notification as read
                                         markNotificationAsRead(notificationId: notification.id)
+                                        
+                                        // Post notification to FloatingCommentView to select the thread for this username
+                                        // The notification's ownerUsername should match a comment thread
+                                        let usernameToFind = notification.ownerUsername
+                                        
+                                        NotificationCenter.default.post(
+                                            name: NSNotification.Name("SelectCommentThreadByUsername"),
+                                            object: nil,
+                                            userInfo: ["username": usernameToFind]
+                                        )
+                                        
+                                        print("📬 [ChannelDetailView] Posted SelectCommentThreadByUsername notification for: \(usernameToFind)")
+                                        
+                                        // Close the inbox
+                                        showingPrivateInbox = false
                                     },
                                     onDelete: {
                                         deleteNotification(notificationId: notification.id)
@@ -6421,6 +6640,17 @@ struct ChannelDetailView: View {
         print("   - localFileURL: \(item.localFileURL?.path ?? "nil")")
         print("   - isVisible: \(item.isVisible ?? true)")
         print("   - airdate: \(item.airdate ?? "nil")")
+        print("   - isPremium: \(item.isPremium ?? false)")
+        print("   - isOwner: \(isOwnerVideo(item))")
+        
+        // Check if content is premium and user is not the owner
+        if item.isPremium == true && !isOwnerVideo(item) {
+            print("🔒 [ChannelDetailView] Premium content - user must pay to unlock (not owner)")
+            // Show premium alert popup
+            premiumContentItem = item
+            showingPremiumAlert = true
+            return
+        }
         
         // Check if content is scheduled (has airdate and not visible)
         if let airdateString = item.airdate,
@@ -6447,9 +6677,13 @@ struct ChannelDetailView: View {
     }
     
     private func handleContentCardAppear(_ item: ChannelContent) {
-        // Load more when user scrolls near the end (last 3 items)
+        // LIGHTNING FAST: Preload comments when video card appears (before user opens chat)
+        // This makes chat feel instant when opened
+        MessagingService.shared.preloadMessages(for: item.SK)
+        // HYBRID OPTIMIZATION: Prefetch next page when user scrolls near the end (last 5 items)
+        // This ensures seamless pagination without loading states
         if let index = content.firstIndex(where: { $0.id == item.id }),
-           index >= content.count - 3,
+           index >= content.count - 5, // Prefetch earlier (5 items instead of 3) for smoother experience
            hasMoreContent && !isLoadingMore {
             loadMoreContent()
         }
@@ -6607,7 +6841,6 @@ struct ChannelDetailView: View {
             if isTwillyTV {
                 // Extract usernames from addedUsernames array (current state)
                 let clientAddedUsernames = addedUsernames.map { $0.streamerUsername }
-                print("🔄 [ChannelDetailView] Refreshing Twilly TV content with \(clientAddedUsernames.count) added usernames: \(clientAddedUsernames.joined(separator: ", "))")
                 
                 let bothViews = try await channelService.fetchBothViewsContent(
                     channelName: currentChannel.channelName,
@@ -6618,11 +6851,6 @@ struct ChannelDetailView: View {
                     clientAddedUsernames: clientAddedUsernames.isEmpty ? nil : clientAddedUsernames
                 )
                 
-                // DEBUG: Log what we received from backend
-                print("📥 [ChannelDetailView] Refresh - Received from backend:")
-                print("   Public content: \(bothViews.publicContent.count) items")
-                print("   Private content: \(bothViews.privateContent.count) items")
-                print("   Client added usernames sent: \(clientAddedUsernames.joined(separator: ", "))")
                 if let viewerUsername = authService.username {
                     print("   Viewer username: \(viewerUsername)")
                     let ownerPublicCount = bothViews.publicContent.filter { item in
@@ -6647,7 +6875,7 @@ struct ChannelDetailView: View {
                 func normalizeUsername(_ username: String?) -> String? {
                     guard let username = username else { return nil }
                     return username.replacingOccurrences(of: "🔒", with: "")
-                        .trimmingCharacters(in: .whitespaces)
+                        .trimmingCharacters(in: CharacterSet.whitespaces)
                         .lowercased()
                 }
                 
@@ -6693,25 +6921,26 @@ struct ChannelDetailView: View {
                     bothViews.privateContent.filter { item in
                         let isOwner = isOwnerVideo(item)
                         let isPrivate = item.isPrivateUsername == true
+                        let isPremium = item.isPremium == true
                         
                         // DEBUG: Log all items in privateContent array to understand what backend is sending
-                        print("🔍 [ChannelDetailView] Private array item: \(item.fileName), isPrivateUsername: \(item.isPrivateUsername?.description ?? "nil"), creator: \(item.creatorUsername ?? "unknown"), isOwner: \(isOwner)")
+                        print("🔍 [ChannelDetailView] Private array item: \(item.fileName), isPrivateUsername: \(item.isPrivateUsername?.description ?? "nil"), isPremium: \(item.isPremium?.description ?? "nil"), creator: \(item.creatorUsername ?? "unknown"), isOwner: \(isOwner)")
                         
                         // CRITICAL: Include ALL owner videos in private view, regardless of isPrivateUsername flag
                         // This ensures owner's private videos are never filtered out
                         if isOwner {
-                            print("✅ [ChannelDetailView] Including owner video in private array (refresh): \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"), isPrivate: \(isPrivate))")
+                            print("✅ [ChannelDetailView] Including owner video in private array (refresh): \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"), isPrivate: \(isPrivate), isPremium: \(isPremium))")
                             return true // Always include owner videos in private view
                         }
                         
-                        // For non-owner videos, only include if isPrivateUsername is true
-                        // CRITICAL: Use isPrivateUsername flag as source of truth (not username label)
-                        if !isPrivate {
-                            print("🚫 [ChannelDetailView] Filtering out item from private array - isPrivateUsername is not true: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"), isPrivateUsername: \(item.isPrivateUsername?.description ?? "nil"))")
+                        // For non-owner videos, include if isPrivateUsername is true OR isPremium is true
+                        // CRITICAL: Use isPrivateUsername and isPremium flags as source of truth
+                        if !isPrivate && !isPremium {
+                            print("🚫 [ChannelDetailView] Filtering out item from private array - not private or premium: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"), isPrivateUsername: \(item.isPrivateUsername?.description ?? "nil"), isPremium: \(item.isPremium?.description ?? "nil"))")
                             return false
                         }
                         
-                        print("✅ [ChannelDetailView] Including private video: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"))")
+                        print("✅ [ChannelDetailView] Including private/premium video: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"), isPremium: \(isPremium))")
                         return true
                     }
                 }.value
@@ -7483,7 +7712,7 @@ struct ChannelDetailView: View {
                             func normalizeUsername(_ username: String?) -> String? {
                                 guard let username = username else { return nil }
                                 return username.replacingOccurrences(of: "🔒", with: "")
-                                    .trimmingCharacters(in: .whitespaces)
+                                    .trimmingCharacters(in: CharacterSet.whitespaces)
                                     .lowercased()
                             }
                             
@@ -7528,25 +7757,26 @@ struct ChannelDetailView: View {
                                 bothViews.privateContent.filter { item in
                                     let isOwner = isOwnerVideo(item)
                                     let isPrivate = item.isPrivateUsername == true
+                                    let isPremium = item.isPremium == true
                                     
                                     // DEBUG: Log all items in privateContent array to understand what backend is sending
-                                    print("🔍 [ChannelDetailView] Private array item (loadContent): \(item.fileName), isPrivateUsername: \(item.isPrivateUsername?.description ?? "nil"), creator: \(item.creatorUsername ?? "unknown"), isOwner: \(isOwner)")
+                                    print("🔍 [ChannelDetailView] Private array item (loadContent): \(item.fileName), isPrivateUsername: \(item.isPrivateUsername?.description ?? "nil"), isPremium: \(item.isPremium?.description ?? "nil"), creator: \(item.creatorUsername ?? "unknown"), isOwner: \(isOwner)")
                                     
                                     // CRITICAL: Include ALL owner videos in private view, regardless of isPrivateUsername flag
                                     // This ensures owner's private videos are never filtered out
                                     if isOwner {
-                                        print("✅ [ChannelDetailView] Including owner video in private array: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"), isPrivate: \(isPrivate))")
+                                        print("✅ [ChannelDetailView] Including owner video in private array: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"), isPrivate: \(isPrivate), isPremium: \(isPremium))")
                                         return true // Always include owner videos in private view
                                     }
                                     
-                                    // For non-owner videos, only include if isPrivateUsername is true
-                                    // CRITICAL: Use isPrivateUsername flag as source of truth (not username label)
-                                    if !isPrivate {
-                                        print("🚫 [ChannelDetailView] Filtering out item from private array - isPrivateUsername is not true: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"), isPrivateUsername: \(item.isPrivateUsername?.description ?? "nil"))")
+                                    // For non-owner videos, include if isPrivateUsername is true OR isPremium is true
+                                    // CRITICAL: Use isPrivateUsername and isPremium flags as source of truth
+                                    if !isPrivate && !isPremium {
+                                        print("🚫 [ChannelDetailView] Filtering out item from private array - not private or premium: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"), isPrivateUsername: \(item.isPrivateUsername?.description ?? "nil"), isPremium: \(item.isPremium?.description ?? "nil"))")
                                         return false
                                     }
                                     
-                                    print("✅ [ChannelDetailView] Including private video: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"))")
+                                    print("✅ [ChannelDetailView] Including private/premium video: \(item.fileName) (creator: \(item.creatorUsername ?? "unknown"), isPremium: \(isPremium))")
                                     return true
                                 }
                             }.value
@@ -7699,12 +7929,31 @@ struct ChannelDetailView: View {
                     return
                 }
                 
+                // CRITICAL: Only show errors if we have NO cached content
+                // If we have cached content, errors are silent (Instagram/Twitter pattern)
+                let hasCachedContent = await MainActor.run {
+                    let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
+                    return isTwillyTV ? (!publicContent.isEmpty || !privateContent.isEmpty) : !content.isEmpty
+                }
+                
                 print("❌ [ChannelDetailView] Error fetching content: \(error.localizedDescription)")
+                
                 await MainActor.run {
-                    errorMessage = error.localizedDescription
                     isLoading = false
                     hasLoadedOnce = true
-                    print("❌ [ChannelDetailView] Error state set - errorMessage: \(errorMessage ?? "nil"), isLoading: \(isLoading), hasLoadedOnce: \(hasLoadedOnce)")
+                    
+                    // Only show error if we have NO cached content
+                    // If we have cached content, errors are completely silent (Instagram/Twitter pattern)
+                    if !hasCachedContent {
+                        // Show user-friendly error message
+                        errorMessage = "Unable to load content. Please check your connection."
+                    } else {
+                        // We have cached content - error is silent (user sees cached content)
+                        print("✅ [ChannelDetailView] Error occurred but we have cached content - error is silent")
+                        errorMessage = nil
+                    }
+                    
+                    print("❌ [ChannelDetailView] Error state set - errorMessage: \(errorMessage ?? "nil"), isLoading: \(isLoading), hasLoadedOnce: \(hasLoadedOnce), hasCachedContent: \(hasCachedContent)")
                 }
             }
         }
@@ -7755,7 +8004,7 @@ struct ChannelDetailView: View {
             func normalizeUsername(_ username: String?) -> String? {
                 guard let username = username else { return nil }
                 return username.replacingOccurrences(of: "🔒", with: "")
-                    .trimmingCharacters(in: .whitespaces)
+                    .trimmingCharacters(in: CharacterSet.whitespaces)
                     .lowercased()
             }
             
@@ -8232,26 +8481,28 @@ struct ChannelDetailView: View {
             
             // 2. Filter for public/private content (already done when populating arrays, but ensure strict separation)
             if showPrivateContent {
-                // PRIVATE VIEW: Show items where isPrivateUsername is true OR owner videos
+                // PRIVATE VIEW: Show items where isPrivateUsername is true OR isPremium is true OR owner videos
                 // Note: Owner videos may appear in private view even if isPrivateUsername == false (backend decision)
                 filteredSortedContent = filteredSortedContent.filter { item in
                     let isPrivate = item.isPrivateUsername == true
+                    let isPremium = item.isPremium == true
                     let isOwner = isOwnerVideo(item)
-                    if !isPrivate && !isOwner {
-                        print("🚫 [ChannelDetailView] SECURITY: Blocking public item from private view: \(item.fileName) (isPrivateUsername: \(item.isPrivateUsername != nil ? String(describing: item.isPrivateUsername!) : "nil"))")
+                    if !isPrivate && !isPremium && !isOwner {
+                        print("🚫 [ChannelDetailView] SECURITY: Blocking public item from private view: \(item.fileName) (isPrivateUsername: \(item.isPrivateUsername != nil ? String(describing: item.isPrivateUsername!) : "nil"), isPremium: \(item.isPremium != nil ? String(describing: item.isPremium!) : "nil"))")
                     }
-                    return isPrivate || isOwner // Include private items OR owner videos
+                    return isPrivate || isPremium || isOwner // Include private/premium items OR owner videos
                 }
                 print("🔒 [ChannelDetailView] PRIVATE VIEW: \(filteredSortedContent.count) items (strictly filtered)")
             } else {
-                // PUBLIC VIEW: ONLY show items where isPrivateUsername is NOT true (unless owner video)
+                // PUBLIC VIEW: ONLY show items where isPrivateUsername is NOT true AND isPremium is NOT true (unless owner video)
                 filteredSortedContent = filteredSortedContent.filter { item in
                     let isPrivate = item.isPrivateUsername == true
+                    let isPremium = item.isPremium == true
                     let isOwner = isOwnerVideo(item)
-                    if isPrivate && !isOwner {
-                        print("🚫 [ChannelDetailView] SECURITY: Blocking private item from public view: \(item.fileName) (isPrivateUsername: true)")
+                    if (isPrivate || isPremium) && !isOwner {
+                        print("🚫 [ChannelDetailView] SECURITY: Blocking private/premium item from public view: \(item.fileName) (isPrivateUsername: \(isPrivate), isPremium: \(isPremium))")
                     }
-                    return !isPrivate || isOwner // Include non-private items OR owner videos
+                    return (!isPrivate && !isPremium) || isOwner // Include non-private/non-premium items OR owner videos
                 }
                 print("🌐 [ChannelDetailView] PUBLIC VIEW: \(filteredSortedContent.count) items (strictly filtered)")
             }
@@ -8353,6 +8604,22 @@ struct ChannelDetailView: View {
         if !content.isEmpty && !isLoading {
             Task {
                 await prefetchVideoContent()
+            }
+        }
+        
+        // HYBRID OPTIMIZATION: Proactively prefetch next page when initial content loads
+        // This ensures seamless pagination - next page is ready before user scrolls to the end
+        if hasLoadedOnce && hasMoreContent && nextToken != nil && !isLoadingMore && content.count >= 15 {
+            // Prefetch next page in background (don't show loading indicator)
+            Task {
+                // Small delay to avoid competing with initial load
+                try? await Task.sleep(nanoseconds: 2000_000_000) // 2s delay
+                
+                // Check if still valid (user hasn't navigated away)
+                if hasMoreContent && nextToken != nil && !isLoadingMore {
+                    print("⚡ [ChannelDetailView] Proactively prefetching next page (hybrid optimization)")
+                    loadMoreContent()
+                }
             }
         }
         
@@ -9365,11 +9632,15 @@ struct ChannelDetailView: View {
                 // fileId might be missing the FILE# prefix, so SK is the reliable source
                 // The backend expects the full SK format (FILE#file-123) as the fileId parameter
                 let fileIdToUse = content.SK // Always use SK - it's the full format that matches DynamoDB
-                print("💾 [ChannelDetailView] Updating title - SK: \(fileIdToUse), fileId: \(content.fileId ?? "N/A"), title: '\(trimmedTitle)'")
+                
+                // CRITICAL FIX: Use creator's email, not viewer's email!
+                // FILE entries are stored under USER#creatorEmail, not USER#viewerEmail
+                let creatorEmail = currentChannel.creatorEmail
+                print("💾 [ChannelDetailView] Updating title - SK: \(fileIdToUse), fileId: \(content.fileId ?? "N/A"), title: '\(trimmedTitle)', creatorEmail: \(creatorEmail)")
                 
                 let response = try await ChannelService.shared.updateFileDetails(
                     fileId: fileIdToUse,
-                    userId: userEmail,
+                    userId: creatorEmail, // CRITICAL: Use creator's email, not viewer's email!
                     title: trimmedTitle.isEmpty ? nil : trimmedTitle,
                     description: nil,
                     price: nil,
@@ -9642,8 +9913,8 @@ struct ChannelDetailView: View {
                         // response.data is [String: AnyCodable]?, so we need to extract the String value
                         let serverTitle: String
                         if let data = response.data, let titleValue = data["title"] {
-                            // Extract string value from AnyCodable
-                            if let stringValue = titleValue.value as? String, !stringValue.isEmpty {
+                            // Extract string value from Any
+                            if let stringValue = titleValue as? String, !stringValue.isEmpty {
                                 serverTitle = stringValue
                             } else {
                                 // Fallback to what we sent if server didn't return a valid title
@@ -9776,6 +10047,9 @@ struct ChannelDetailView: View {
         
         print("📄 [ChannelDetailView] Loading more content (pagination)...")
         isLoadingMore = true
+        
+        // HYBRID OPTIMIZATION: Prefetch next page in background while user scrolls
+        // This ensures seamless pagination without loading states
         
         Task {
             do {
@@ -10047,6 +10321,8 @@ struct ContentCard: View {
     @State private var videoDuration: TimeInterval? = nil
     @State private var isLoadingDuration = false
     @State private var shouldHide = false // Hide card if duration < 6 seconds
+    @State private var commentCount: Int? = nil // Comment count for this video
+    @State private var unreadCommentCount: Int = 0 // Unread comment count (badge)
     
     // Computed property to get display title (never show raw m3u8 filename)
     private var displayTitle: String {
@@ -10109,7 +10385,6 @@ struct ContentCard: View {
         self.onFavorite = onFavorite
         self.showPrivateContent = showPrivateContent
     }
-    
     
     var body: some View {
         // Hide videos under 6 seconds
@@ -10186,15 +10461,14 @@ struct ContentCard: View {
                                     .truncationMode(.tail)
                             }
                             
-                            // Creator username - ALWAYS normalize for display and show orange lock for private
+                            // Creator username with icon - Use SF Symbols (not emojis) to prevent flickering
                             if let username = content.creatorUsername, !username.isEmpty {
                                 HStack(spacing: 4) {
                                     Image(systemName: "person.circle.fill")
                                         .font(.system(size: 12))
                                         .foregroundColor(.twillyCyan)
                                     
-                                    // Username text - ALWAYS normalize: Remove lock symbol and trim whitespace
-                                    // This ensures all private usernames display cleanly without 🔒
+                                    // Username text - normalize: Remove lock symbol and trim whitespace
                                     Text(username.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespacesAndNewlines))
                                         .font(.subheadline)
                                         .fontWeight(.semibold)
@@ -10203,51 +10477,108 @@ struct ContentCard: View {
                                         .minimumScaleFactor(0.8) // Scale down if needed
                                         .fixedSize(horizontal: true, vertical: false) // Allow horizontal expansion, prevent wrapping
                                     
-                                    // Orange lock icon - Show for ALL private videos
-                                    // Show lock icon if:
-                                    // 1. isPrivateUsername is explicitly true, OR
-                                    // 2. We're in private view (all videos in private view are private)
-                                    if content.isPrivateUsername == true || showPrivateContent {
-                                        Image(systemName: "lock.fill")
-                                            .font(.system(size: 10))
-                                            .foregroundColor(.orange)
-                                            .padding(.leading, 4) // Small spacing after username
+                                    // Icon based on view mode - IMMEDIATE UPDATE, NO FLASH
+                                    // Use transaction to disable animation for instant icon switch
+                                    Group {
+                                        if showPrivateContent {
+                                            // PRIVATE VIEW: Show premium or private icon
+                                            if let isPremium = content.isPremium, isPremium == true {
+                                                // Premium content - yellow dollar sign icon
+                                                Image(systemName: "dollarsign.circle.fill")
+                                                    .font(.system(size: 12))
+                                                    .foregroundColor(.yellow)
+                                            } else {
+                                                // Private content - orange lock icon
+                                                Image(systemName: "lock.fill")
+                                                    .font(.system(size: 12))
+                                                    .foregroundColor(.orange)
+                                            }
+                                        } else {
+                                            // PUBLIC VIEW: Always show blue globe icon
+                                            Image(systemName: "globe")
+                                                .font(.system(size: 12))
+                                                .foregroundColor(.blue)
+                                        }
+                                    }
+                                    .id("icon-\(showPrivateContent ? "private" : "public")-\(content.isPremium == true ? "premium" : "regular")-\(content.SK)") // Include content.SK for stability
+                                    .transaction { transaction in
+                                        // CRITICAL: Disable animation on icon to prevent flash
+                                        transaction.animation = nil
                                     }
                                 }
                                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading) // Allow HStack to take available space
                             }
                             
-                            // Video duration
-                            HStack(spacing: 4) {
-                                Image(systemName: "clock.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.white.opacity(0.7))
-                                if isLoadingDuration {
-                                    ProgressView()
-                                        .scaleEffect(0.7)
-                                        .tint(.white.opacity(0.7))
-                                } else if let duration = videoDuration {
-                                    Text(formatDuration(duration))
-                                        .font(.caption)
+                            // Video duration and comment count
+                            VStack(alignment: .leading, spacing: 4) {
+                                // Duration
+                                HStack(spacing: 4) {
+                                    Image(systemName: "clock.fill")
+                                        .font(.system(size: 10))
                                         .foregroundColor(.white.opacity(0.7))
-                                } else {
-                                    Text("--:--")
-                                        .font(.caption)
-                                        .foregroundColor(.white.opacity(0.7))
+                                    if isLoadingDuration {
+                                        ProgressView()
+                                            .scaleEffect(0.7)
+                                            .tint(.white.opacity(0.7))
+                                    } else if let duration = videoDuration {
+                                        Text(formatDuration(duration))
+                                            .font(.caption)
+                                            .foregroundColor(.white.opacity(0.7))
+                                    } else {
+                                        Text("--:--")
+                                            .font(.caption)
+                                            .foregroundColor(.white.opacity(0.7))
+                                    }
                                 }
                             }
                             
-                            // Favorite heart button - below video duration
-                            if let onFavorite = onFavorite {
+                            // Comment icon and Favorite star button - side by side
+                            HStack(alignment: .top, spacing: 12) {
+                                // Comment icon with unread badge - always visible
                                 Button(action: {
-                                    onFavorite()
+                                    // Open video player with comments
+                                    onTap()
                                 }) {
-                                    Image(systemName: isFavorite ? "heart.fill" : "heart")
-                                        .font(.system(size: 14, weight: .medium))
-                                        .foregroundColor(isFavorite ? .red : .white.opacity(0.6))
+                                    ZStack(alignment: .topTrailing) {
+                                        Image(systemName: "text.bubble.fill")
+                                            .font(.system(size: 14, weight: .medium))
+                                            .foregroundColor(.twillyCyan)
+                                        
+                                        // Unread comment badge (red circle) - show "1" if ANY unread messages exist
+                                        // Binary indicator: 1 = has unread, 0 = none (no badge)
+                                        if unreadCommentCount > 0 {
+                                            Text("1")
+                                                .font(.system(size: 8, weight: .bold))
+                                                .foregroundColor(.white)
+                                                .padding(3)
+                                                .background(Color.red)
+                                                .clipShape(Circle())
+                                                .offset(x: 6, y: -6)
+                                        }
+                                        
+                                        // Show comment count if available (below icon)
+                                        if let count = commentCount, count > 0 {
+                                            Text("\(count)")
+                                                .font(.system(size: 9, weight: .semibold))
+                                                .foregroundColor(.white.opacity(0.8))
+                                                .offset(x: 0, y: 16)
+                                        }
+                                    }
                                 }
                                 .buttonStyle(PlainButtonStyle())
-                                .padding(.top, 2)
+                                
+                                // Favorite star button - centered with comment box
+                                if let onFavorite = onFavorite {
+                                    Button(action: {
+                                        onFavorite()
+                                    }) {
+                                        Image(systemName: isFavorite ? "star.fill" : "star")
+                                            .font(.system(size: 14, weight: .medium))
+                                            .foregroundColor(isFavorite ? .yellow : .white.opacity(0.6))
+                                    }
+                                    .buttonStyle(PlainButtonStyle())
+                                    .offset(y: -1.5) // Slightly above comment icon center
+                                }
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading) // Take available space, keep aligned left
@@ -10364,6 +10695,54 @@ struct ContentCard: View {
             }
             .onAppear {
                 loadVideoDuration()
+                loadCommentCount()
+                
+                // CRITICAL: For latest video, immediately load unread counts to show indicator
+                if isLatestContent {
+                    Task {
+                        try? await MessagingService.shared.loadUnreadCounts(for: content.SK)
+                        await MainActor.run {
+                            self.unreadCommentCount = MessagingService.shared.getUnreadCount(for: content.SK)
+                            print("🔔 [ContentCard] Loaded unread count for latest video: \(self.unreadCommentCount)")
+                        }
+                    }
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("CommentsViewed"))) { notification in
+                if let videoId = notification.userInfo?["videoId"] as? String,
+                   videoId == content.SK {
+                    // If unreadCount is provided directly, use it immediately (faster)
+                    if let unreadCount = notification.userInfo?["unreadCount"] as? Int {
+                        self.unreadCommentCount = unreadCount
+                    } else {
+                        // Otherwise refresh from server
+                    Task {
+                        // Refresh comment count
+                        do {
+                                let comments = try await ChannelService.shared.getComments(videoId: content.SK, userId: AuthService.shared.userId, viewerEmail: AuthService.shared.userEmail)
+                            await MainActor.run {
+                                // Only count public comments (not private messages)
+                                let publicComments = comments.filter { $0.isPrivate != true && $0.parentCommentId == nil }
+                                self.commentCount = publicComments.count
+                            }
+                        } catch {
+                            print("❌ [ContentCard] Failed to refresh comment count: \(error.localizedDescription)")
+                        }
+                        
+                            // Refresh unread count using MessagingService
+                            Task {
+                            do {
+                                    try await MessagingService.shared.loadUnreadCounts(for: content.SK)
+                                await MainActor.run {
+                                        self.unreadCommentCount = MessagingService.shared.getUnreadCount(for: content.SK)
+                                }
+                            } catch {
+                                print("❌ [ContentCard] Failed to refresh unread count: \(error.localizedDescription)")
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -10465,6 +10844,47 @@ struct ContentCard: View {
         }
     }
     
+    // Load comment count and unread count asynchronously
+    private func loadCommentCount() {
+        guard commentCount == nil else { return }
+        
+        Task {
+            do {
+                // Load comments to get count - only count public comments (not private messages)
+                let comments = try await ChannelService.shared.getComments(videoId: content.SK, userId: AuthService.shared.userId, viewerEmail: AuthService.shared.userEmail)
+                await MainActor.run {
+                    // Only count public comments (not private messages)
+                    let publicComments = comments.filter { $0.isPrivate != true && $0.parentCommentId == nil }
+                    self.commentCount = publicComments.count
+                }
+                
+                // Load unread private message count (red badge indicator)
+                // Use MessagingService as source of truth for consistency
+                if let userEmail = AuthService.shared.userEmail {
+                    do {
+                        // Load unread counts via MessagingService (ensures consistency)
+                        try await MessagingService.shared.loadUnreadCounts(for: content.SK)
+                        await MainActor.run {
+                            // Get unread count from MessagingService
+                            self.unreadCommentCount = MessagingService.shared.getUnreadCount(for: content.SK)
+                        }
+                    } catch {
+                        print("❌ [ContentCard] Failed to load unread count: \(error.localizedDescription)")
+                        await MainActor.run {
+                            self.unreadCommentCount = 0
+                        }
+                    }
+                }
+            } catch {
+                print("❌ [ContentCard] Failed to load comment count: \(error.localizedDescription)")
+                await MainActor.run {
+                    self.commentCount = 0
+                    self.unreadCommentCount = 0
+                }
+            }
+        }
+    }
+    
     // Get duration from video URL
     private func getDuration(from url: URL) async -> TimeInterval? {
         let asset = AVAsset(url: url)
@@ -10535,9 +10955,3336 @@ struct SVGImageView: UIViewRepresentable {
     }
 }
 
+// MARK: - Comment Model
+// MARK: - MessagingService (Temporary: Should be in separate file, add MessagingService.swift to Xcode project)
+class MessagingService: ObservableObject {
+    static let shared = MessagingService()
+    
+    // MARK: - Published State (Server is Source of Truth)
+    @Published var publicComments: [String: [Comment]] = [:] // videoId -> [Comment]
+    @Published var privateThreads: [String: [String: [Comment]]] = [:] // videoId -> [parentCommentId -> [Comment]]
+    @Published var unreadCounts: [String: Int] = [:] // videoId -> unreadCount
+    @Published var threadUnreadStatus: [String: Bool] = [:] // "videoId_threadId" -> hasUnread
+    @Published var cachedUserThreads: [String: [ThreadInfo]] = [:] // videoId -> [ThreadInfo]
+    
+    // MARK: - Private State
+    private var websocketService = UnifiedWebSocketService.shared
+    private var authService = AuthService.shared
+    private var pollingTimers: [String: Timer] = [:] // videoId -> Timer
+    private var cancellables = Set<AnyCancellable>()
+    
+    private init() {
+        setupWebSocketHandlers()
+    }
+    
+    // MARK: - Public API
+    
+    /// Load messages for a video - SERVER IS SOURCE OF TRUTH
+    /// LIGHTNING FAST: Returns cached data immediately if available, then refreshes in background
+    func loadMessages(for videoId: String, useCache: Bool = true) async throws {
+        guard let userId = authService.userId,
+              let viewerEmail = authService.userEmail else {
+            throw MessagingError.notAuthenticated
+        }
+        
+        // LIGHTNING FAST: Return cached data immediately if available
+        if useCache {
+            await MainActor.run {
+                if let cachedPublic = publicComments[videoId], !cachedPublic.isEmpty {
+                    print("⚡ [MessagingService] Cache hit for \(videoId): \(cachedPublic.count) public, \(privateThreads[videoId]?.count ?? 0) threads")
+                    // Cache hit - data already available, refresh in background
+                    Task.detached { [weak self] in
+                        try? await self?.loadMessages(for: videoId, useCache: false)
+                    }
+                    return
+                }
+            }
+        }
+        
+        // Load fresh from server
+        let response = try await ChannelService.shared.getCommentsWithThreads(
+            videoId: videoId,
+            userId: userId,
+            viewerEmail: viewerEmail
+        )
+        
+        await MainActor.run {
+            // Process public comments - reverse once (server returns newest first)
+            // UNIFIED LOGIC: General chat = flat list, private chat = flat list per threadId
+            // Both work the same - just different IDs (general has no ID, private has threadId)
+            let reversedPublic = Array(response.comments.filter { $0.isPrivate != true && $0.parentCommentId == nil }.reversed())
+            publicComments[videoId] = reversedPublic
+            
+            // Process private threads - reverse each thread once
+            // CRITICAL: Preserve existing threads (SAME AS GENERAL CHAT preserves publicComments)
+            // Don't overwrite - merge with existing to ensure persistence when navigating away
+            var threads: [String: [Comment]] = privateThreads[videoId] ?? [:]
+            
+            // Update with server data (server is source of truth)
+            for (parentId, serverMessages) in response.threadsByParent {
+                // Reverse once (newest first -> oldest first) - SAME AS GENERAL CHAT
+                let reversedMessages = Array(serverMessages.reversed())
+                
+                // Merge with existing messages to preserve optimistic updates - SAME AS GENERAL CHAT
+                let existingMessages = threads[parentId] ?? []
+                let serverMessageIds = Set(reversedMessages.map { $0.id })
+                let optimisticMessages = existingMessages.filter { !serverMessageIds.contains($0.id) }
+                
+                // Combine: server messages + optimistic updates - SAME AS GENERAL CHAT
+                var merged = reversedMessages
+                merged.append(contentsOf: optimisticMessages)
+                
+                threads[parentId] = merged
+            }
+            
+            // CRITICAL: Preserve ALL existing threads that aren't in server response
+            // This ensures messages don't disappear when navigating away - SAME AS GENERAL CHAT
+            // General chat always preserves publicComments, private threads should always be preserved
+            privateThreads[videoId] = threads
+            
+            // Update cached user threads immediately
+            updateCachedUserThreads(for: videoId)
+            
+            print("✅ [MessagingService] Loaded \(reversedPublic.count) public comments and \(threads.count) private threads for \(videoId)")
+        }
+        
+        // CRITICAL: Load unread counts after loading messages
+        // This ensures unread indicators are always up-to-date
+        try await loadUnreadCounts(for: videoId)
+        
+        // Update cached user threads AFTER unread counts are loaded
+        // This ensures orange highlights match the red badge
+        await MainActor.run {
+            updateCachedUserThreads(for: videoId)
+        }
+    }
+    
+    /// Preload messages for a video (non-blocking, for instant display later)
+    /// LIGHTNING FAST: Preloads comments when video card appears, before user opens chat
+    func preloadMessages(for videoId: String) {
+        // Only preload if not already cached (avoid redundant loads)
+        Task.detached { [weak self] in
+            await MainActor.run {
+                if self?.publicComments[videoId] == nil || (self?.publicComments[videoId]?.isEmpty ?? true) {
+                    // No cache - preload in background
+                    Task.detached {
+                        try? await self?.loadMessages(for: videoId, useCache: false)
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Update cached user threads for a video (for username scroll)
+    /// OPEN MESSAGING: Anyone who has commented (public or private) can be messaged
+    func updateCachedUserThreads(for videoId: String) {
+        guard let userId = authService.userId,
+              let currentUsername = authService.username else { return }
+        
+        var threads: [ThreadInfo] = []
+        var usernameToThreadId: [String: String] = [:] // Track best threadId for each username
+        
+        // Get all public comments to find ALL participants (not just private thread participants)
+        let publicCommentsList = publicComments[videoId] ?? []
+        let threadsDict = privateThreads[videoId] ?? [:]
+        
+        // STEP 1: Collect all unique participants from private threads (existing conversations)
+        // SIMPLIFIED: Track participants naturally - whoever posts is a participant
+        // Allow self-messaging (user can message themselves)
+        var participantSet: Set<String> = []
+        
+        for (parentId, threadMessages) in threadsDict {
+            for message in threadMessages {
+                // Include ALL participants (including self for self-messaging)
+                participantSet.insert(message.username)
+                // Track threadId for this participant (prefer thread with messages)
+                if usernameToThreadId[message.username] == nil {
+                    usernameToThreadId[message.username] = parentId
+                }
+            }
+        }
+        
+        // STEP 2: Add ALL users who have made public comments (OPEN MESSAGING - anyone can message anyone)
+        // Allow self-messaging - user can click on their own comment to start a conversation with themselves
+        for comment in publicCommentsList {
+            // Include ALL users (including self)
+            participantSet.insert(comment.username)
+            
+            // If this user has a private thread, use that threadId
+            // Otherwise, use the comment.id as the threadId (allows starting new conversation)
+            if usernameToThreadId[comment.username] == nil {
+                // Check if this comment has a private thread
+                if threadsDict[comment.id] != nil {
+                    usernameToThreadId[comment.username] = comment.id
+                } else {
+                    // No private thread yet - use comment.id so clicking starts a new conversation
+                    usernameToThreadId[comment.username] = comment.id
+                }
+            }
+        }
+        
+        // STEP 3: Create ThreadInfo for each participant
+        for username in participantSet {
+            // Get the best threadId for this username
+            let threadId = usernameToThreadId[username] ?? username // Fallback to username if no threadId
+            
+            let key = "\(videoId)_\(threadId)"
+            let hasUnread = threadUnreadStatus[key] == true
+            
+            // Check if thread has messages (existing conversation) or is just a public comment (new conversation)
+            let hasMessages = threadsDict[threadId] != nil && !(threadsDict[threadId]?.isEmpty ?? true)
+            
+            threads.append(ThreadInfo(id: threadId, username: username, hasUnread: hasUnread))
+        }
+        
+        // Sort by unread first, then alphabetically
+        threads.sort { first, second in
+            if first.hasUnread != second.hasUnread {
+                return first.hasUnread
+            }
+            return first.username < second.username
+        }
+        
+        cachedUserThreads[videoId] = threads
+        print("✅ [MessagingService] Updated cached user threads: \(threads.count) participants for \(videoId)")
+    }
+    
+    struct ThreadInfo: Identifiable {
+        var id: String // Mutable to allow updating to more recent thread
+        let username: String
+        var hasUnread: Bool // Mutable to allow updating unread status
+    }
+    
+    /// Post a message - OPTIMISTIC UPDATE + SERVER SYNC
+    func postMessage(videoId: String, text: String, threadId: String?, username: String) async throws -> Comment {
+        guard let userId = authService.userId else {
+            throw MessagingError.notAuthenticated
+        }
+        
+        // Create optimistic comment for immediate UI feedback
+        let optimisticComment = Comment(
+            id: "temp_\(Date().timeIntervalSince1970)",
+            videoId: videoId,
+            userId: userId,
+            username: username,
+            text: text,
+            createdAt: Date(),
+            likeCount: 0,
+            isLiked: false,
+            isPrivate: threadId != nil,
+            parentCommentId: threadId,
+            visibleTo: nil,
+            mentionedUsername: nil
+        )
+        
+        // OPTIMISTIC UPDATE: Add to UI immediately (no delay, no jitter)
+        await MainActor.run {
+            if let threadId = threadId {
+                // Private thread message
+                if privateThreads[videoId] == nil {
+                    privateThreads[videoId] = [:]
+                }
+                if privateThreads[videoId]?[threadId] == nil {
+                    privateThreads[videoId]?[threadId] = []
+                }
+                privateThreads[videoId]?[threadId]?.append(optimisticComment)
+            } else {
+                // Public comment
+                if publicComments[videoId] == nil {
+                    publicComments[videoId] = []
+                }
+                publicComments[videoId]?.append(optimisticComment)
+            }
+            
+            // Update cached user threads immediately (no flash)
+            updateCachedUserThreads(for: videoId)
+        }
+        
+        // Post to server in background
+        let comment = try await ChannelService.shared.postComment(
+            videoId: videoId,
+            userId: userId,
+            username: username,
+            text: text,
+            parentCommentId: threadId,
+            creatorEmail: nil,
+            commenterEmail: nil
+        )
+        
+        // UNIFIED LOGIC: Private thread = general chat with 2 people
+        // Replace optimistic comment with real one (same logic for both)
+        await MainActor.run {
+            if let threadId = threadId {
+                // Private thread - treat exactly like general chat, just in a thread array
+                if var thread = privateThreads[videoId]?[threadId] {
+                    if let index = thread.firstIndex(where: { $0.id == optimisticComment.id }) {
+                        thread[index] = comment
+                        privateThreads[videoId]?[threadId] = thread
+                    } else {
+                        // Optimistic comment not found - add the real one (same as general chat)
+                        thread.append(comment)
+                        privateThreads[videoId]?[threadId] = thread
+                    }
+                } else {
+                    // Thread doesn't exist - create it with the real comment (same as general chat)
+                    if privateThreads[videoId] == nil {
+                        privateThreads[videoId] = [:]
+                    }
+                    privateThreads[videoId]?[threadId] = [comment]
+                }
+            } else {
+                // Public comment (general chat)
+                if var comments = publicComments[videoId] {
+                    if let index = comments.firstIndex(where: { $0.id == optimisticComment.id }) {
+                        comments[index] = comment
+                        publicComments[videoId] = comments
+                    } else {
+                        // Optimistic comment not found - add the real one
+                        comments.append(comment)
+                        publicComments[videoId] = comments
+                    }
+                } else {
+                    // No comments yet - create array with the real comment
+                    publicComments[videoId] = [comment]
+                }
+            }
+            
+            // Update cached user threads after adding message
+            updateCachedUserThreads(for: videoId)
+        }
+        
+        // UNIFIED PERSISTENCE: Private thread = general chat with 2 people
+        // CRITICAL: Always reload from server after posting (useCache: false to force server fetch)
+        // This ensures message is persisted and visible to both participants
+        // Same logic for both general chat and private threads
+        Task.detached { [weak self] in
+            guard let self = self else { return }
+            // Wait for server processing (same delay for both)
+            try? await Task.sleep(nanoseconds: 1000_000_000) // 1.0s delay to ensure server processing
+            // CRITICAL: Force reload from server (useCache: false) to get persisted message
+            // This ensures both participants see the message - same as general chat
+            try? await self.loadMessages(for: videoId, useCache: false)
+            
+            // After reload, update cached user threads
+            await MainActor.run {
+                self.updateCachedUserThreads(for: videoId)
+            }
+        }
+        
+        return comment
+    }
+    
+    /// Like a message
+    func likeMessage(commentId: String, videoId: String) async throws {
+        guard let userId = authService.userId else {
+            throw MessagingError.notAuthenticated
+        }
+        
+        // Optimistic update
+        await MainActor.run {
+            if var comments = publicComments[videoId],
+               let index = comments.firstIndex(where: { $0.id == commentId }) {
+                comments[index].isLiked.toggle()
+                comments[index].likeCount += comments[index].isLiked ? 1 : -1
+                publicComments[videoId] = comments
+            } else {
+                // Check private threads
+                if var threads = privateThreads[videoId] {
+                    for (parentId, var thread) in threads {
+                        if let index = thread.firstIndex(where: { $0.id == commentId }) {
+                            thread[index].isLiked.toggle()
+                            thread[index].likeCount += thread[index].isLiked ? 1 : -1
+                            threads[parentId] = thread
+                            privateThreads[videoId] = threads
+                            break
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Get current like state after optimistic update
+        let newIsLiked = await MainActor.run {
+            if let comments = publicComments[videoId],
+               let comment = comments.first(where: { $0.id == commentId }) {
+                return comment.isLiked
+            } else if let threads = privateThreads[videoId] {
+                for (_, thread) in threads {
+                    if let comment = thread.first(where: { $0.id == commentId }) {
+                        return comment.isLiked
+                    }
+                }
+            }
+            return false
+        }
+        
+        // Update on server (WebSocket will confirm)
+        _ = try await ChannelService.shared.likeComment(
+            videoId: videoId,
+            commentId: commentId,
+            userId: userId,
+            isLiked: newIsLiked
+        )
+    }
+    
+    /// Mark thread as read
+    func markThreadRead(threadId: String, videoId: String) async throws {
+        guard let viewerEmail = authService.userEmail else {
+            throw MessagingError.notAuthenticated
+        }
+        
+        // Optimistic update - immediate UI feedback
+        await MainActor.run {
+            let key = "\(videoId)_\(threadId)"
+            threadUnreadStatus[key] = false
+            threadUnreadStatus[threadId] = false // Also update without videoId prefix for compatibility
+            updateCachedUserThreads(for: videoId)
+        }
+        
+        // Update on server
+        _ = try await ChannelService.shared.markThreadAsRead(
+            videoId: videoId,
+            viewerEmail: viewerEmail,
+            threadId: threadId
+        )
+        
+        // Reload unread counts (will update badge and clear if no unreads remain)
+        try await loadUnreadCounts(for: videoId)
+        
+        // CRITICAL: After marking as read, check if all threads are read and clear badge
+        await MainActor.run {
+            let remainingUnreadCount = threadUnreadStatus.values.filter { $0 }.count
+            NotificationCenter.default.post(
+                name: NSNotification.Name("CommentsViewed"),
+                object: nil,
+                userInfo: [
+                    "videoId": videoId,
+                    "unreadCount": remainingUnreadCount
+                ]
+            )
+        }
+    }
+    
+    /// Load unread counts for a video
+    func loadUnreadCounts(for videoId: String) async throws {
+        guard let viewerEmail = authService.userEmail else {
+            return
+        }
+        
+        let counts = try await ChannelService.shared.getUnreadCommentCounts(
+            videoIds: [videoId],
+            viewerEmail: viewerEmail
+        )
+        
+        await MainActor.run {
+            if let videoResponse = counts[videoId] {
+                if let intValue = videoResponse as? Int {
+                    unreadCounts[videoId] = intValue
+                } else if let dictValue = videoResponse as? [String: Any],
+                          let total = dictValue["total"] as? Int {
+                    unreadCounts[videoId] = total
+                    
+                    // Update thread unread status
+                    if let threads = dictValue["threads"] as? [String: Int] {
+                        for (threadId, count) in threads {
+                            let key = "\(videoId)_\(threadId)"
+                            threadUnreadStatus[key] = count > 0
+                        }
+                    }
+                }
+            }
+            
+            // Update cached user threads after unread status changes
+            updateCachedUserThreads(for: videoId)
+            
+            // Notify ContentCard of unread count change
+            NotificationCenter.default.post(
+                name: NSNotification.Name("CommentsViewed"),
+                object: nil,
+                userInfo: [
+                    "videoId": videoId,
+                    "unreadCount": unreadCounts[videoId] ?? 0
+                ]
+            )
+        }
+    }
+    
+    /// Clear all cache - SERVER IS SOURCE OF TRUTH
+    func clearCache() {
+        publicComments.removeAll()
+        privateThreads.removeAll()
+        unreadCounts.removeAll()
+        threadUnreadStatus.removeAll()
+        
+        // Clear UserDefaults
+        let defaults = UserDefaults.standard
+        let keys = defaults.dictionaryRepresentation().keys
+        for key in keys {
+            if key.hasPrefix("comments_") || key.hasPrefix("commentLikes_") || key.hasPrefix("threadUnreadStatus_") {
+                defaults.removeObject(forKey: key)
+            }
+        }
+        defaults.synchronize()
+        
+        print("🗑️ [MessagingService] Cleared all cache - server is source of truth")
+    }
+    
+    /// Get public comments for a video
+    func getPublicComments(for videoId: String) -> [Comment] {
+        return publicComments[videoId] ?? []
+    }
+    
+    /// Get private thread for a video and threadId
+    func getPrivateThread(for videoId: String, threadId: String) -> [Comment] {
+        return privateThreads[videoId]?[threadId] ?? []
+    }
+    
+    /// Get unread count for a video
+    func getUnreadCount(for videoId: String) -> Int {
+        return unreadCounts[videoId] ?? 0
+    }
+    
+    /// Check if thread has unread messages
+    func hasUnreadThread(videoId: String, threadId: String) -> Bool {
+        let key = "\(videoId)_\(threadId)"
+        return threadUnreadStatus[key] == true
+    }
+    
+    /// Get cached user threads for a video
+    func getCachedUserThreads(for videoId: String) -> [ThreadInfo] {
+        return cachedUserThreads[videoId] ?? []
+    }
+    
+    /// Connect WebSocket for a video
+    func connectWebSocket(for videoId: String) {
+        guard let userEmail = authService.userEmail else { return }
+        let websocketEndpoint = ChannelService.shared.websocketEndpoint
+        websocketService.connect(userEmail: userEmail, websocketEndpoint: websocketEndpoint)
+        
+        // Start polling fallback if WebSocket not connected after 2 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            if !self.websocketService.isConnected {
+                print("⚠️ [MessagingService] WebSocket not connected, starting polling fallback for \(videoId)")
+                self.startPolling(for: videoId)
+            }
+        }
+    }
+    
+    /// Disconnect and cleanup for a video
+    func disconnect(for videoId: String) {
+        stopPolling(for: videoId)
+    }
+    
+    // MARK: - WebSocket Setup
+    
+    private func setupWebSocketHandlers() {
+        // Handle new comment notifications
+        websocketService.$commentNotification
+            .compactMap { $0 }
+            .sink { [weak self] notification in
+                Task {
+                    try? await self?.loadMessages(for: notification.videoId)
+                }
+            }
+            .store(in: &cancellables)
+        
+        // Handle unread count updates
+        websocketService.$unreadCountUpdateNotification
+            .compactMap { $0 }
+            .sink { [weak self] notification in
+                Task {
+                    try? await self?.loadUnreadCounts(for: notification.videoId)
+                }
+            }
+            .store(in: &cancellables)
+        
+        // Handle like notifications
+        websocketService.$likeNotification
+            .compactMap { $0 }
+            .sink { [weak self] notification in
+                Task { @MainActor in
+                    guard let self = self else { return }
+                    if var comments = self.publicComments[notification.videoId],
+                       let index = comments.firstIndex(where: { $0.id == notification.commentId }) {
+                        comments[index].likeCount = notification.likeCount
+                        comments[index].isLiked = notification.likedBy != nil
+                        self.publicComments[notification.videoId] = comments
+                    } else if var threads = self.privateThreads[notification.videoId] {
+                        for (parentId, var thread) in threads {
+                            if let index = thread.firstIndex(where: { $0.id == notification.commentId }) {
+                                thread[index].likeCount = notification.likeCount
+                                thread[index].isLiked = notification.likedBy != nil
+                                threads[parentId] = thread
+                                self.privateThreads[notification.videoId] = threads
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+            .store(in: &cancellables)
+    }
+    
+    // MARK: - Polling Fallback
+    
+    func startPolling(for videoId: String) {
+        stopPolling(for: videoId)
+        
+        pollingTimers[videoId] = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+            guard let self = self, !self.websocketService.isConnected else {
+                self?.stopPolling(for: videoId)
+                return
+            }
+            Task {
+                try? await self.loadMessages(for: videoId)
+            }
+        }
+    }
+    
+    func stopPolling(for videoId: String) {
+        pollingTimers[videoId]?.invalidate()
+        pollingTimers[videoId] = nil
+    }
+}
+
+enum MessagingError: Error {
+    case notAuthenticated
+    case invalidVideoId
+    case networkError(String)
+}
+// END MessagingService
+
+struct Comment: Identifiable, Codable {
+    let id: String
+    let videoId: String
+    let userId: String
+    let username: String
+    let text: String
+    let createdAt: Date
+    var likeCount: Int
+    var isLiked: Bool
+    var isPrivate: Bool?
+    var parentCommentId: String?
+    var visibleTo: [String]?
+    var mentionedUsername: String?
+}
+
+// MARK: - Floating Comment View
+struct FloatingCommentView: View {
+    let content: ChannelContent
+    let channelCreatorEmail: String? // For checking ownership
+    @ObservedObject private var messagingService = MessagingService.shared
+    @ObservedObject private var websocketService = UnifiedWebSocketService.shared
+    @State private var selectedThreadId: String? = nil // Selected comment ID to view thread
+    @State private var newCommentText: String = ""
+    @State private var isExpanded: Bool = false
+    @State private var isLoading: Bool = false
+    @State private var isPosting: Bool = false
+    @State private var isClearing: Bool = false
+    @State private var previousGeneralCommentCount: Int = 0
+    @State private var previousThreadMessageCount: [String: Int] = [:]
+    @ObservedObject private var authService = AuthService.shared
+    // WebSocket and polling are handled by MessagingService
+    
+    // State variables - synced with MessagingService
+    @State private var publicComments: [Comment] = []
+    @State private var privateThreads: [String: [Comment]] = [:]
+    @State private var threadUnreadStatus: [String: Bool] = [:]
+    @State private var cachedUserThreads: [MessagingService.ThreadInfo] = []
+    
+    // Helper function to normalize videoId for comparison (removes FILE# and file- prefixes)
+    private func normalizeVideoId(_ videoId: String) -> String {
+        return videoId
+            .replacingOccurrences(of: "FILE#", with: "")
+            .replacingOccurrences(of: "file-", with: "")
+    }
+    
+    // Check if current user is the video/post owner/creator
+    // CRITICAL: Check the POST/VIDEO creator, not the channel creator
+    private var isOwner: Bool {
+        guard let currentUsername = authService.username else {
+            return false
+        }
+        
+        // Normalize both usernames the same way (remove lock symbols, trim, lowercase)
+        let normalizeUsername: (String?) -> String? = { username in
+            guard let username = username else { return nil }
+            return username.replacingOccurrences(of: "🔒", with: "")
+                .trimmingCharacters(in: CharacterSet.whitespaces)
+                .lowercased()
+        }
+        
+        let normalizedCurrentUsername = normalizeUsername(currentUsername)
+        let normalizedCreatorUsername = normalizeUsername(content.creatorUsername)
+        
+        if let current = normalizedCurrentUsername,
+           let creator = normalizedCreatorUsername {
+            return current == creator
+        }
+        
+        // Fallback: simple comparison if normalization fails
+        return content.creatorUsername?.lowercased() == currentUsername.lowercased()
+    }
+    
+    // Get current thread messages from MessagingService
+    private var currentThreadMessages: [Comment] {
+        guard let threadId = selectedThreadId else {
+            return []
+        }
+        // CRITICAL: Use local state first (includes optimistic updates), fallback to MessagingService
+        // This ensures messages don't vanish before server confirms
+        if let localThread = privateThreads[threadId], !localThread.isEmpty {
+            return localThread
+        }
+        // Fallback to MessagingService if local state is empty
+        return messagingService.getPrivateThread(for: content.SK, threadId: threadId)
+    }
+    
+    // Get thread unread status from MessagingService
+    private func hasUnreadThread(_ threadId: String) -> Bool {
+        return messagingService.hasUnreadThread(videoId: content.SK, threadId: threadId)
+    }
+    
+    // Check if comments should be visible
+    // Comments are now available on all videos (public, private, and premium)
+    private var canViewComments: Bool {
+        return true // Comments are available on all videos
+    }
+    
+    @ViewBuilder
+    private var commentContentView: some View {
+        // Only show comment section if user can view comments
+        if canViewComments {
+            VStack {
+                Spacer()
+                
+                if isExpanded {
+                    expandedCommentSection
+                } else {
+                    collapsedCommentButton
+                }
+            }
+        }
+    }
+    
+    private var expandedCommentSection: some View {
+        VStack(spacing: 0) {
+            commentHeader
+            threadSelector
+            commentsList
+            commentInput
+        }
+        .frame(maxHeight: 400)
+        .cornerRadius(12)
+        .padding()
+    }
+    
+    private var commentHeader: some View {
+        VStack(spacing: 0) {
+            HStack {
+                if selectedThreadId != nil {
+                    Button(action: {
+                        // Save unread status before closing thread
+                        if let threadId = selectedThreadId {
+                            threadUnreadStatus[threadId] = false
+                            saveUnreadStatusToCache()
+                            // Update cached user threads to reflect unread status change (removes orange highlight)
+                            updateCachedUserThreads()
+                        }
+                        withAnimation {
+                            selectedThreadId = nil
+                        }
+                    }) {
+                        HStack {
+                            Image(systemName: "chevron.left")
+                            Text("Back")
+                        }
+                        .foregroundColor(.twillyCyan)
+                    }
+                }
+                
+                Text(selectedThreadId != nil ? "Private Thread" : "Comments")
+                    .font(.headline)
+                    .foregroundColor(.white)
+                
+                Spacer()
+                
+                Button(action: {
+                    // If viewing a private thread, mark it as read before closing
+                    if let threadId = selectedThreadId {
+                        // Mark thread as read when closing comments
+                        markThreadAsRead(threadId: threadId)
+                        threadUnreadStatus[threadId] = false
+                        saveUnreadStatusToCache()
+                        updateCachedUserThreads()
+                        // Clear selected thread
+                        selectedThreadId = nil
+                    }
+                    
+                    withAnimation {
+                        isExpanded = false
+                    }
+                    // Reload comments to get latest count when closing
+                    loadComments()
+                    // Notify ContentCard to refresh comment count
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("CommentsViewed"),
+                        object: nil,
+                        userInfo: ["videoId": content.SK]
+                    )
+                }) {
+                    Image(systemName: "chevron.down")
+                        .foregroundColor(.white)
+                }
+            }
+            .padding()
+            .background(Color.black.opacity(0.7))
+        }
+    }
+    
+    private var threadSelector: some View {
+        Group {
+            if selectedThreadId == nil && !publicComments.isEmpty {
+                let userThreads = filteredUserThreads
+                
+                if !userThreads.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(userThreads) { threadInfo in
+                                threadButton(for: threadInfo)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                    }
+                    .padding(.vertical, 4)
+                    .background(Color.black.opacity(0.3))
+                }
+            }
+        }
+    }
+    
+    // Thread info for unique username display
+    // ThreadInfo is now in MessagingService - keeping for reference during migration
+    private struct ThreadInfo_OLD: Identifiable {
+        var id: String // threadId (comment.id) - mutable to allow updating to more recent thread
+        let username: String
+        var hasUnread: Bool // Make mutable so we can update unread status without rebuilding
+    }
+    
+    // Helper: Find the threadId (parentCommentId) that has private messages for a given comment ID
+    // Backend groups messages by parentCommentId, so we need to find the thread key that contains messages
+    private func findThreadIdForComment(_ commentId: String) -> String? {
+        // Check if this comment ID is directly a thread key with messages
+        if privateThreads[commentId] != nil && !(privateThreads[commentId]?.isEmpty ?? true) {
+            return commentId
+        }
+        
+        // Check if any thread has messages with this commentId as parentCommentId
+        // This handles the case where the comment is the parent that started the thread
+        for (threadId, messages) in privateThreads {
+            if !messages.isEmpty {
+                // Check if any message has this commentId as parentCommentId
+                if messages.contains(where: { $0.parentCommentId == commentId }) {
+                    return threadId
+                }
+                // Also check if the threadId itself matches (the parent comment)
+                if threadId == commentId {
+                    return threadId
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    // Update cached user threads incrementally - only add new usernames, update existing ones
+    // CRITICAL LOGIC FOR 2-WAY CONVERSATIONS:
+    // - Show ALL participants in private threads (both owner and non-owner see the same participants)
+    // - Also show usernames from public comments if they have associated private threads
+    // - This ensures both parties in a conversation see each other, regardless of who owns the post
+    // Usernames are ordered by most recent comment (newest first)
+    // DEPRECATED: Use MessagingService.updateCachedUserThreads instead
+    // This function is kept for backward compatibility but should delegate to MessagingService
+    private func updateCachedUserThreads() {
+        // Delegate to MessagingService for consistency
+        messagingService.updateCachedUserThreads(for: content.SK)
+        cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+    }
+    
+    // OLD updateCachedUserThreads - keeping for reference but delegating to MessagingService
+    private func updateCachedUserThreads_OLD() {
+        guard let currentUsername = authService.username else {
+            print("⚠️ [FloatingCommentView] updateCachedUserThreads: No current username")
+            return
+        }
+        
+        print("   - currentUsername: \(currentUsername)")
+        print("   - isOwner: \(isOwner)")
+        print("   - publicComments count: \(publicComments.count)")
+        print("   - publicComments usernames: \(publicComments.map { "\($0.username) (id: \($0.id))" })")
+        print("   - current cachedUserThreads count: \(cachedUserThreads.count)")
+        print("   - current cachedUserThreads: \(cachedUserThreads.map { "\($0.username) (id: \($0.id))" })")
+        print("   - privateThreads count: \(privateThreads.count)")
+        
+        // Build a map of existing threads by username for quick lookup
+        var existingThreadsByUsername: [String: Int] = [:] // username -> index in cachedUserThreads
+        for (index, thread) in cachedUserThreads.enumerated() {
+            existingThreadsByUsername[thread.username] = index
+        }
+        
+        // Sort public comments by most recent first (newest comment = most recent username to add)
+        let sortedComments = publicComments.sorted { $0.createdAt > $1.createdAt }
+        print("   - sortedComments count: \(sortedComments.count)")
+        
+        print("   - Processing \(sortedComments.count) public comments for post owner threads")
+        
+        var seenUsernames = Set<String>()
+        var newThreads: [MessagingService.ThreadInfo] = []
+        
+        // Process comments in order of most recent first
+        for comment in sortedComments {
+            let username = comment.username
+            
+            // SKIP current user's own comments - only show OTHER participants
+            if username == currentUsername {
+                continue
+            }
+            
+            // UNIFIED LOGIC: Show usernames who have private threads OR made public comments
+            // This ensures 2-way conversations work for both post owners and non-owners
+            // CRITICAL: Find the threadId that has private messages (parentCommentId), or use comment.id if no private thread yet
+            let threadIdForComment = findThreadIdForComment(comment.id) ?? comment.id
+            let hasPrivateThread = privateThreads[threadIdForComment] != nil && !(privateThreads[threadIdForComment]?.isEmpty ?? true)
+            let hasUnreadForThread = threadUnreadStatus[threadIdForComment] == true
+            
+            // Show username if: has private thread OR has unread status OR is post owner (can start private chat)
+            let shouldShow = hasPrivateThread || hasUnreadForThread || isOwner
+            
+            if shouldShow {
+                
+                if let existingIndex = existingThreadsByUsername[username] {
+                    // Update existing thread's unread status and potentially update to thread with private messages
+                    let existingThread = cachedUserThreads[existingIndex]
+                    let existingHasPrivateMessages = privateThreads[existingThread.id] != nil && !(privateThreads[existingThread.id]?.isEmpty ?? true)
+                    let currentHasPrivateMessages = hasPrivateThread
+                    
+                    // Prefer thread with private messages, or more recent comment if both have/ don't have messages
+                    if currentHasPrivateMessages && !existingHasPrivateMessages {
+                        cachedUserThreads[existingIndex].id = threadIdForComment
+                    } else if let existingComment = publicComments.first(where: { $0.id == existingThread.id }),
+                              comment.createdAt > existingComment.createdAt && !currentHasPrivateMessages && !existingHasPrivateMessages {
+                        // Only update to more recent comment if neither has private messages
+                        cachedUserThreads[existingIndex].id = threadIdForComment
+                    }
+                    // Update unread status (in case it changed)
+                    cachedUserThreads[existingIndex].hasUnread = hasUnreadForThread
+                } else if !seenUsernames.contains(username) {
+                    // New username - add it (ordered by most recent comment)
+                    newThreads.append(MessagingService.ThreadInfo(
+                        id: threadIdForComment,
+                        username: username,
+                        hasUnread: hasUnreadForThread
+                    ))
+                    seenUsernames.insert(username)
+                }
+            }
+        }
+        
+        // CRITICAL: Check ALL private threads for ALL participants (works for BOTH owner and non-owner)
+        // This ensures 2-way conversations: both participants see each other regardless of post ownership
+        // Server already filters privateThreads to only include threads where viewer is a participant
+        // So we should show all participants in those threads
+        // This is the SAME logic for both owner and non-owner - unified 2-way conversation model
+            
+            // CRITICAL FIX: Check threadUnreadStatus FIRST, even if privateThreads is empty
+            // This handles the case where unread status is loaded from cache but private threads haven't loaded yet
+            var processedThreadIds = Set<String>()
+            
+        // Process ALL threads (both with and without unread status)
+        // Combine threadUnreadStatus keys and privateThreads keys to get all thread IDs
+        var allThreadIds = Set<String>()
+        allThreadIds.formUnion(threadUnreadStatus.keys)
+        allThreadIds.formUnion(privateThreads.keys)
+        
+        for threadId in allThreadIds {
+                let isUnread = threadUnreadStatus[threadId] == true
+                // Skip if we've already processed this thread
+                if processedThreadIds.contains(threadId) {
+                    continue
+                }
+                
+                
+                // Check if this thread ID exists in publicComments (valid thread)
+                let threadExists = publicComments.contains { $0.id == threadId }
+                
+                // CRITICAL: Only show thread if it has messages, unread status, OR parent comment
+                // Threads should NOT exist if they don't meet at least one of these criteria
+                let hasMessages = (privateThreads[threadId]?.isEmpty == false)
+                let hasUnread = isUnread
+                let hasParentComment = threadExists
+                
+                // Only add/keep thread if it has at least one: messages, unread status, or parent comment
+                let shouldShowThread = hasMessages || hasUnread || hasParentComment
+                
+                if shouldShowThread {
+                    processedThreadIds.insert(threadId)
+                    
+                    // Get thread messages for this threadId
+                    let threadMessages = privateThreads[threadId] ?? []
+                    
+                    // Find all unique usernames who sent messages in this thread (excluding current user)
+                    var participantUsernames: [String] = []
+                    
+                    // First, try to find from private thread messages (if loaded)
+                        for message in threadMessages {
+                        let messageUsername = message.username.lowercased().trimmingCharacters(in: .whitespaces)
+                        let currentUsernameLower = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+                        // Only add if not current user and not already added
+                        if messageUsername != currentUsernameLower && !participantUsernames.contains(where: { $0.lowercased().trimmingCharacters(in: .whitespaces) == messageUsername }) {
+                            participantUsernames.append(message.username) // Use original username (not normalized)
+                        }
+                    }
+                    
+                    // CRITICAL: Also check ALL threads for messages that reference this threadId as parentCommentId
+                    // This handles cases where messages are keyed under a different threadId but have parentCommentId = threadId
+                    if participantUsernames.isEmpty {
+                        for (keyThreadId, otherThreadMessages) in privateThreads {
+                            for message in otherThreadMessages {
+                                // Check if this message has parentCommentId matching our threadId
+                                if message.parentCommentId == threadId {
+                                    let messageUsername = message.username.lowercased().trimmingCharacters(in: .whitespaces)
+                                    let currentUsernameLower = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+                                    // Only add if not current user and not already added
+                                    if messageUsername != currentUsernameLower && !participantUsernames.contains(where: { $0.lowercased().trimmingCharacters(in: .whitespaces) == messageUsername }) {
+                                        participantUsernames.append(message.username)
+                                        print("     ✅ Found participant username from cross-thread message: \(message.username) (thread: \(keyThreadId), parent: \(threadId))")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // ALWAYS check parent comment - the person who started the thread is a participant
+                    if let parentComment = publicComments.first(where: { $0.id == threadId }) {
+                        let parentUsername = parentComment.username.lowercased().trimmingCharacters(in: .whitespaces)
+                        let currentUsernameLower = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+                        // Only add if not current user and not already added
+                        if parentUsername != currentUsernameLower && !participantUsernames.contains(where: { $0.lowercased().trimmingCharacters(in: .whitespaces) == parentUsername }) {
+                            participantUsernames.append(parentComment.username)
+                            print("     ✅ Found participant username from parent comment: \(parentComment.username)")
+                        }
+                    }
+                    
+                    // CRITICAL: Also check if POST OWNER is a participant (even if they didn't make a public comment)
+                    // This ensures 2-way conversations work - if post owner sent private messages, they should appear
+                    if !isOwner {
+                        let postOwnerUsername = content.creatorUsername?.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces).lowercased()
+                        let currentUsernameLower = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+                        
+                        // Check if post owner sent any messages in this thread
+                        let postOwnerSentMessage = threadMessages.contains { message in
+                            let messageUsername = message.username.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces).lowercased()
+                            return messageUsername == postOwnerUsername
+                        }
+                        
+                        if postOwnerSentMessage, let postOwnerUsernameOriginal = content.creatorUsername,
+                           postOwnerUsername != currentUsernameLower,
+                           !participantUsernames.contains(where: { $0.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces).lowercased() == postOwnerUsername }) {
+                            participantUsernames.append(postOwnerUsernameOriginal)
+                            print("     ✅ Found post owner as participant: \(postOwnerUsernameOriginal) (sent private message)")
+                        }
+                    }
+                    
+                    // Add threads for all participants
+                    for username in participantUsernames {
+                        print("   - Adding participant to scroll: \(username), threadId: \(threadId), hasUnread: \(isUnread)")
+                        
+                        // CRITICAL: Use the threadId (parentCommentId) that has private messages
+                        // This ensures we show the private conversation, not a general chat message
+                        // The threadId is the parentCommentId that started the private thread
+                        let displayThreadId = threadId
+                    
+                    if let existingIndex = existingThreadsByUsername[username] {
+                            // CRITICAL: Don't change threadId if it's currently selected
+                            let existingThreadId = cachedUserThreads[existingIndex].id
+                            let isCurrentlySelected = selectedThreadId == existingThreadId
+                            
+                            if isCurrentlySelected {
+                                // Thread is currently selected - preserve its threadId
+                                // Only update unread status
+                                cachedUserThreads[existingIndex].hasUnread = isUnread || cachedUserThreads[existingIndex].hasUnread
+                                print("     ✅ Preserved selected threadId \(existingThreadId), updated unread status")
+                            } else {
+                                // Update existing thread - prefer thread with private messages
+                        let existingHasUnread = cachedUserThreads[existingIndex].hasUnread
+                                // Check if existing thread has private messages, if not, prefer this one
+                                let existingThreadHasPrivateMessages = privateThreads[existingThreadId] != nil && !(privateThreads[existingThreadId]?.isEmpty ?? true)
+                                let currentThreadHasPrivateMessages = !(privateThreads[threadId]?.isEmpty ?? true)
+                                
+                                if currentThreadHasPrivateMessages && !existingThreadHasPrivateMessages {
+                                    // Prefer thread with private messages
+                            cachedUserThreads[existingIndex].id = displayThreadId
+                                    cachedUserThreads[existingIndex].hasUnread = isUnread || existingHasUnread
+                                    print("     ✅ Updated to thread with private messages")
+                                } else if !existingHasUnread {
+                                    cachedUserThreads[existingIndex].id = displayThreadId
+                                    cachedUserThreads[existingIndex].hasUnread = isUnread
+                            print("     ✅ Updated existing thread with unread status")
+                        } else {
+                            // Prefer thread with unread
+                            cachedUserThreads[existingIndex].id = displayThreadId
+                                }
+                        }
+                    } else if !seenUsernames.contains(username) {
+                            // Participant with private thread - add it
+                            newThreads.append(MessagingService.ThreadInfo(
+                            id: displayThreadId,
+                            username: username,
+                                hasUnread: isUnread
+                        ))
+                        seenUsernames.insert(username)
+                            print("     ✅ Added new thread for participant: \(username) (threadId: \(displayThreadId), hasPrivateMessages: \(!(privateThreads[threadId]?.isEmpty ?? true)))")
+                        }
+                    }
+                }
+            }
+            
+            // Also check privateThreads for messages (in case they're loaded but not in threadUnreadStatus)
+            for (threadId, threadMessages) in privateThreads {
+                // Skip if already processed
+                if processedThreadIds.contains(threadId) {
+                    continue
+                }
+                
+                print("   - Checking thread \(threadId) with \(threadMessages.count) messages")
+                
+                // Check if thread has messages, unread status, or parent comment
+            let hasMessages = !threadMessages.isEmpty
+            let hasUnread = threadUnreadStatus[threadId] == true
+                let hasParentComment = publicComments.contains { $0.id == threadId }
+                
+            // Only show thread if it has at least one: messages, unread status, or parent comment
+                // Threads should NOT exist if they don't meet at least one of these criteria
+            let shouldShowThread = hasMessages || hasUnread || hasParentComment
+                
+            if shouldShowThread {
+                    processedThreadIds.insert(threadId)
+                    
+                // Find all unique usernames who sent messages in this thread (excluding current user)
+                var participantUsernames: [String] = []
+                    
+                    // First, try to find from messages
+                    for message in threadMessages {
+                    let messageUsername = message.username.lowercased().trimmingCharacters(in: .whitespaces)
+                    let currentUsernameLower = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+                    // Only add if not current user and not already added
+                    if messageUsername != currentUsernameLower && !participantUsernames.contains(where: { $0.lowercased().trimmingCharacters(in: .whitespaces) == messageUsername }) {
+                        participantUsernames.append(message.username) // Use original username (not normalized)
+                        print("     ✅ Found participant username from message: \(message.username)")
+                    }
+                }
+                
+                // CRITICAL: Also check ALL threads for messages that reference this threadId as parentCommentId
+                // This handles cases where messages are keyed under a different threadId but have parentCommentId = threadId
+                if participantUsernames.isEmpty {
+                    for (keyThreadId, otherThreadMessages) in privateThreads {
+                        for message in otherThreadMessages {
+                            // Check if this message has parentCommentId matching our threadId
+                            if message.parentCommentId == threadId {
+                                let messageUsername = message.username.lowercased().trimmingCharacters(in: .whitespaces)
+                                let currentUsernameLower = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+                                // Only add if not current user and not already added
+                                if messageUsername != currentUsernameLower && !participantUsernames.contains(where: { $0.lowercased().trimmingCharacters(in: .whitespaces) == messageUsername }) {
+                                    participantUsernames.append(message.username)
+                                    print("     ✅ Found participant username from cross-thread message: \(message.username) (thread: \(keyThreadId), parent: \(threadId))")
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                    // ALWAYS check parent comment - the person who started the thread is a participant
+                    if let parentComment = publicComments.first(where: { $0.id == threadId }) {
+                        let parentUsername = parentComment.username.lowercased().trimmingCharacters(in: .whitespaces)
+                        let currentUsernameLower = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+                        // Only add if not current user and not already added
+                        if parentUsername != currentUsernameLower && !participantUsernames.contains(where: { $0.lowercased().trimmingCharacters(in: .whitespaces) == parentUsername }) {
+                            participantUsernames.append(parentComment.username)
+                            print("     ✅ Found participant username from parent comment: \(parentComment.username)")
+                        }
+                    }
+                    
+                    // CRITICAL: Also check if POST OWNER is a participant (even if they didn't make a public comment)
+                    // This ensures 2-way conversations work - if post owner sent private messages, they should appear
+                    if !isOwner {
+                        let postOwnerUsername = content.creatorUsername?.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces).lowercased()
+                        let currentUsernameLower = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+                        
+                        // Check if post owner sent any messages in this thread
+                        let postOwnerSentMessage = threadMessages.contains { message in
+                            let messageUsername = message.username.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces).lowercased()
+                            return messageUsername == postOwnerUsername
+                        }
+                        
+                        if postOwnerSentMessage, let postOwnerUsernameOriginal = content.creatorUsername,
+                           postOwnerUsername != currentUsernameLower,
+                           !participantUsernames.contains(where: { $0.replacingOccurrences(of: "🔒", with: "").trimmingCharacters(in: .whitespaces).lowercased() == postOwnerUsername }) {
+                            participantUsernames.append(postOwnerUsernameOriginal)
+                            print("     ✅ Found post owner as participant: \(postOwnerUsernameOriginal) (sent private message)")
+                        }
+                    }
+                    
+                    // Add threads for all participants
+                    for username in participantUsernames {
+                    print("   - Adding participant to scroll: \(username), threadId: \(threadId), hasUnread: \(hasUnread)")
+                    
+                    // CRITICAL: Use the threadId (parentCommentId) that has private messages
+                    // This ensures we show the private conversation, not a general chat message
+                    let displayThreadId = threadId
+                    
+                    if let existingIndex = existingThreadsByUsername[username] {
+                        // CRITICAL: Don't change threadId if it's currently selected
+                        let existingThreadId = cachedUserThreads[existingIndex].id
+                        let isCurrentlySelected = selectedThreadId == existingThreadId
+                        
+                        if isCurrentlySelected {
+                            // Thread is currently selected - preserve its threadId
+                            // Only update unread status
+                            cachedUserThreads[existingIndex].hasUnread = hasUnread || cachedUserThreads[existingIndex].hasUnread
+                            print("     ✅ Preserved selected threadId \(existingThreadId), updated unread status")
+                        } else {
+                            // Update existing thread - prefer thread with private messages
+                        let existingHasUnread = cachedUserThreads[existingIndex].hasUnread
+                            // Check if existing thread has private messages, if not, prefer this one
+                            let existingThreadHasPrivateMessages = privateThreads[existingThreadId] != nil && !(privateThreads[existingThreadId]?.isEmpty ?? true)
+                            let currentThreadHasPrivateMessages = !threadMessages.isEmpty
+                            
+                            if currentThreadHasPrivateMessages && !existingThreadHasPrivateMessages {
+                                // Prefer thread with private messages
+                                cachedUserThreads[existingIndex].id = displayThreadId
+                                cachedUserThreads[existingIndex].hasUnread = hasUnread || existingHasUnread
+                                print("     ✅ Updated to thread with private messages")
+                            } else if hasUnread && !existingHasUnread {
+                            cachedUserThreads[existingIndex].id = displayThreadId
+                            cachedUserThreads[existingIndex].hasUnread = true
+                            print("     ✅ Updated existing thread with unread status")
+                            } else if hasUnread == existingHasUnread {
+                            // Same unread status - prefer thread with unread
+                                if hasUnread {
+                                cachedUserThreads[existingIndex].id = displayThreadId
+                                }
+                            }
+                        }
+                    } else if !seenUsernames.contains(username) {
+                        // Participant with private thread - add it
+                        newThreads.append(MessagingService.ThreadInfo(
+                            id: displayThreadId,
+                            username: username,
+                            hasUnread: hasUnread
+                        ))
+                        seenUsernames.insert(username)
+                        print("     ✅ Added new thread for participant: \(username) (threadId: \(displayThreadId), hasPrivateMessages: \(!threadMessages.isEmpty))")
+                    }
+                    }
+                }
+            }
+            
+            print("✅ [FloatingCommentView] Finished checking private threads. New threads to add: \(newThreads.count)")
+        
+        // Remove threads that no longer meet criteria
+        cachedUserThreads.removeAll { threadInfo in
+            // Remove if it's the current user (shouldn't happen, but safety check)
+            if threadInfo.username == currentUsername {
+                return true
+            }
+            
+            if isOwner {
+                // POST OWNER: Check if thread has messages, unread status, or parent comment
+                // Threads should NOT exist if they don't meet at least one of these criteria
+                let threadMessages = privateThreads[threadInfo.id] ?? []
+                let hasMessages = !threadMessages.isEmpty
+                let hasUnread = threadUnreadStatus[threadInfo.id] == true
+                let hasParentComment = publicComments.contains { $0.id == threadInfo.id }
+                
+                print("🔍 [FloatingCommentView] POST OWNER removal check for \(threadInfo.username) (id: \(threadInfo.id)): hasMessages=\(hasMessages), hasUnread=\(hasUnread), hasParentComment=\(hasParentComment)")
+                
+                // Remove if thread has NO messages, NO unread status, and NO parent comment
+                // Threads should NOT exist if they don't meet at least one of these criteria
+                let shouldKeep = hasMessages || hasUnread || hasParentComment
+                
+                if !shouldKeep {
+                    print("   ❌ Removing thread for \(threadInfo.username) - no messages, no unread, no parent comment")
+                } else {
+                    print("   ✅ Keeping thread for \(threadInfo.username)")
+                }
+                
+                return !shouldKeep // Remove if shouldKeep is false
+            } else {
+                // NOT POST OWNER: Keep threads from all participants (not just post owner)
+                // Check if thread has messages, unread status, or parent comment
+                // Threads should NOT exist if they don't meet at least one of these criteria
+                let threadMessages = privateThreads[threadInfo.id] ?? []
+                let hasMessages = !threadMessages.isEmpty
+                let hasUnread = threadUnreadStatus[threadInfo.id] == true
+                let hasParentComment = publicComments.contains { $0.id == threadInfo.id }
+                
+                // Also check all private threads to see if any messages have this threadId as parentCommentId
+                var hasMessagesInOtherThreads = false
+                for (threadId, threadMessages) in privateThreads {
+                    // Check if any message in this thread has parentCommentId matching our threadInfo.id
+                    if threadMessages.contains(where: { $0.parentCommentId == threadInfo.id }) {
+                        hasMessagesInOtherThreads = true
+                        break
+                    }
+                }
+                
+                // Remove if thread has NO messages, NO unread status, and NO parent comment
+                // Threads should NOT exist if they don't meet at least one of these criteria
+                let shouldKeep = hasMessages || hasUnread || hasParentComment || hasMessagesInOtherThreads
+                
+                if !shouldKeep {
+                    print("   ❌ Removing thread for \(threadInfo.username) - no messages, no unread, no parent comment")
+                } else {
+                    print("   ✅ Keeping thread for \(threadInfo.username)")
+                }
+                
+                return !shouldKeep // Remove if shouldKeep is false
+            }
+        }
+        
+        // Add new threads to the end (maintains order, no jittery scrolling)
+        if !newThreads.isEmpty {
+            cachedUserThreads.append(contentsOf: newThreads)
+            print("✅ [FloatingCommentView] Added \(newThreads.count) new threads to cachedUserThreads")
+        }
+        
+        // Summary log
+        print("📊 [FloatingCommentView] updateCachedUserThreads complete:")
+        print("   - isOwner: \(isOwner)")
+        print("   - publicComments count: \(publicComments.count)")
+        print("   - privateThreads count: \(privateThreads.count)")
+        print("   - final cachedUserThreads count: \(cachedUserThreads.count)")
+        print("   - cachedUserThreads: \(cachedUserThreads.map { "\($0.username) (id: \($0.id), unread: \($0.hasUnread))" })")
+    }
+    
+    private var filteredUserThreads: [MessagingService.ThreadInfo] {
+        guard let currentUsername = authService.username else {
+            return cachedUserThreads
+        }
+        
+        // Normalize username for comparison (remove lock symbols, trim, lowercase)
+        let normalizeUsername: (String) -> String = { username in
+            username.replacingOccurrences(of: "🔒", with: "")
+                .trimmingCharacters(in: .whitespaces)
+                .lowercased()
+        }
+        let normalizedCurrentUsername = normalizeUsername(currentUsername)
+        
+        // Filter out current user's own username (should never appear in scroll bar)
+        // Deduplicate by normalized username - keep only one entry per username
+        // Prefer entries with unread messages, otherwise keep the first one encountered
+        var seenUsernames: [String: MessagingService.ThreadInfo] = [:]
+        
+        for threadInfo in cachedUserThreads {
+            let normalizedUsername = normalizeUsername(threadInfo.username)
+            
+            // CRITICAL: Skip if this is the current user's username (should never appear)
+            if normalizedUsername == normalizedCurrentUsername {
+                print("⚠️ [FloatingCommentView] Filtering out current user's own username: \(threadInfo.username)")
+                continue
+            }
+            
+            // If we haven't seen this username, add it
+            if seenUsernames[normalizedUsername] == nil {
+                seenUsernames[normalizedUsername] = threadInfo
+            } else {
+                // If we've seen it, prefer the one with unread messages
+                let existing = seenUsernames[normalizedUsername]!
+                if threadInfo.hasUnread && !existing.hasUnread {
+                    seenUsernames[normalizedUsername] = threadInfo
+                }
+            }
+        }
+        
+        // Return deduplicated threads, sorted by unread first, then alphabetically
+        return Array(seenUsernames.values).sorted { first, second in
+            if first.hasUnread != second.hasUnread {
+                return first.hasUnread
+            }
+            return first.username < second.username
+        }
+    }
+    
+    // Helper function to find the best threadId for a username
+    // Prefers threadIds that have private messages
+    // CRITICAL: Only returns threads where the username is the OTHER participant, not the current user
+    private func findBestThreadId(for username: String) -> String? {
+        let normalizedUsername = username.lowercased().trimmingCharacters(in: .whitespaces)
+        let currentUsername = authService.username ?? ""
+        let normalizedCurrentUsername = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+        
+        // CRITICAL: Don't return threads for your own username
+        if normalizedUsername == normalizedCurrentUsername {
+            return nil
+        }
+        
+        // Find all threads for this username (must be OTHER participant, not current user)
+        let matchingThreads = cachedUserThreads.filter {
+            let threadUsername = $0.username.lowercased().trimmingCharacters(in: .whitespaces)
+            return threadUsername == normalizedUsername && threadUsername != normalizedCurrentUsername
+        }
+        
+        // Prefer thread with private messages and unread status
+        if let bestThread = matchingThreads.first(where: { thread in
+            let hasPrivateMessages = privateThreads[thread.id] != nil && !(privateThreads[thread.id]?.isEmpty ?? true)
+            return hasPrivateMessages && thread.hasUnread
+        }) {
+            return bestThread.id
+        }
+        
+        // Prefer thread with private messages
+        if let bestThread = matchingThreads.first(where: { thread in
+            let hasPrivateMessages = privateThreads[thread.id] != nil && !(privateThreads[thread.id]?.isEmpty ?? true)
+            return hasPrivateMessages
+        }) {
+            return bestThread.id
+        }
+        
+        // Fall back to any thread for this username (but not current user)
+        return matchingThreads.first?.id
+    }
+    
+    private func threadButton(for threadInfo: MessagingService.ThreadInfo) -> some View {
+        // Find the best threadId for this username (prefer one with private messages)
+        let bestThreadId = findBestThreadId(for: threadInfo.username) ?? threadInfo.id
+        let isSelected = selectedThreadId == bestThreadId || selectedThreadId == threadInfo.id
+        let hasUnread = threadInfo.hasUnread && !isSelected // Don't show unread color if thread is currently open
+        
+        return Button(action: {
+            print("🔍 [FloatingCommentView] Thread button clicked for username: \(threadInfo.username), original threadId: \(threadInfo.id), best threadId: \(bestThreadId)")
+            
+            // Use the best threadId (one with private messages if available)
+            let threadIdToUse = bestThreadId
+            
+            // Preserve current thread messages before loading (prevent flash)
+            let preservedMessages = privateThreads[threadIdToUse]
+            
+            withAnimation {
+                selectedThreadId = threadIdToUse
+            }
+            
+            // CRITICAL: Mark thread as read IMMEDIATELY when opened (optimistic update)
+            // WEBSOCKET WILL CONFIRM - Don't wait for API response
+            let key = "\(content.SK)_\(threadIdToUse)"
+            threadUnreadStatus[threadIdToUse] = false
+            threadUnreadStatus[key] = false // Also update with videoId prefix for consistency
+            
+            // Update MessagingService unread status immediately
+            messagingService.threadUnreadStatus[key] = false
+            
+            // Mark private_message notification as read (same as private_access_granted)
+            markPrivateMessageNotificationAsRead(for: threadIdToUse)
+            
+            // Update cached user threads to remove orange highlight immediately
+            messagingService.updateCachedUserThreads(for: content.SK)
+            cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+            
+            // Calculate remaining unread count (check all threads for this video)
+            // Only dismiss indicator if NO other unread threads remain
+            let remainingUnreadCount = threadUnreadStatus.values.filter { $0 }.count
+            
+            // CRITICAL: Only clear red badge if no unread threads remain
+            // If there are other unread threads, keep the badge
+            NotificationCenter.default.post(
+                name: NSNotification.Name("CommentsViewed"),
+                object: nil,
+                userInfo: [
+                    "videoId": content.SK,
+                    "unreadCount": remainingUnreadCount
+                ]
+            )
+            
+            print("📊 [FloatingCommentView] Marked thread as read. Remaining unread: \(remainingUnreadCount)")
+            
+            // Mark as read on server (async) - WebSocket will send unread_count_update to confirm
+            markThreadAsRead(threadId: threadIdToUse)
+            
+            // CRITICAL: Load thread IMMEDIATELY - don't wait for async
+            // First check cache, then load from server
+            if let cachedThread = messagingService.privateThreads[content.SK]?[threadIdToUse], !cachedThread.isEmpty {
+                // Show cached messages immediately for instant display
+                privateThreads[threadIdToUse] = cachedThread
+                print("⚡ [FloatingCommentView] Instant display: \(cachedThread.count) cached messages for thread \(threadIdToUse)")
+            } else {
+                // No cache - thread might not be loaded yet, load it NOW
+                print("⚠️ [FloatingCommentView] No cached messages for thread \(threadIdToUse), loading from server...")
+            }
+            
+            // CRITICAL: Always load full history from server (same as general chat)
+            // Server has the complete conversation history - load it to ensure all messages are available
+            Task {
+                print("📥 [FloatingCommentView] Loading full thread history from server for thread: \(threadIdToUse)")
+                do {
+                    try await messagingService.loadMessages(for: content.SK, useCache: false)
+                    await MainActor.run {
+                        // Load ALL threads from server (server has full history)
+                        let messagingThreads = messagingService.privateThreads[content.SK] ?? [:]
+                        print("📦 [FloatingCommentView] Server returned \(messagingThreads.count) threads")
+                        
+                        for (threadId, messages) in messagingThreads {
+                            // Always use server data (has full conversation history)
+                            privateThreads[threadId] = messages
+                            print("   - Thread \(threadId): \(messages.count) messages")
+                        }
+                        
+                        // Ensure selected thread has full history loaded
+                        if let serverThread = messagingThreads[threadIdToUse] {
+                            privateThreads[threadIdToUse] = serverThread
+                            print("✅ [FloatingCommentView] Loaded full history for thread \(threadIdToUse): \(serverThread.count) messages")
+                        } else {
+                            print("❌ [FloatingCommentView] Thread \(threadIdToUse) not found in server response!")
+                            print("   Available thread IDs: \(Array(messagingThreads.keys).joined(separator: ", "))")
+                            
+                            // CRITICAL: Try to find thread by searching all threads for this username
+                            // The threadId might be different from what we expect (server uses parentCommentId)
+                            let username = threadInfo.username
+                            var foundThread = false
+                            
+                            for (tid, msgs) in messagingThreads {
+                                // Check if any message in this thread is from the target username
+                                let hasTargetUsername = msgs.contains { msg in
+                                    msg.username.lowercased().trimmingCharacters(in: .whitespaces) == username.lowercased().trimmingCharacters(in: .whitespaces)
+                                }
+                                
+                                // Also check if the threadId matches the parentCommentId of any message
+                                let matchesThreadId = msgs.contains { msg in
+                                    msg.parentCommentId == threadIdToUse || msg.id == threadIdToUse
+                                }
+                                
+                                if hasTargetUsername || matchesThreadId {
+                                    print("   🔍 Found matching thread: \(tid) with \(msgs.count) messages (hasTargetUsername: \(hasTargetUsername), matchesThreadId: \(matchesThreadId))")
+                                    privateThreads[tid] = msgs
+                                    selectedThreadId = tid
+                                    foundThread = true
+                                    break
+                                }
+                            }
+                            
+                            if !foundThread {
+                                print("   ⚠️ No matching thread found - thread might not exist or user doesn't have access")
+                                // Still set empty array so UI doesn't break
+                                privateThreads[threadIdToUse] = []
+                            }
+                        }
+                    }
+                } catch {
+                    print("❌ [FloatingCommentView] Error loading thread history: \(error)")
+                }
+            }
+        }) {
+            Text(threadInfo.username)
+                .font(.caption)
+                .fontWeight(hasUnread ? .bold : .regular)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(hasUnread ? Color.orange : Color.twillyCyan.opacity(0.3))
+                .foregroundColor(hasUnread ? .white : .white)
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(hasUnread ? Color.orange : Color.clear, lineWidth: 2)
+                )
+        }
+    }
+    
+    private var commentsList: some View {
+        ScrollViewReader { proxy in
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                if selectedThreadId != nil {
+                    // Show "Start a conversation" message if thread is empty
+                    if currentThreadMessages.isEmpty {
+                        VStack(spacing: 8) {
+                            Text("Start a conversation with \(cachedUserThreads.first(where: { $0.id == selectedThreadId })?.username ?? "this user")")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.gray)
+                                .multilineTextAlignment(.center)
+                                .padding(.vertical, 20)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    
+                    // Show private thread - messages are tappable like public comments
+                    ForEach(currentThreadMessages) { message in
+                        CommentRowView(comment: message, onLike: {
+                            toggleLike(for: message)
+                        })
+                        .onTapGesture {
+                            // Same behavior as public comments - tap to view/start thread
+                            // For private messages, this allows navigating to the parent thread
+                            if let parentId = message.parentCommentId ?? selectedThreadId {
+                                withAnimation {
+                                    selectedThreadId = parentId
+                                }
+                                // Reload comments to ensure thread messages are loaded
+                                loadComments()
+                                // Mark thread as read when opened
+                                markThreadAsRead(threadId: parentId)
+                                // Update unread status immediately
+                                threadUnreadStatus[parentId] = false
+                                // Save to cache so it persists when clicking out
+                                saveUnreadStatusToCache()
+                                // Update cached user threads to reflect unread status change
+                                updateCachedUserThreads()
+                            }
+                        }
+                            .id(message.id)
+                    }
+                        // Bottom anchor for private thread (newest messages at bottom)
+                        Color.clear
+                            .frame(height: 1)
+                            .id("threadBottom")
+                } else {
+                        // Show public comments with oldest first, newest last (same as private chat)
+                    ForEach(publicComments) { comment in
+                        CommentRowView(comment: comment, onLike: {
+                            toggleLike(for: comment)
+                        })
+                        .onTapGesture {
+                            // CRITICAL: Don't allow clicking your own username - that's not a conversation
+                            let username = comment.username
+                            let currentUsername = authService.username ?? ""
+                            
+                            // Normalize both for comparison
+                            let normalizedClickedUsername = username.lowercased().trimmingCharacters(in: .whitespaces)
+                            let normalizedCurrentUsername = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+                            
+                            // If clicking your own username, don't open a thread
+                            if normalizedClickedUsername == normalizedCurrentUsername {
+                                print("⚠️ [FloatingCommentView] Cannot open thread with yourself: \(username)")
+                                return
+                            }
+                            
+                            // CRITICAL: Check if there's an existing thread for this username first
+                            // If user has history with this person, use that thread instead of creating new one
+                            let bestThreadId = findBestThreadId(for: username) ?? comment.id
+                            
+                            print("🔍 [FloatingCommentView] Tapped username in general chat: \(username), using threadId: \(bestThreadId) (existing: \(bestThreadId != comment.id))")
+                            
+                            // Use existing thread if found, otherwise use comment.id (new thread)
+                            let threadIdToUse = bestThreadId
+                            
+                            withAnimation {
+                                selectedThreadId = threadIdToUse
+                            }
+                            
+                            // Mark thread as read when opened
+                            markThreadAsRead(threadId: threadIdToUse)
+                            // Update unread status immediately
+                            threadUnreadStatus[threadIdToUse] = false
+                            // Save to cache so it persists when clicking out
+                            saveUnreadStatusToCache()
+                            // Update cached user threads to reflect unread status change (removes orange highlight)
+                            updateCachedUserThreads()
+                            // Reload comments to ensure thread messages are loaded (only once)
+                            loadComments()
+                        }
+                            .id(comment.id)
+                    }
+                        // Top anchor for general chat (newest messages at top)
+                        Color.clear
+                            .frame(height: 1)
+                            .id("generalChatTop")
+                }
+            }
+            .padding()
+        }
+        .frame(maxHeight: 300)
+        .background(Color.black.opacity(0.6))
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ScrollCommentsToBottom"))) { notification in
+                // Scroll appropriately when comments finish loading
+                let threadId = notification.userInfo?["threadId"] as? String
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    withAnimation {
+                        if threadId != nil {
+                            proxy.scrollTo("threadBottom", anchor: .bottom) // Private thread: newest at bottom
+                        } else {
+                            proxy.scrollTo("generalChatTop", anchor: .top) // General chat: newest at top
+                        }
+                    }
+                }
+            }
+            .onChange(of: publicComments.count) { newCount in
+                // Scroll to top when new comment is added to general chat (newest at top)
+                if selectedThreadId == nil && newCount > previousGeneralCommentCount {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        withAnimation {
+                            proxy.scrollTo("generalChatTop", anchor: .top)
+                        }
+                    }
+                    previousGeneralCommentCount = newCount
+                }
+            }
+            .onChange(of: currentThreadMessages.count) { newCount in
+                // Scroll to bottom when new message is added to private thread (newest at bottom)
+                if let threadId = selectedThreadId, newCount > (previousThreadMessageCount[threadId] ?? 0) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        withAnimation {
+                            proxy.scrollTo("threadBottom", anchor: .bottom)
+                        }
+                    }
+                    previousThreadMessageCount[threadId] = newCount
+                }
+            }
+            .onChange(of: selectedThreadId) { newThreadId in
+                // When switching between general chat and private thread, scroll appropriately
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    withAnimation {
+                        if newThreadId != nil {
+                            proxy.scrollTo("threadBottom", anchor: .bottom) // Private thread: newest at bottom
+                        } else {
+                            proxy.scrollTo("generalChatTop", anchor: .top) // General chat: newest at top
+                        }
+                    }
+                }
+                
+                // Initialize previous count when thread changes
+                if let threadId = newThreadId {
+                    previousThreadMessageCount[threadId] = currentThreadMessages.count
+                }
+            }
+            .onChange(of: isExpanded) { expanded in
+                // When chat expands, scroll appropriately after a short delay
+                if expanded {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        withAnimation {
+                            if selectedThreadId != nil {
+                                proxy.scrollTo("threadBottom", anchor: .bottom) // Private thread: newest at bottom
+                            } else {
+                                proxy.scrollTo("generalChatTop", anchor: .top) // General chat: newest at top
+                            }
+                        }
+                    }
+                }
+            }
+            .onAppear {
+                // Initialize previous count for general chat
+                previousGeneralCommentCount = publicComments.count
+                // Initialize previous count for current thread if in thread view
+                if let threadId = selectedThreadId {
+                    previousThreadMessageCount[threadId] = currentThreadMessages.count
+                }
+                
+                // Always scroll appropriately when chat opens
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    withAnimation {
+                        if selectedThreadId != nil {
+                            proxy.scrollTo("threadBottom", anchor: .bottom) // Private thread: newest at bottom
+                        } else {
+                            proxy.scrollTo("generalChatTop", anchor: .top) // General chat: newest at top
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Helper function to find the other participant in a thread
+    private func findOtherParticipant(in threadId: String) -> String? {
+        guard let currentUsername = authService.username else { return nil }
+        
+        // First, try to find from thread messages
+        if let threadMessages = privateThreads[threadId] {
+            let currentUsernameLower = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+            for message in threadMessages {
+                let messageUsername = message.username.lowercased().trimmingCharacters(in: .whitespaces)
+                if messageUsername != currentUsernameLower {
+                    return message.username
+                }
+            }
+        }
+        
+        // If not found, check parent comment (but only if it's not the current user)
+        if let parentComment = publicComments.first(where: { $0.id == threadId }) {
+            let parentUsernameLower = parentComment.username.lowercased().trimmingCharacters(in: .whitespaces)
+            let currentUsernameLower = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+            if parentUsernameLower != currentUsernameLower {
+                return parentComment.username
+            }
+        }
+        
+        return nil
+    }
+    
+    private var commentInput: some View {
+        VStack(spacing: 4) {
+            if let threadId = selectedThreadId,
+               let otherUsername = findOtherParticipant(in: threadId) {
+                Text("Replying to \(otherUsername)")
+                    .font(.caption)
+                    .foregroundColor(.twillyCyan.opacity(0.8))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal)
+            }
+            
+            HStack {
+                TextField(commentInputPlaceholder, text: $newCommentText)
+                    .textFieldStyle(PlainTextFieldStyle())
+                    .foregroundColor(.white)
+                    .padding(8)
+                    .background(Color.white.opacity(0.2))
+                    .cornerRadius(8)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+                
+                Button(action: {
+                    postComment()
+                }) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(newCommentText.isEmpty ? .gray : .twillyCyan)
+                }
+                .disabled(newCommentText.isEmpty)
+            }
+            .padding()
+        }
+        .background(Color.black.opacity(0.7))
+    }
+    
+    private var commentInputPlaceholder: String {
+        if let threadId = selectedThreadId,
+           let otherUsername = findOtherParticipant(in: threadId) {
+            return "@\(otherUsername) "
+        }
+        return "Add a comment..."
+    }
+    
+    private var collapsedCommentButton: some View {
+        Button(action: {
+            withAnimation {
+                isExpanded = true
+                loadComments()
+            }
+        }) {
+            HStack {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 18))
+                Text("\(messagingService.getPublicComments(for: content.SK).count)")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.black.opacity(0.6))
+            .cornerRadius(20)
+        }
+        .padding(.trailing, 16)
+        .padding(.bottom, 80)
+    }
+    
+    var body: some View {
+        commentContentView
+            .onAppear {
+                // LIGHTNING FAST: Use cached data immediately, refresh in background
+                // Comments should feel instant - no loading delay
+                
+                // STEP 1: Show cached data INSTANTLY (if available)
+                if let cachedPublic = messagingService.publicComments[content.SK], !cachedPublic.isEmpty {
+                    publicComments = cachedPublic
+                    print("⚡ [FloatingCommentView] Instant display: \(cachedPublic.count) cached public comments")
+                }
+                if let cachedThreads = messagingService.privateThreads[content.SK], !cachedThreads.isEmpty {
+                    // MERGE (don't overwrite) - preserve existing threads - SAME AS GENERAL CHAT
+                    for (threadId, messages) in cachedThreads {
+                        if !messages.isEmpty {
+                            privateThreads[threadId] = messages
+                        }
+                    }
+                    cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                    print("⚡ [FloatingCommentView] Instant display: \(cachedThreads.count) cached private threads")
+                }
+                
+                // STEP 2: Connect WebSocket IMMEDIATELY for real-time updates
+                messagingService.connectWebSocket(for: content.SK)
+                
+                // Debug: Check WebSocket connection status
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    if websocketService.isConnected {
+                        print("✅ [FloatingCommentView] WebSocket is CONNECTED - ready to receive notifications")
+                        print("   Connected user email: \(authService.userEmail ?? "N/A")")
+                    } else {
+                        print("❌ [FloatingCommentView] WebSocket is NOT CONNECTED - notifications won't work!")
+                        print("   User email: \(authService.userEmail ?? "N/A")")
+                        print("   WebSocket endpoint: \(ChannelService.shared.websocketEndpoint)")
+                    }
+                }
+                
+                // STEP 3: Load fresh from server in background (non-blocking, uses cache if available)
+                // CRITICAL: Load ALL messages including ALL private threads - same as general chat
+                // This ensures full history is available immediately
+                Task {
+                    do {
+                        // Force server fetch to get ALL threads (same as general chat loads all comments)
+                        try await messagingService.loadMessages(for: content.SK, useCache: false)
+                        
+                        // CRITICAL: Always check unread counts when view appears (PRIMARY way indicators are shown)
+                        // This works even if the other user wasn't online when the message was posted
+                        // WebSocket is just for real-time updates when both users are online
+                        if let userEmail = authService.userEmail {
+                            try? await messagingService.loadUnreadCounts(for: content.SK)
+                        }
+                        
+                        await MainActor.run {
+                            // Sync with fresh data (seamless update)
+                            // UNIFIED LOGIC: Private thread = general chat with 2 people
+                            // Load ALL threads from server - same as general chat loads all comments
+                            publicComments = messagingService.getPublicComments(for: content.SK)
+                            
+                            // CRITICAL: Load ALL private threads from MessagingService (same as general chat)
+                            // This ensures full conversation history is available
+                            let messagingThreads = messagingService.privateThreads[content.SK] ?? [:]
+                            for (threadId, messages) in messagingThreads {
+                                // Always update with server data (server has full history)
+                                privateThreads[threadId] = messages
+                            }
+                            
+                            // Update thread unread status from MessagingService
+                            for threadId in privateThreads.keys {
+                                let key = "\(content.SK)_\(threadId)"
+                                threadUnreadStatus[threadId] = messagingService.threadUnreadStatus[key] == true
+                            }
+                            
+                            // CRITICAL: Update cached user threads after loading all threads
+                            // This ensures orange highlight appears/disappears correctly
+                            messagingService.updateCachedUserThreads(for: content.SK)
+                            cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                            
+                            // Update red badge with unread count
+                            let unreadCount = messagingService.getUnreadCount(for: content.SK)
+                            NotificationCenter.default.post(
+                                name: NSNotification.Name("CommentsViewed"),
+                                object: nil,
+                                userInfo: [
+                                    "videoId": content.SK,
+                                    "unreadCount": unreadCount
+                                ]
+                            )
+                            
+                            // Only log if unread count > 0 (for debugging)
+                            if unreadCount > 0 {
+                                print("🔔 [FloatingCommentView] Found \(unreadCount) unread message(s) in \(messagingThreads.count) thread(s)")
+                            }
+                        }
+                    } catch {
+                        print("⚠️ [FloatingCommentView] Background refresh error: \(error)")
+                    }
+                }
+                
+                // STEP 4: Check for private_message notifications (same as private_access_granted)
+                checkPrivateMessageNotifications()
+                
+                // STEP 5: Update cached user threads immediately (for username scroll)
+                messagingService.updateCachedUserThreads(for: content.SK)
+                cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+            }
+            .onDisappear {
+                // Disconnect and cleanup via MessagingService
+                messagingService.disconnect(for: content.SK)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+                // Immediately refresh when app comes to foreground
+                loadComments()
+                
+                // Check for private message notifications (same as inbox notifications)
+                checkPrivateMessageNotifications()
+                
+                // Reconnect WebSocket via MessagingService
+                messagingService.connectWebSocket(for: content.SK)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RefreshInboxCount"))) { _ in
+                // Also check when inbox count refreshes (notifications might have changed)
+                checkPrivateMessageNotifications()
+            }
+            // Handle WebSocket comment notifications - reload unread counts when new private message arrives
+            .onReceive(websocketService.$commentNotification) { notification in
+                guard let notification = notification,
+                      normalizeVideoId(notification.videoId) == normalizeVideoId(content.SK),
+                      notification.isPrivate,
+                      let parentCommentId = notification.parentCommentId else { return }
+                
+                print("📬 [FloatingCommentView] Received WebSocket private message notification for thread: \(parentCommentId)")
+                
+                // Check if this thread is currently selected (if so, don't mark as unread)
+                let isCurrentlySelected = selectedThreadId == parentCommentId
+                
+                if !isCurrentlySelected {
+                    // Reload unread counts to get latest status from server
+                    Task {
+                        try? await messagingService.loadUnreadCounts(for: content.SK)
+                        await MainActor.run {
+                            // Update cached user threads with latest unread status
+                            messagingService.updateCachedUserThreads(for: content.SK)
+                            cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                            
+                            // Sync thread unread status
+                            for threadId in privateThreads.keys {
+                                let key = "\(content.SK)_\(threadId)"
+                                threadUnreadStatus[threadId] = messagingService.threadUnreadStatus[key] == true
+                            }
+                            
+                            print("🔔 [FloatingCommentView] Updated unread status after WebSocket notification")
+                        }
+                    }
+                }
+                
+                // Reload messages to get the new comment
+                loadComments()
+            }
+            // FASTEST APPROACH: Handle simple indicator notifications (show/clear)
+            .onReceive(websocketService.$privateMessageIndicatorNotification) { notification in
+                // CRITICAL: Ignore nil notifications (initial state or reset)
+                guard let notification = notification else {
+                    return
+                }
+                
+                // CRITICAL: Normalize both videoIds for comparison (backend sends normalized, content.SK may have FILE# prefix)
+                let normalizedNotificationVideoId = normalizeVideoId(notification.videoId)
+                let normalizedContentSK = normalizeVideoId(content.SK)
+                
+                print("🔔 [FloatingCommentView] Received private_message_indicator: action=\(notification.action), videoId=\(normalizedNotificationVideoId), currentVideoId=\(normalizedContentSK), threadId=\(notification.threadId ?? "none")")
+                
+                guard normalizedNotificationVideoId == normalizedContentSK else {
+                    print("⚠️ [FloatingCommentView] VideoId mismatch, ignoring indicator")
+                    return
+                }
+                
+                if notification.action == "show" {
+                    print("✅ [FloatingCommentView] Showing indicator for thread: \(notification.threadId ?? "none")")
+                    // Show indicator immediately
+                    if let threadId = notification.threadId {
+                        let key = "\(content.SK)_\(threadId)"
+                        threadUnreadStatus[threadId] = true
+                        messagingService.threadUnreadStatus[key] = true
+                    }
+                    
+                    // Update cached user threads to show orange highlight
+                    messagingService.updateCachedUserThreads(for: content.SK)
+                    cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                    
+                    // Show red badge
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("CommentsViewed"),
+                        object: nil,
+                        userInfo: [
+                            "videoId": content.SK,
+                            "unreadCount": 1
+                        ]
+                    )
+                    
+                } else if notification.action == "clear" {
+                    // Clear indicator immediately
+                    if let threadId = notification.threadId {
+                        let key = "\(content.SK)_\(threadId)"
+                        threadUnreadStatus[threadId] = false
+                        messagingService.threadUnreadStatus[key] = false
+                    }
+                    
+                    // Update cached user threads to remove orange highlight
+                    messagingService.updateCachedUserThreads(for: content.SK)
+                    cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                    
+                    // Check if all threads are read
+                    let hasAnyUnread = threadUnreadStatus.values.contains(true)
+                    if !hasAnyUnread {
+                        // Clear red badge
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("CommentsViewed"),
+                            object: nil,
+                            userInfo: [
+                                "videoId": content.SK,
+                                "unreadCount": 0
+                            ]
+                        )
+                    }
+                    
+                }
+            }
+            // Handle WebSocket unread count updates - update indicators immediately
+            .onReceive(websocketService.$unreadCountUpdateNotification) { notification in
+                guard let notification = notification else {
+                    return
+                }
+                
+                guard normalizeVideoId(notification.videoId) == normalizeVideoId(content.SK) else {
+                    return
+                }
+                
+                // Update MessagingService unreadCounts (for ContentCard badge)
+                messagingService.unreadCounts[content.SK] = notification.totalUnread
+                
+                // Update thread unread status from notification
+                for (threadId, count) in notification.threadUnreadCounts {
+                    let key = "\(content.SK)_\(threadId)"
+                    let hasUnread = count > 0
+                    threadUnreadStatus[threadId] = hasUnread
+                    messagingService.threadUnreadStatus[key] = hasUnread
+                }
+                
+                // Update cached user threads to show/hide orange highlights
+                messagingService.updateCachedUserThreads(for: content.SK)
+                cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                
+                // CRITICAL: Notify ContentCard to update red badge indicator
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("CommentsViewed"),
+                    object: nil,
+                    userInfo: [
+                        "videoId": content.SK,
+                        "unreadCount": notification.totalUnread
+                    ]
+                )
+                
+                print("🔔 [FloatingCommentView] Updated orange highlights and red badge from unread count update")
+            }
+            // WebSocket updates are handled by MessagingService
+            // When MessagingService receives WebSocket notifications, it updates its state
+            // and FloatingCommentView syncs via loadComments() which is called automatically
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SelectCommentThreadByUsername"))) { notification in
+                // Handle notification to select a comment thread by username
+                if let username = notification.userInfo?["username"] as? String {
+                    print("📬 [FloatingCommentView] Received SelectCommentThreadByUsername for: \(username)")
+                    print("   - Current cachedUserThreads count: \(cachedUserThreads.count)")
+                    print("   - Current cachedUserThreads usernames: \(cachedUserThreads.map { $0.username })")
+                    
+                    // Normalize username for comparison (lowercase, trim)
+                    let normalizedUsername = username.lowercased().trimmingCharacters(in: .whitespaces)
+                    
+                    // First, ensure comments are loaded and cachedUserThreads are updated
+                    Task {
+                        // Load comments (this is synchronous but triggers async Task internally)
+                        loadComments()
+                        
+                        // Wait for comments to load and updateCachedUserThreads to complete
+                        // The loadComments() function uses a Task internally, so we need to wait
+                        try? await Task.sleep(nanoseconds: 800_000_000) // 0.8 seconds to ensure load completes
+                        
+                        await MainActor.run {
+                            // Find the thread ID for this username (case-insensitive comparison)
+                            // Prefer threads with private messages and unread status
+                            let matchingThreads = cachedUserThreads.filter { 
+                                $0.username.lowercased().trimmingCharacters(in: .whitespaces) == normalizedUsername 
+                            }
+                            
+                            // Find the best thread: prefer one with private messages and unread status
+                            let bestThread = matchingThreads.first { thread in
+                                let hasPrivateMessages = privateThreads[thread.id] != nil && !(privateThreads[thread.id]?.isEmpty ?? true)
+                                return hasPrivateMessages && thread.hasUnread
+                            } ?? matchingThreads.first { thread in
+                                let hasPrivateMessages = privateThreads[thread.id] != nil && !(privateThreads[thread.id]?.isEmpty ?? true)
+                                return hasPrivateMessages
+                            } ?? matchingThreads.first
+                            
+                            if let matchingThread = bestThread {
+                                print("✅ [FloatingCommentView] Found matching thread for username: \(username) -> \(matchingThread.username), threadId: \(matchingThread.id), hasUnread: \(matchingThread.hasUnread)")
+                                
+                                // Ensure comments section is expanded first
+                                if !isExpanded {
+                                    withAnimation {
+                                        isExpanded = true
+                                    }
+                                }
+                                
+                                // Select this thread (preserve unread status - don't mark as read yet)
+                                withAnimation {
+                                    selectedThreadId = matchingThread.id
+                                }
+                                
+                                // DON'T mark as read immediately - let the user view it first
+                                // The thread will be marked as read when they actually view it or when they click the thread button
+                                
+                                // Reload comments to ensure thread messages are loaded
+                                loadComments()
+                                
+                                print("✅ [FloatingCommentView] Selected thread for username: \(username), threadId: \(matchingThread.id), preserving unread status: \(matchingThread.hasUnread)")
+                            } else {
+                                print("⚠️ [FloatingCommentView] Could not find thread for username: '\(username)' (normalized: '\(normalizedUsername)')")
+                                print("   - Available usernames in cachedUserThreads: \(cachedUserThreads.map { "'\($0.username)' (normalized: '\($0.username.lowercased().trimmingCharacters(in: .whitespaces))')" })")
+                                
+                                // Still expand comments section so user can see all threads
+                                if !isExpanded {
+                                    withAnimation {
+                                        isExpanded = true
+                                    }
+                                }
+                                
+                                // Try to find by searching in publicComments directly
+                                if let matchingComment = publicComments.first(where: { 
+                                    $0.username.lowercased().trimmingCharacters(in: .whitespaces) == normalizedUsername 
+                                }) {
+                                    print("✅ [FloatingCommentView] Found comment directly, creating thread selection: \(matchingComment.id)")
+                                    
+                                    // Create a temporary thread entry if not in cachedUserThreads
+                                    let tempThread = MessagingService.ThreadInfo(
+                                        id: matchingComment.id,
+                                        username: matchingComment.username,
+                                        hasUnread: threadUnreadStatus[matchingComment.id] == true
+                                    )
+                                    
+                                    // Add to cachedUserThreads if not already there
+                                    if !cachedUserThreads.contains(where: { $0.id == matchingComment.id }) {
+                                        cachedUserThreads.append(tempThread)
+                                    }
+                                    
+                                    withAnimation {
+                                        selectedThreadId = matchingComment.id
+                                    }
+                                    
+                                    markThreadAsRead(threadId: matchingComment.id)
+                                    threadUnreadStatus[matchingComment.id] = false
+                                    saveUnreadStatusToCache()
+                                    updateCachedUserThreads()
+                                    
+                                    loadComments()
+                                } else {
+                                    print("❌ [FloatingCommentView] Could not find comment for username: '\(username)' in publicComments either")
+                                    print("   - Available usernames in publicComments: \(publicComments.map { "'\($0.username)' (normalized: '\($0.username.lowercased().trimmingCharacters(in: .whitespaces))')" })")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NewCommentPosted"))) { notification in
+                // Immediately refresh when a new comment is posted (for general chat only)
+                // Private thread messages don't post this notification to prevent flip
+                if let videoId = notification.userInfo?["videoId"] as? String,
+                   videoId == content.SK,
+                   let isPrivate = notification.userInfo?["isPrivate"] as? Bool,
+                   !isPrivate {
+                    // Only reload for general chat comments (not private thread replies)
+                    // Small delay to ensure server has processed the comment
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        loadComments()
+                    }
+                }
+            }
+    }
+    
+    // MARK: - Notification Functions
+    
+    // Mark private_message notification as read when thread is opened
+    private func markPrivateMessageNotificationAsRead(for threadId: String) {
+        guard let userEmail = authService.userEmail else { return }
+        
+        Task {
+            do {
+                // Get all notifications to find the one for this thread
+                let response = try await ChannelService.shared.getNotifications(userEmail: userEmail, limit: 100, unreadOnly: false)
+                let allNotifications = response.notifications ?? []
+                
+                // Find unread private_message notification for this video/thread
+                if let notification = allNotifications.first(where: { notif in
+                    guard notif.type == "private_message" && !notif.isRead else { return false }
+                    if let metadata = notif.metadata,
+                       let notifVideoId = metadata["videoId"] as? String,
+                       let notifThreadId = metadata["threadId"] as? String {
+                        return normalizeVideoId(notifVideoId) == normalizeVideoId(content.SK) && notifThreadId == threadId
+                    }
+                    return false
+                }) {
+                    // Mark as read
+                    _ = try await ChannelService.shared.markNotificationRead(userEmail: userEmail, notificationId: notification.id)
+                    print("✅ [FloatingCommentView] Marked private_message notification as read for thread: \(threadId)")
+                }
+            } catch {
+                print("⚠️ [FloatingCommentView] Error marking private_message notification as read: \(error)")
+            }
+        }
+    }
+    
+    // Check for private_message notifications (same pattern as private_access_granted)
+    private func checkPrivateMessageNotifications() {
+        guard let userEmail = authService.userEmail else { return }
+        
+        Task {
+            do {
+                let response = try await ChannelService.shared.getNotifications(userEmail: userEmail, limit: 100, unreadOnly: false)
+                await MainActor.run {
+                    let allNotifications = response.notifications ?? []
+                    
+                    // Find unread private_message notifications for this video
+                    let unreadPrivateMessages = allNotifications.filter { notification in
+                        guard notification.type == "private_message" && !notification.isRead else { return false }
+                        // Check if this notification is for the current video
+                        if let metadata = notification.metadata,
+                           let notifVideoId = metadata["videoId"] as? String {
+                            return normalizeVideoId(notifVideoId) == normalizeVideoId(content.SK)
+                        }
+                        return false
+                    }
+                    
+                    if unreadPrivateMessages.count > 0 {
+                        print("🔔 [FloatingCommentView] Found \(unreadPrivateMessages.count) unread private message notification(s)")
+                        
+                        // Update indicators for each unread notification
+                        for notification in unreadPrivateMessages {
+                            if let metadata = notification.metadata,
+                               let threadId = metadata["threadId"] as? String {
+                                // Mark thread as unread in BOTH places (local and MessagingService)
+                                let key = "\(content.SK)_\(threadId)"
+                                threadUnreadStatus[threadId] = true
+                                threadUnreadStatus[key] = true // Also set with videoId prefix
+                                messagingService.threadUnreadStatus[key] = true
+                                messagingService.threadUnreadStatus[threadId] = true // Also set without prefix for compatibility
+                                
+                                print("   ✅ Marked thread \(threadId) as unread (key: \(key))")
+                            }
+                        }
+                        
+                        // CRITICAL: Update cached user threads to show orange highlights
+                        // This must be called AFTER threadUnreadStatus is updated
+                        messagingService.updateCachedUserThreads(for: content.SK)
+                        cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                        
+                        // Verify the update worked
+                        let threadsWithUnread = cachedUserThreads.filter { $0.hasUnread }
+                        print("   📊 Updated cached threads: \(threadsWithUnread.count) threads with orange highlight")
+                        
+                        // Show red badge
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("CommentsViewed"),
+                            object: nil,
+                            userInfo: [
+                                "videoId": content.SK,
+                                "unreadCount": unreadPrivateMessages.count
+                            ]
+                        )
+                        
+                        print("✅ [FloatingCommentView] Orange highlights and red badge updated from notifications")
+                    } else {
+                        print("ℹ️ [FloatingCommentView] No unread private message notifications found")
+                    }
+                }
+            } catch {
+                print("❌ [FloatingCommentView] Error checking private message notifications: \(error)")
+            }
+        }
+    }
+    
+    // MARK: - Persistence Functions
+    
+    private func commentsCacheKey(for videoId: String) -> String {
+        guard let userEmail = authService.userEmail else {
+            return "comments_\(videoId)"
+        }
+        return "comments_\(videoId)_\(userEmail)"
+    }
+    
+    private func likesCacheKey(for videoId: String) -> String {
+        guard let userEmail = authService.userEmail else {
+            return "commentLikes_\(videoId)"
+        }
+        return "commentLikes_\(videoId)_\(userEmail)"
+    }
+    
+    private func unreadStatusCacheKey(for videoId: String) -> String {
+        guard let userEmail = authService.userEmail else {
+            return "threadUnreadStatus_\(videoId)"
+        }
+        return "threadUnreadStatus_\(videoId)_\(userEmail)"
+    }
+    
+    // Save unread status to UserDefaults
+    private func saveUnreadStatusToCache() {
+        let videoId = content.SK
+        let key = unreadStatusCacheKey(for: videoId)
+        
+        do {
+            let encoder = JSONEncoder()
+            let data = try encoder.encode(threadUnreadStatus)
+            UserDefaults.standard.set(data, forKey: key)
+            UserDefaults.standard.synchronize()
+            print("💾 [FloatingCommentView] Saved unread status for \(threadUnreadStatus.count) threads to cache")
+        } catch {
+            print("❌ [FloatingCommentView] Error saving unread status to cache: \(error)")
+        }
+    }
+    
+    // Load unread status from UserDefaults
+    // NOTE: DO NOT USE CACHE - always fetch fresh from server to avoid stale data
+    // Cache can be out of sync with server, causing red badge but no orange name
+    private func loadUnreadStatusFromCache() {
+        // DISABLED: Don't load from cache - always fetch fresh from server
+        // This prevents stale data where red badge shows but orange name doesn't
+        // The server is the source of truth for unread status
+        print("⚠️ [FloatingCommentView] Skipping cache load - will fetch fresh unread status from server")
+    }
+    
+    // Save comments to UserDefaults
+    private func saveCommentsToCache() {
+        let videoId = content.SK
+        let key = commentsCacheKey(for: videoId)
+        
+        do {
+            // Create a cache structure that includes both public comments and private threads
+            struct CachedComments: Codable {
+                let publicComments: [Comment]
+                let privateThreads: [String: [Comment]]
+                let timestamp: Date
+            }
+            
+            // MessagingService handles caching - this function is deprecated
+            // Keeping stub for compatibility but MessagingService is source of truth
+            let publicCommentsList = messagingService.getPublicComments(for: content.SK)
+            let threadsDict = messagingService.privateThreads[content.SK] ?? [:]
+            
+            let cached = CachedComments(
+                publicComments: publicCommentsList,
+                privateThreads: threadsDict,
+                timestamp: Date()
+            )
+            
+            let encoder = JSONEncoder()
+            let data = try encoder.encode(cached)
+            UserDefaults.standard.set(data, forKey: key)
+            UserDefaults.standard.synchronize()
+            print("💾 [FloatingCommentView] Saved \(publicCommentsList.count) public comments and \(threadsDict.count) private threads to cache (MessagingService handles this)")
+        } catch {
+            print("❌ [FloatingCommentView] Error saving comments to cache: \(error)")
+        }
+    }
+    
+    // Clear all comment caches - SERVER IS SOURCE OF TRUTH
+    private func clearCommentsCache() {
+        let videoId = content.SK
+        let key = commentsCacheKey(for: videoId)
+        UserDefaults.standard.removeObject(forKey: key)
+        
+        // Also clear likes cache for this video
+        let likesKey = likesCacheKey(for: videoId)
+        UserDefaults.standard.removeObject(forKey: likesKey)
+        
+        print("🗑️ [FloatingCommentView] Cleared comment cache for video: \(videoId)")
+    }
+    
+    // Clear all unread status caches - SERVER IS SOURCE OF TRUTH
+    private func clearUnreadStatusCache() {
+        let videoId = content.SK
+        let key = unreadStatusCacheKey(for: videoId)
+        UserDefaults.standard.removeObject(forKey: key)
+        
+        print("🗑️ [FloatingCommentView] Cleared unread status cache for video: \(videoId)")
+    }
+    
+    // DISABLED: Load comments from UserDefaults cache
+    // SERVER IS SOURCE OF TRUTH - Cache is cleared on app start
+    // Cache is only used for optimistic updates during active session
+    private func loadCommentsFromCache() {
+        // DISABLED: Don't load from cache - always fetch fresh from server
+        // This ensures no stale data from previous sessions
+        print("⚠️ [FloatingCommentView] Cache loading disabled - server is source of truth")
+    }
+    
+    // Save likes to UserDefaults
+    private func saveLikesToCache() {
+        let videoId = content.SK
+        let key = likesCacheKey(for: videoId)
+        
+        // Create a dictionary of commentId -> LikeData
+        struct LikeData: Codable {
+            let likeCount: Int
+            let isLiked: Bool
+        }
+        
+        var likesDict: [String: LikeData] = [:]
+        
+        // Save likes from public comments
+        for comment in publicComments {
+            likesDict[comment.id] = LikeData(likeCount: comment.likeCount, isLiked: comment.isLiked)
+        }
+        
+        // Save likes from private threads - MessagingService handles this
+        let threadsDict = messagingService.privateThreads[content.SK] ?? [:]
+        for (_, thread) in threadsDict {
+            for comment in thread {
+                likesDict[comment.id] = LikeData(likeCount: comment.likeCount, isLiked: comment.isLiked)
+            }
+        }
+        
+        do {
+            let encoder = JSONEncoder()
+            let data = try encoder.encode(likesDict)
+            UserDefaults.standard.set(data, forKey: key)
+            UserDefaults.standard.synchronize()
+            print("💾 [FloatingCommentView] Saved likes for \(likesDict.count) comments to cache")
+        } catch {
+            print("❌ [FloatingCommentView] Error saving likes to cache: \(error)")
+        }
+    }
+    
+    // Apply cached likes to comments
+    private func applyCachedLikes() {
+        let videoId = content.SK
+        let key = likesCacheKey(for: videoId)
+        
+        guard let data = UserDefaults.standard.data(forKey: key) else {
+            return
+        }
+        
+        do {
+            // Decode the likes dictionary
+            struct LikeData: Codable {
+                let likeCount: Int
+                let isLiked: Bool
+            }
+            
+            let decoder = JSONDecoder()
+            if let likesDict = try? decoder.decode([String: LikeData].self, from: data) {
+                // MessagingService handles likes - this function is deprecated
+                // Server is source of truth for likes, so we don't apply cached likes anymore
+                print("⚠️ [FloatingCommentView] applyCachedLikes is deprecated - MessagingService handles likes")
+            }
+        } catch {
+            print("❌ [FloatingCommentView] Error applying cached likes: \(error)")
+        }
+    }
+    
+    // NO PERIODIC POLLING - WebSocket provides all real-time updates
+    // This function is kept as a fallback only (e.g., on app foreground if WebSocket is disconnected)
+    private func refreshUnreadCountsOnly() {
+        guard let userEmail = authService.userEmail else { return }
+        
+        Task {
+            do {
+                let unreadCountsResponse = try await ChannelService.shared.getUnreadCommentCountsDetailed(
+                    videoIds: [content.SK],
+                    viewerEmail: userEmail
+                )
+                
+                await MainActor.run {
+                    // Parse the response
+                    var threadUnreadCounts: [String: Int] = [:]
+                    var totalUnreadCount = 0
+                    
+                    if let videoResponse = unreadCountsResponse[content.SK] {
+                        if let intValue = videoResponse as? Int {
+                            totalUnreadCount = intValue
+                        } else if let dictValue = videoResponse as? [String: Any],
+                                  let total = dictValue["total"] as? Int,
+                                  let threads = dictValue["threads"] as? [String: Int] {
+                            totalUnreadCount = total
+                            threadUnreadCounts = threads
+                        }
+                    }
+                    
+                    // Update unread status map
+                    var unreadStatus: [String: Bool] = [:]
+                    for comment in publicComments {
+                        let unreadCount = threadUnreadCounts[comment.id] ?? 0
+                        unreadStatus[comment.id] = unreadCount > 0
+                    }
+                    
+                    // Also check private threads - if there's an unread count for a thread, mark it as unread
+                    // This handles cases where the post owner sent a private message without commenting in general chat
+                    for (threadId, _) in privateThreads {
+                        let unreadCount = threadUnreadCounts[threadId] ?? 0
+                        if unreadCount > 0 {
+                            unreadStatus[threadId] = true
+                        }
+                    }
+                    
+                    // Update threadUnreadStatus - server is source of truth
+                    // Overwrite cached values with server values to prevent stale cache
+                    for (threadId, status) in unreadStatus {
+                        // Server data always takes precedence - overwrite cache
+                        threadUnreadStatus[threadId] = status
+                    }
+                    
+                    // Also clear any cached threads that are no longer in server response (they've been read)
+                    // This prevents stale "unread" indicators from cache
+                    let serverThreadIds = Set(unreadStatus.keys)
+                    for cachedThreadId in threadUnreadStatus.keys {
+                        if !serverThreadIds.contains(cachedThreadId) {
+                            // Thread not in server response means it's been read - clear it
+                            threadUnreadStatus[cachedThreadId] = false
+                        }
+                    }
+                    
+                    // Update cached user threads with new unread status
+                    updateCachedUserThreads()
+                    
+                    // Notify ContentCard to refresh unread count badge
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("CommentsViewed"),
+                        object: nil,
+                        userInfo: ["videoId": content.SK]
+                    )
+                }
+            } catch {
+                print("❌ [FloatingCommentView] Error refreshing unread counts: \(error)")
+            }
+        }
+    }
+    
+    // Process comments response (extracted for reuse)
+    @MainActor
+    private func processCommentsResponse(_ response: ChannelService.CommentsResponse, preservedSelectedThreadMessages: [Comment]?) {
+                    // CRITICAL: Server is source of truth for likes
+                    // The backend correctly calculates isLiked based on whether userId is in likedBy array
+                    // Don't overwrite server data with cache - trust the server response
+                    
+                    // Separate public comments from private threads
+        var newPublicComments = response.comments.filter { $0.isPrivate != true && $0.parentCommentId == nil }
+        
+        // Backend returns newest first (ScanIndexForward: false), reverse once to get oldest first (newest at bottom)
+        // Same approach as private threads - reverse once when storing, not on every access
+        let reversedPublicComments = Array(newPublicComments.reversed())
+        
+        // Debug: Log first and last comment timestamps to verify order
+        if !reversedPublicComments.isEmpty {
+            let first = reversedPublicComments.first!
+            let last = reversedPublicComments.last!
+            print("📊 [FloatingCommentView] Public comments - First (oldest): \(first.createdAt), Last (newest): \(last.createdAt), Total: \(reversedPublicComments.count)")
+        }
+        
+        publicComments = reversedPublicComments
+        
+        // UNIFIED LOGIC: Private thread = general chat with 2 people
+        // CRITICAL: Start with existing privateThreads to preserve ALL threads (same as general chat preserves publicComments)
+        // Then update with server data (server is source of truth for messages that exist on server)
+        // This ensures threads don't disappear when navigating away - same as general chat
+        var threads: [String: [Comment]] = privateThreads
+        
+        // Update with server data - server is source of truth
+        let serverThreads = response.threadsByParent
+        print("🔄 [FloatingCommentView] Merging threads - existing: \(threads.count), server: \(serverThreads.count)")
+        
+        // Merge server messages into existing threads - REVERSE ONCE when storing
+        // Backend returns newest first, we reverse once to get oldest first (newest at bottom)
+        // SAME LOGIC AS GENERAL CHAT - just different ID (threadId vs no ID)
+        for (threadId, serverMessages) in serverThreads {
+            // Reverse backend order once (newest first -> oldest first) so newest appears at bottom
+            // Convert ReversedCollection to Array so we can append
+            let reversedServerMessages = Array(serverMessages.reversed())
+            let existingMessages = threads[threadId] ?? []
+            let serverMessageIds = Set(reversedServerMessages.map { $0.id })
+            
+            // Create a map of existing messages by ID to preserve like state
+            var existingMessagesById: [String: Comment] = [:]
+            for msg in existingMessages {
+                existingMessagesById[msg.id] = msg
+            }
+            
+            // Preserve optimistic updates (messages not yet on server) - SAME AS GENERAL CHAT
+            let optimisticMessages = existingMessages.filter { !serverMessageIds.contains($0.id) }
+            
+            // Merge server messages with existing like state (preserve optimistic like updates)
+            // WebSocket handles real-time updates, but preserve optimistic state during merge
+            // WebSocket will update it when the server confirms the like
+            var mergedMessages: [Comment] = []
+            for serverMsg in reversedServerMessages {
+                if let existingMsg = existingMessagesById[serverMsg.id] {
+                    // Message exists - preserve optimistic like state (WebSocket will confirm)
+                    var mergedMsg = serverMsg
+                    mergedMsg.isLiked = existingMsg.isLiked
+                    mergedMsg.likeCount = existingMsg.likeCount
+                    mergedMessages.append(mergedMsg)
+                } else {
+                    // New message from server
+                    mergedMessages.append(serverMsg)
+                }
+            }
+            
+            // Combine: merged server messages (oldest first) + optimistic updates at the end
+            // SAME AS GENERAL CHAT - just different ID
+            mergedMessages.append(contentsOf: optimisticMessages)
+            
+            threads[threadId] = mergedMessages
+            print("   - Thread \(threadId): \(serverMessages.count) server + \(optimisticMessages.count) optimistic = \(mergedMessages.count) total (reversed once)")
+        }
+        
+        // CRITICAL: Preserve ALL existing threads that aren't in server response (optimistic messages)
+        // This ensures messages don't disappear when navigating away - SAME AS GENERAL CHAT
+        // General chat preserves all publicComments, private threads should preserve all threads
+        for (threadId, existingMessages) in privateThreads {
+            // If thread not in server response, preserve it (might be optimistic or server hasn't processed yet)
+            if threads[threadId] == nil && !existingMessages.isEmpty {
+                threads[threadId] = existingMessages
+                print("   - Preserved existing thread \(threadId) with \(existingMessages.count) messages (not in server response)")
+            }
+        }
+        
+        // Preserve selected thread if it exists but isn't in server response
+        if let selectedId = selectedThreadId,
+           let preservedMessages = preservedSelectedThreadMessages,
+           threads[selectedId] == nil {
+            threads[selectedId] = preservedMessages
+            print("   - Preserved selected thread \(selectedId) with \(preservedMessages.count) messages")
+        }
+        
+        // Update privateThreads - preserve ALL threads, update with server data
+        // SAME AS GENERAL CHAT - publicComments always preserved, privateThreads should always be preserved
+        privateThreads = threads
+        print("✅ [FloatingCommentView] After merge - privateThreads keys: \(privateThreads.keys)")
+                    
+                    // Save to cache after merging
+                    saveCommentsToCache()
+                    saveLikesToCache()
+        
+        // CRITICAL: Update cached user threads IMMEDIATELY after loading threads
+        // This ensures usernames appear in the scroll and threads are accessible when clicked
+        // Don't wait for unread status - update threads first, then update unread status
+        updateCachedUserThreads()
+                    
+                    // Debug: Log thread counts
+                    print("📊 [FloatingCommentView] Loaded comments:")
+                    print("   - Public comments: \(publicComments.count)")
+                    print("   - Private threads: \(threads.count)")
+                    for (threadId, messages) in threads {
+                        print("   - Thread \(threadId): \(messages.count) messages")
+                    }                    
+    }
+    
+    // MARK: - WebSocket & Polling
+    // WebSocket and polling are now handled by MessagingService
+    
+    private func loadComments() {
+        guard !isLoading, canViewComments else { return }
+        isLoading = true
+        
+        // CRITICAL: Always sync from MessagingService immediately (even if cache exists)
+        // UNIFIED LOGIC: Private thread = general chat with 2 people
+        // General chat preserves publicComments, private threads should preserve all threads
+        // Don't overwrite - merge to ensure messages don't disappear when navigating away
+        publicComments = messagingService.getPublicComments(for: content.SK)
+        
+        // MERGE with existing privateThreads (don't overwrite) - SAME AS GENERAL CHAT
+        // General chat always preserves publicComments, private threads should always preserve all threads
+        let messagingThreads = messagingService.privateThreads[content.SK] ?? [:]
+        for (threadId, messages) in messagingThreads {
+            // Update with MessagingService data, but preserve existing if MessagingService is empty
+            if !messages.isEmpty {
+                privateThreads[threadId] = messages
+            } else if privateThreads[threadId] == nil {
+                // Only set to empty if it doesn't exist yet (don't overwrite existing non-empty threads)
+                privateThreads[threadId] = []
+            }
+        }
+        // Preserve all existing threads that aren't in MessagingService (optimistic messages)
+        // This ensures messages don't disappear when navigating away - SAME AS GENERAL CHAT
+        
+        cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+        
+        // Update thread unread status from cache
+        for threadId in privateThreads.keys {
+            threadUnreadStatus[threadId] = messagingService.hasUnreadThread(videoId: content.SK, threadId: threadId)
+        }
+        
+        // CRITICAL: Always reload from server to ensure we have latest data (same as general chat)
+        // This ensures persistence - server is source of truth
+        Task {
+            do {
+                // Force server fetch to ensure we have latest messages (including newly posted ones)
+                try await messagingService.loadMessages(for: content.SK, useCache: false)
+                await MainActor.run {
+                    // Sync local state with MessagingService after server reload
+                    // UNIFIED LOGIC: Private thread = general chat with 2 people
+                    // MERGE with existing (don't overwrite) - SAME AS GENERAL CHAT
+                    publicComments = messagingService.getPublicComments(for: content.SK)
+                    
+                    // MERGE with existing privateThreads (don't overwrite) - SAME AS GENERAL CHAT
+                    // General chat always preserves publicComments, private threads should always preserve all threads
+                    let messagingThreads = messagingService.privateThreads[content.SK] ?? [:]
+                    for (threadId, messages) in messagingThreads {
+                        // Update with MessagingService data, but preserve existing if MessagingService is empty
+                        if !messages.isEmpty {
+                            privateThreads[threadId] = messages
+                        } else if privateThreads[threadId] == nil {
+                            // Only set to empty if it doesn't exist yet (don't overwrite existing non-empty threads)
+                            privateThreads[threadId] = []
+                        }
+                    }
+                    // Preserve all existing threads that aren't in MessagingService (optimistic messages)
+                    // This ensures messages don't disappear when navigating away - SAME AS GENERAL CHAT
+                    
+                    cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                    
+                    // CRITICAL: If a thread is selected, ensure its messages are loaded
+                    if let threadId = selectedThreadId {
+                        // Force reload thread messages if empty
+                        if privateThreads[threadId]?.isEmpty ?? true {
+                            // Thread messages not loaded - trigger reload
+                            print("⚠️ [FloatingCommentView] Selected thread \(threadId) has no messages, reloading...")
+                            Task {
+                                try? await messagingService.loadMessages(for: content.SK, useCache: false)
+                                await MainActor.run {
+                                    // MERGE (don't overwrite) - preserve existing threads
+                                    let messagingThreads = messagingService.privateThreads[content.SK] ?? [:]
+                                    for (tid, msgs) in messagingThreads {
+                                        if !msgs.isEmpty {
+                                            privateThreads[tid] = msgs
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Update thread unread status after server reload
+                    for threadId in privateThreads.keys {
+                        threadUnreadStatus[threadId] = messagingService.hasUnreadThread(videoId: content.SK, threadId: threadId)
+                    }
+                    
+                    isLoading = false
+                }
+            } catch {
+                print("❌ [FloatingCommentView] Error loading comments: \(error)")
+                await MainActor.run {
+                    isLoading = false
+                }
+            }
+        }
+    }
+    
+    // OLD loadComments - keeping for reference during migration
+    private func loadComments_OLD() {
+        guard !isLoading, canViewComments else { return }
+        isLoading = true
+        
+        // Preserve selected thread messages to prevent flash during loading
+        let preservedSelectedThreadMessages = selectedThreadId != nil ? privateThreads[selectedThreadId!] : nil
+        
+        Task {
+            do {
+                let userId = authService.userId
+                let viewerEmail = authService.userEmail
+                let response = try await ChannelService.shared.getCommentsWithThreads(videoId: content.SK, userId: userId, viewerEmail: viewerEmail)
+                await MainActor.run {
+                    processCommentsResponse(response, preservedSelectedThreadMessages: preservedSelectedThreadMessages)                    
+                    
+                    // CRITICAL: Load unread status from server FIRST, then update cached user threads
+                    // This ensures we never use stale cache data - server is always source of truth
+                    if let userEmail = authService.userEmail {
+                        Task {
+                            do {
+                                // Use API to get unread counts for threads (with per-thread details)
+                                let unreadCountsResponse = try await ChannelService.shared.getUnreadCommentCountsDetailed(
+                                    videoIds: [content.SK],
+                                    viewerEmail: userEmail
+                                )
+                                
+                                await MainActor.run {
+                                    // Parse the response - handle both old format (Int) and new format (dict with total/threads)
+                                    var threadUnreadCounts: [String: Int] = [:]
+                                    var totalUnreadCount = 0
+                                    
+                                    if let videoResponse = unreadCountsResponse[content.SK] {
+                                        if let intValue = videoResponse as? Int {
+                                            // Old format - just total count, no per-thread info
+                                            totalUnreadCount = intValue
+                                        } else if let dictValue = videoResponse as? [String: Any],
+                                                  let total = dictValue["total"] as? Int,
+                                                  let threads = dictValue["threads"] as? [String: Int] {
+                                            // New format - total and per-thread counts
+                                            totalUnreadCount = total
+                                            threadUnreadCounts = threads
+                                        }
+                                    }
+                                    
+                                    // Build unread status map from per-thread counts - SERVER IS SOURCE OF TRUTH
+                                    // Clear existing unread status first to prevent stale data
+                                    threadUnreadStatus.removeAll()
+                                    
+                                    // Set unread status from server response
+                                    for comment in publicComments {
+                                        let unreadCount = threadUnreadCounts[comment.id] ?? 0
+                                        threadUnreadStatus[comment.id] = unreadCount > 0
+                                    }
+                                    
+                                    // Also check all threadIds from privateThreads (in case they're not in publicComments)
+                                    for threadId in privateThreads.keys {
+                                        if threadUnreadStatus[threadId] == nil {
+                                            let unreadCount = threadUnreadCounts[threadId] ?? 0
+                                            threadUnreadStatus[threadId] = unreadCount > 0
+                                        }
+                                    }
+                                    
+                                    print("✅ [FloatingCommentView] Loaded fresh unread status from server: \(threadUnreadStatus)")
+                                    
+                                    // Save fresh unread status to cache (server data is source of truth)
+                                    saveUnreadStatusToCache()
+                                    
+                                    // CRITICAL: Update cached user threads AFTER unread status is loaded from server
+                                    // This ensures orange highlights match the red badge
+                                    updateCachedUserThreads()
+                                    
+                                    isLoading = false
+                                    
+                                    // Scroll to bottom after comments load (like Instagram)
+                                    NotificationCenter.default.post(
+                                        name: NSNotification.Name("ScrollCommentsToBottom"),
+                                        object: nil,
+                                        userInfo: ["threadId": selectedThreadId as Any]
+                                    )
+                                }
+                            } catch {
+                                print("❌ [FloatingCommentView] Error loading unread status: \(error)")
+                                await MainActor.run {
+                                    // Even if unread status fails, update threads (they'll just have no unread highlights)
+                                    updateCachedUserThreads()
+                                    isLoading = false
+                                }
+                            }
+                        }
+                    } else {
+                        // No email - can't load unread status, but still update threads
+                        updateCachedUserThreads()
+                        isLoading = false
+                    }
+                    
+                    // Notify ContentCard to refresh unread count
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("CommentsViewed"),
+                        object: nil,
+                        userInfo: ["videoId": content.SK]
+                    )
+                }
+            } catch {
+                print("❌ [FloatingCommentView] Error loading comments: \(error)")
+                await MainActor.run {
+                    isLoading = false
+                }
+            }
+        }
+    }
+    
+    private func clearAllComments() {
+        guard !isClearing else { return }
+        isClearing = true
+        
+        Task {
+            do {
+                try await ChannelService.shared.clearAllComments(videoId: content.SK)
+                await MainActor.run {
+                    // Clear local state
+                    publicComments = []
+                    privateThreads = [:]
+                    threadUnreadStatus = [:]
+                    cachedUserThreads = [] // Clear cached user threads
+                    selectedThreadId = nil
+                    isClearing = false
+                    
+                    // Clear cache
+                    let commentsKey = commentsCacheKey(for: content.SK)
+                    let likesKey = likesCacheKey(for: content.SK)
+                    let unreadStatusKey = unreadStatusCacheKey(for: content.SK)
+                    UserDefaults.standard.removeObject(forKey: commentsKey)
+                    UserDefaults.standard.removeObject(forKey: likesKey)
+                    UserDefaults.standard.removeObject(forKey: unreadStatusKey)
+                    UserDefaults.standard.synchronize()
+                    print("🗑️ [FloatingCommentView] Cleared comments, likes, and unread status cache")
+                    
+                    // Reload comments (will be empty now)
+                    loadComments()
+                    
+                    // Notify ContentCard to refresh
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("CommentsViewed"),
+                        object: nil,
+                        userInfo: ["videoId": content.SK]
+                    )
+                }
+            } catch {
+                print("❌ [FloatingCommentView] Error clearing comments: \(error)")
+                await MainActor.run {
+                    isClearing = false
+                }
+            }
+        }
+    }
+    
+    private func postComment() {
+        guard !newCommentText.isEmpty, !isPosting,
+              let username = authService.username else { return }
+        
+        let isPrivatePost = selectedThreadId != nil
+        
+        isPosting = true
+        let commentText = newCommentText
+        
+        // CRITICAL: Clear input IMMEDIATELY (synchronous) - instant feedback
+        newCommentText = ""
+        
+        // CRITICAL: Create optimistic comment IMMEDIATELY on main thread (before async call)
+        // This ensures the comment appears instantly with zero delay
+        let optimisticComment = Comment(
+            id: "temp_\(Date().timeIntervalSince1970)",
+            videoId: content.SK,
+            userId: authService.userId ?? "",
+            username: username,
+            text: commentText,
+            createdAt: Date(),
+            likeCount: 0,
+            isLiked: false,
+            isPrivate: selectedThreadId != nil,
+            parentCommentId: selectedThreadId,
+            visibleTo: nil,
+            mentionedUsername: nil
+        )
+        
+        // Add optimistic comment IMMEDIATELY (synchronous, no await)
+        if let threadId = selectedThreadId {
+            if privateThreads[threadId] == nil {
+                privateThreads[threadId] = []
+            }
+            privateThreads[threadId]?.append(optimisticComment)
+        } else {
+            publicComments.append(optimisticComment)
+        }
+        
+        // Update cached user threads immediately
+        messagingService.updateCachedUserThreads(for: content.SK)
+        cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+        
+        Task {
+            do {
+                // Post to server (optimistic comment already shown)
+                let comment = try await messagingService.postMessage(
+                    videoId: content.SK,
+                    text: commentText,
+                    threadId: selectedThreadId,
+                    username: username
+                )
+                
+                // Replace optimistic with real comment (silent replacement)
+                await MainActor.run {
+                    if let threadId = selectedThreadId {
+                        if let index = privateThreads[threadId]?.firstIndex(where: { $0.id == optimisticComment.id }) {
+                            privateThreads[threadId]?[index] = comment
+                        }
+                    } else {
+                        if let index = publicComments.firstIndex(where: { $0.id == optimisticComment.id }) {
+                            publicComments[index] = comment
+                        }
+                    }
+                    
+                    // Sync from MessagingService (simple, minimal updates)
+                    publicComments = messagingService.getPublicComments(for: content.SK)
+                    
+                    if let messagingThreads = messagingService.privateThreads[content.SK] {
+                        for (threadId, messages) in messagingThreads {
+                            privateThreads[threadId] = messages
+                        }
+                    }
+                    
+                    cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                    isPosting = false
+                    
+                    // Scroll to bottom
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("ScrollCommentsToBottom"),
+                        object: nil,
+                        userInfo: ["threadId": selectedThreadId as Any]
+                    )
+                }
+                
+                // For private threads: Update unread counts after posting
+                // CRITICAL: This is the PRIMARY way indicators are shown - works even if recipient isn't online
+                // WebSocket is just for real-time updates when both users are online
+                if selectedThreadId != nil {
+                    Task.detached {
+                        // Wait a bit for backend to process the message and mark it as unread
+                        try? await Task.sleep(nanoseconds: 1000_000_000) // 1.0s delay
+                        
+                        // Check unread counts - this will show the indicator for the OTHER user when they open the video
+                        try? await messagingService.loadUnreadCounts(for: content.SK)
+                        await MainActor.run {
+                            messagingService.updateCachedUserThreads(for: content.SK)
+                            cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                            
+                            // Update thread unread status for orange highlights
+                            for threadId in privateThreads.keys {
+                                let key = "\(content.SK)_\(threadId)"
+                                threadUnreadStatus[threadId] = messagingService.threadUnreadStatus[key] == true
+                            }
+                            
+                            // Update red badge
+                            let unreadCount = messagingService.getUnreadCount(for: content.SK)
+                            NotificationCenter.default.post(
+                                name: NSNotification.Name("CommentsViewed"),
+                                object: nil,
+                                userInfo: [
+                                    "videoId": content.SK,
+                                    "unreadCount": unreadCount
+                                ]
+                            )
+                            print("✅ [FloatingCommentView] Updated unread counts after posting: \(unreadCount) unread")
+                        }
+                    }
+                }
+            } catch {
+                print("❌ [FloatingCommentView] Error posting comment: \(error)")
+                await MainActor.run {
+                    newCommentText = commentText // Restore text on error
+                    isPosting = false
+                }
+            }
+        }
+    }
+    
+    private func toggleLike(for comment: Comment) {
+        Task {
+            do {
+                // Optimistic update - immediate UI feedback
+                await MainActor.run {
+                    let newIsLiked = !comment.isLiked
+                    
+                    // Update public comments
+                    if let index = publicComments.firstIndex(where: { $0.id == comment.id }) {
+                        publicComments[index].isLiked = newIsLiked
+                        publicComments[index].likeCount += newIsLiked ? 1 : -1
+                    } else {
+                        // Update private threads
+                        for (parentId, var thread) in privateThreads {
+                            if let index = thread.firstIndex(where: { $0.id == comment.id }) {
+                                thread[index].isLiked = newIsLiked
+                                thread[index].likeCount += newIsLiked ? 1 : -1
+                                privateThreads[parentId] = thread
+                                break
+                            }
+                        }
+                    }
+                }
+                
+                // Update on server (WebSocket will confirm)
+                // Preserve optimistic messages before syncing
+                let preservedPrivateThreads = privateThreads
+                
+                try await messagingService.likeMessage(commentId: comment.id, videoId: content.SK)
+                
+                // Sync state after like (WebSocket may have already updated, but ensure consistency)
+                // CRITICAL: Merge with preserved optimistic messages to prevent messages from vanishing
+                await MainActor.run {
+                    // Reload from MessagingService to ensure consistency
+                    publicComments = messagingService.getPublicComments(for: content.SK)
+                    let serverThreads = messagingService.privateThreads[content.SK] ?? [:]
+                    
+                    // Merge server threads with preserved optimistic messages
+                    var mergedThreads = serverThreads
+                    for (threadId, optimisticMessages) in preservedPrivateThreads {
+                        if let serverThread = mergedThreads[threadId] {
+                            // Merge: Keep optimistic messages that aren't in server response yet
+                            let serverMessageIds = Set(serverThread.map { $0.id })
+                            let newOptimisticMessages = optimisticMessages.filter { !serverMessageIds.contains($0.id) }
+                            if !newOptimisticMessages.isEmpty {
+                                mergedThreads[threadId] = serverThread + newOptimisticMessages
+                            }
+                        } else {
+                            // Thread doesn't exist on server yet - keep optimistic messages
+                            mergedThreads[threadId] = optimisticMessages
+                        }
+                    }
+                    privateThreads = mergedThreads
+                }
+            } catch {
+                print("❌ [FloatingCommentView] Error toggling like: \(error)")
+                // Revert optimistic update on error
+                await MainActor.run {
+                    if let index = publicComments.firstIndex(where: { $0.id == comment.id }) {
+                        publicComments[index].isLiked = comment.isLiked
+                        publicComments[index].likeCount = comment.likeCount
+                    }
+                }
+            }
+        }
+    }
+    
+    // OLD toggleLike - keeping for reference
+    private func toggleLike_OLD(for comment: Comment) {
+        guard let userId = authService.userId else { return }
+        
+        let newIsLiked = !comment.isLiked
+        
+        // Optimistically update UI - check both public comments and private threads
+        if let index = publicComments.firstIndex(where: { $0.id == comment.id }) {
+            publicComments[index].isLiked = newIsLiked
+            publicComments[index].likeCount += newIsLiked ? 1 : -1
+        } else {
+            // Check private threads
+            for (parentId, thread) in privateThreads {
+                if let index = thread.firstIndex(where: { $0.id == comment.id }) {
+                    privateThreads[parentId]?[index].isLiked = newIsLiked
+                    privateThreads[parentId]?[index].likeCount += newIsLiked ? 1 : -1
+                    break
+                }
+            }
+        }
+        
+        // Save optimistic update immediately (WebSocket will confirm)
+        saveLikesToCache()
+        saveCommentsToCache()
+        
+        // Update via API (WebSocket will broadcast to all clients)
+        Task {
+            do {
+                let result = try await ChannelService.shared.likeComment(
+                    videoId: content.SK,
+                    commentId: comment.id,
+                    userId: userId,
+                    isLiked: newIsLiked
+                )
+                
+                // WebSocket will handle the update for all clients (including this one)
+                // Only update if WebSocket hasn't already updated it
+                // This prevents double-updates and ensures consistency
+                await MainActor.run {
+                    // WebSocket should have already updated, but verify
+                    // If WebSocket update didn't happen, use API response
+                    let currentLikeCount: Int
+                    if let index = publicComments.firstIndex(where: { $0.id == comment.id }) {
+                        currentLikeCount = publicComments[index].likeCount
+                    } else {
+                        var found = false
+                        var count = 0
+                        for (parentId, thread) in privateThreads {
+                            if let index = thread.firstIndex(where: { $0.id == comment.id }) {
+                                count = privateThreads[parentId]?[index].likeCount ?? 0
+                                found = true
+                                break
+                            }
+                        }
+                        currentLikeCount = found ? count : result.likeCount
+                    }
+                    
+                    // Only update if WebSocket hasn't already updated (fallback)
+                    if currentLikeCount != result.likeCount {
+                    if let index = publicComments.firstIndex(where: { $0.id == comment.id }) {
+                        publicComments[index].likeCount = result.likeCount
+                        publicComments[index].isLiked = result.isLiked
+                    } else {
+                        for (parentId, thread) in privateThreads {
+                            if let index = thread.firstIndex(where: { $0.id == comment.id }) {
+                                privateThreads[parentId]?[index].likeCount = result.likeCount
+                                privateThreads[parentId]?[index].isLiked = result.isLiked
+                                break
+                            }
+                        }
+                    }
+                    saveLikesToCache()
+                    saveCommentsToCache()
+                    }
+                }
+            } catch {
+                print("❌ [FloatingCommentView] Error liking comment: \(error)")
+                // Revert optimistic update on error
+                await MainActor.run {
+                    if let index = publicComments.firstIndex(where: { $0.id == comment.id }) {
+                        publicComments[index].isLiked = !newIsLiked
+                        publicComments[index].likeCount += newIsLiked ? -1 : 1
+                    } else {
+                        for (parentId, thread) in privateThreads {
+                            if let index = thread.firstIndex(where: { $0.id == comment.id }) {
+                                privateThreads[parentId]?[index].isLiked = !newIsLiked
+                                privateThreads[parentId]?[index].likeCount += newIsLiked ? -1 : 1
+                                break
+                            }
+                        }
+                    }
+                    saveLikesToCache()
+                    saveCommentsToCache()
+                }
+            }
+        }
+    }
+    
+    private func markThreadAsRead(threadId: String) {
+        Task {
+            do {
+                try await messagingService.markThreadRead(threadId: threadId, videoId: content.SK)
+                
+                // Notify inbox to refresh
+                await MainActor.run {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("RefreshInboxCount"),
+                        object: nil
+                    )
+                }
+            } catch {
+                print("❌ [FloatingCommentView] Error marking thread as read: \(error)")
+            }
+        }
+    }
+}
+
+struct CommentRowView: View {
+    let comment: Comment
+    let onLike: () -> Void
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            // User avatar
+            Image(systemName: "person.circle.fill")
+                .font(.system(size: 24))
+                .foregroundColor(.twillyCyan)
+            
+            VStack(alignment: .leading, spacing: 4) {
+                // Username and text
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(comment.username)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.white)
+                    
+                    Text(comment.text)
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true) // Allow text to wrap normally
+                }
+                
+                // Like button and count
+                HStack(spacing: 8) {
+                    Button(action: onLike) {
+                        HStack(spacing: 4) {
+                            Image(systemName: comment.isLiked ? "heart.fill" : "heart")
+                                .font(.system(size: 12))
+                                .foregroundColor(comment.isLiked ? .red : .white.opacity(0.6))
+                            
+                            Text("\(comment.likeCount)")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.7))
+                        }
+                    }
+                    
+                    Text(timeAgoString(from: comment.createdAt))
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.5))
+                }
+            }
+            
+            Spacer()
+        }
+        .padding(.vertical, 4)
+    }
+    
+    private func timeAgoString(from date: Date) -> String {
+        let interval = Date().timeIntervalSince(date)
+        if interval < 60 {
+            return "\(Int(interval))s"
+        } else if interval < 3600 {
+            return "\(Int(interval / 60))m"
+        } else if interval < 86400 {
+            return "\(Int(interval / 3600))h"
+        } else {
+            return "\(Int(interval / 86400))d"
+        }
+    }
+}
+
 struct VideoPlayerView: View {
     let url: URL
     let content: ChannelContent
+    let channelCreatorEmail: String? // For comment visibility checks
     @Environment(\.dismiss) var dismiss
     
     @StateObject private var playerController = VideoPlayerController()
@@ -10696,6 +14443,10 @@ struct VideoPlayerView: View {
                     .clipShape(Circle())
             }
             .padding()
+        }
+        .overlay(alignment: .trailing) {
+            // Floating comment section
+            FloatingCommentView(content: content, channelCreatorEmail: channelCreatorEmail)
         }
         .onAppear {
             print("👁️ [VideoPlayerView] View appeared with URL: \(url.absoluteString)")
@@ -11055,62 +14806,14 @@ class OrientationAwarePlayerViewController: AVPlayerViewController, UIGestureRec
             object: nil
         )
         
-        // Add pinch gesture for zoom
-        let pinchGesture = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
-        pinchGesture.delegate = self
-        view.addGestureRecognizer(pinchGesture)
+        // Pinch gesture removed - no effects on playback, just straight playback
         
         print("   - Thumbnail URL: \(thumbnailUrl ?? "none")")
         print("   - Initial state: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
         print("🔍 [OrientationAwarePlayerViewController] ========== viewDidLoad COMPLETE ==========")
     }
     
-    private var initialZoomScale: CGFloat = 1.0
-    private var currentZoomScale: CGFloat = 1.0
-    private var zoomView: UIView?
-    
-    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-        // Find the video content view (usually the first subview with video content)
-        if zoomView == nil {
-            // AVPlayerViewController's content view is typically the view itself or its first subview
-            zoomView = view.subviews.first { subview in
-                // Look for the view that contains the video layer
-                return subview.layer.sublayers?.contains(where: { $0 is AVPlayerLayer }) ?? false
-            } ?? view
-        }
-        
-        guard let targetView = zoomView else { return }
-        
-        switch gesture.state {
-        case .began:
-            initialZoomScale = currentZoomScale
-            
-        case .changed:
-            let scale = gesture.scale
-            let newScale = initialZoomScale * scale
-            // Clamp zoom between 1.0 and 3.0
-            currentZoomScale = max(1.0, min(3.0, newScale))
-            
-            // Apply zoom transform to the video view
-            targetView.transform = CGAffineTransform(scaleX: currentZoomScale, y: currentZoomScale)
-            
-        case .ended, .cancelled:
-            // Snap back to 1.0 if zoomed out too much
-            if currentZoomScale < 1.1 {
-                currentZoomScale = 1.0
-                UIView.animate(withDuration: 0.3) {
-                    targetView.transform = .identity
-                }
-            }
-            
-        default:
-            break
-        }
-    }
-    
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        return true
-    }
+    // Pinch gesture and zoom effects removed - straight playback only (no effects)
     
     private func updateVideoGravity() {
         print("🔍 [OrientationAwarePlayerViewController] ========== updateVideoGravity CALLED ==========")
@@ -11150,22 +14853,21 @@ class OrientationAwarePlayerViewController: AVPlayerViewController, UIGestureRec
         }
         
         guard let videoTrack = track else {
-            // Tracks not ready yet - retry after a short delay
-            // For portrait videos, we want to be aggressive about detection
-            print("⚠️ [OrientationAwarePlayerViewController] No video tracks yet, retrying...")
-            print("   - Track source attempted: \(trackSource)")
-            print("   - Player status: \(player.status.rawValue)")
-            print("   - Current item status: \(currentItem.status.rawValue)")
-            
-            // Retry with multiple attempts to ensure we catch it
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                self?.updateVideoGravity()
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.updateVideoGravity()
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-                self?.updateVideoGravity()
+            // Tracks not ready yet - retry once after a short delay
+            // Only retry if we haven't detected yet to prevent multiple updates
+            if !hasDetectedVideoOrientation {
+                print("⚠️ [OrientationAwarePlayerViewController] No video tracks yet, retrying once...")
+                print("   - Track source attempted: \(trackSource)")
+                print("   - Player status: \(player.status.rawValue)")
+                print("   - Current item status: \(currentItem.status.rawValue)")
+                
+                // Single retry to prevent multiple updates that cause zoom effects
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    guard let self = self, !self.hasDetectedVideoOrientation else { return }
+                    self.updateVideoGravity()
+                }
+            } else {
+                print("⚠️ [OrientationAwarePlayerViewController] No video tracks but already detected - skipping retry")
             }
             return
         }
@@ -11202,12 +14904,16 @@ class OrientationAwarePlayerViewController: AVPlayerViewController, UIGestureRec
                             print("   - Thumbnail size: \(image.size.width) x \(image.size.height)")
                             print("   - Is Portrait: \(thumbnailIsPortrait) (height > width: \(image.size.height > image.size.width))")
                             
-                            // Update video orientation if needed
-                            if self.isPortraitVideo != thumbnailIsPortrait {
-                                self.isPortraitVideo = thumbnailIsPortrait
-                                self.hasDetectedVideoOrientation = true
-                                self.videoGravity = thumbnailIsPortrait ? .resizeAspectFill : .resizeAspect
-                                print("   - Updated video orientation from thumbnail")
+                            // Update video orientation
+                            self.isPortraitVideo = thumbnailIsPortrait
+                            self.hasDetectedVideoOrientation = true
+                            // Set videoGravity immediately (only if different to prevent zoom effects)
+                            let targetGravity: AVLayerVideoGravity = thumbnailIsPortrait ? .resizeAspectFill : .resizeAspect
+                            if self.videoGravity != targetGravity {
+                                self.videoGravity = targetGravity
+                                print("   - Updated video orientation from thumbnail: \(targetGravity.rawValue)")
+                            } else {
+                                print("   - Video orientation already set: \(targetGravity.rawValue)")
                             }
                         }
                     }
@@ -11293,58 +14999,14 @@ class OrientationAwarePlayerViewController: AVPlayerViewController, UIGestureRec
         
         // Portrait videos: Always full screen (resizeAspectFill)
         // Landscape videos: Always natural aspect ratio (resizeAspect) - no zoom
-        if videoIsPortrait {
-            print("   - ✅ DETECTED AS PORTRAIT - will lock orientation and set fullscreen")
-            print("   ✅ Setting videoGravity to resizeAspectFill (portrait - full screen)")
-            let oldGravity = videoGravity
-            videoGravity = .resizeAspectFill
-            print("   ✅ VideoGravity changed from \(oldGravity.rawValue) to \(videoGravity.rawValue)")
-            
-            // CRITICAL: For portrait videos, AVPlayerLayer should handle the transform correctly
-            // The video track's preferredTransform will be applied automatically
-            // We just need to ensure the view controller is locked to portrait
-            if let playerLayer = view.layer.sublayers?.first(where: { $0 is AVPlayerLayer }) as? AVPlayerLayer {
-                print("   - 🔍 Found AVPlayerLayer - checking transform")
-                let currentTransform = playerLayer.affineTransform()
-                print("   - 🔍 Current layer transform: a=\(currentTransform.a), b=\(currentTransform.b), c=\(currentTransform.c), d=\(currentTransform.d)")
-                // Don't force identity - let AVPlayerLayer use the video's natural transform
-                // The transform is needed for portrait videos that were recorded with rotation metadata
-                print("   - ✅ Portrait video - AVPlayerLayer will handle transform automatically")
-            } else {
-                print("   - ⚠️ Could not find AVPlayerLayer (might not be ready yet)")
-            }
-            
-            // Force view to update layout immediately and ensure it's applied
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                // Ensure video gravity is set
-                self.videoGravity = .resizeAspectFill
-                self.view.setNeedsLayout()
-                self.view.layoutIfNeeded()
-                
-                // Try to access player layer again after layout
-                if let playerLayer = self.view.layer.sublayers?.first(where: { $0 is AVPlayerLayer }) as? AVPlayerLayer {
-                    playerLayer.setAffineTransform(.identity)
-                    print("   - ✅ Forced identity transform on player layer (after layout)")
-                }
-                
-                // Force another update after a brief delay to ensure it sticks
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    self.videoGravity = .resizeAspectFill
-                    self.view.setNeedsLayout()
-                    self.view.layoutIfNeeded()
-                    print("   ✅ Forced videoGravity update for portrait video")
-                }
-            }
+        let targetGravity: AVLayerVideoGravity = videoIsPortrait ? .resizeAspectFill : .resizeAspect
+        
+        // CRITICAL: Only update if different to prevent zoom effects
+        if videoGravity != targetGravity {
+            print("   ✅ Setting videoGravity to \(targetGravity.rawValue) (\(videoIsPortrait ? "portrait - full screen" : "landscape - natural aspect, no zoom"))")
+            videoGravity = targetGravity
         } else {
-            print("   - ✅ DETECTED AS LANDSCAPE - will allow rotation and set natural aspect")
-            print("   ✅ Setting videoGravity to resizeAspect (landscape - natural aspect, no zoom)")
-            let oldGravity = videoGravity
-            videoGravity = .resizeAspect
-            print("   ✅ VideoGravity changed from \(oldGravity.rawValue) to \(videoGravity.rawValue)")
-            // Force view to update layout
-            view.setNeedsLayout()
-            view.layoutIfNeeded()
+            print("   ✅ videoGravity already set to \(targetGravity.rawValue) - no change needed")
         }
         print("🔍 [OrientationAwarePlayerViewController] ========== updateVideoGravity COMPLETE ==========")
         print("   - Final state: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
