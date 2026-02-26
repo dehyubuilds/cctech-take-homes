@@ -10697,22 +10697,40 @@ struct ContentCard: View {
                 loadVideoDuration()
                 loadCommentCount()
                 
-                // CRITICAL: For latest video, immediately load unread counts to show indicator
+                // CRITICAL: Start with 0 - backend will verify and update
+                // Never show indicator from cache - only after backend verification
+                self.unreadCommentCount = 0
+                
+                // CRITICAL: For latest video, load unread counts from backend (source of truth)
                 if isLatestContent {
                     Task {
                         try? await MessagingService.shared.loadUnreadCounts(for: content.SK)
                         await MainActor.run {
-                            self.unreadCommentCount = MessagingService.shared.getUnreadCount(for: content.SK)
-                            print("🔔 [ContentCard] Loaded unread count for latest video: \(self.unreadCommentCount)")
+                            // Only show indicator if backend confirms unread messages
+                            let verifiedCount = MessagingService.shared.getUnreadCount(for: content.SK)
+                            self.unreadCommentCount = verifiedCount
+                            if verifiedCount > 0 {
+                                print("🔔 [ContentCard] ✅ Backend verified unread count for latest video: \(verifiedCount)")
+                            }
                         }
                     }
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("CommentsViewed"))) { notification in
-                if let videoId = notification.userInfo?["videoId"] as? String,
-                   videoId == content.SK {
+                if let videoId = notification.userInfo?["videoId"] as? String {
+                    // CRITICAL: Normalize both videoIds for comparison (handle FILE# prefix differences)
+                    // ContentCard might have FILE# prefix while notification might not, or vice versa
+                    let normalizedNotifVideoId = normalizeVideoId(videoId)
+                    let normalizedContentSK = normalizeVideoId(content.SK)
+                    
+                    guard normalizedNotifVideoId == normalizedContentSK else {
+                        print("⚠️ [ContentCard] CommentsViewed notification videoId mismatch: \(videoId) vs \(content.SK) (normalized: \(normalizedNotifVideoId) vs \(normalizedContentSK))")
+                        return
+                    }
+                    
                     // If unreadCount is provided directly, use it immediately (faster)
                     if let unreadCount = notification.userInfo?["unreadCount"] as? Int {
+                        print("🔴 [ContentCard] ✅ Received CommentsViewed notification: videoId=\(videoId), unreadCount=\(unreadCount), setting badge")
                         self.unreadCommentCount = unreadCount
                     } else {
                         // Otherwise refresh from server
@@ -10842,6 +10860,13 @@ struct ContentCard: View {
                     }
                 }
         }
+    }
+    
+    // Normalize videoId for comparison (remove FILE# prefix)
+    private func normalizeVideoId(_ videoId: String) -> String {
+        return videoId
+            .replacingOccurrences(of: "FILE#", with: "")
+            .replacingOccurrences(of: "file-", with: "")
     }
     
     // Load comment count and unread count asynchronously
@@ -11157,7 +11182,8 @@ class MessagingService: ObservableObject {
     
     /// Post a message - OPTIMISTIC UPDATE + SERVER SYNC
     func postMessage(videoId: String, text: String, threadId: String?, username: String) async throws -> Comment {
-        guard let userId = authService.userId else {
+        // CRITICAL: Use userEmail instead of userId (UUID) - backend needs email for notifications
+        guard let userEmail = authService.userEmail else {
             throw MessagingError.notAuthenticated
         }
         
@@ -11165,7 +11191,7 @@ class MessagingService: ObservableObject {
         let optimisticComment = Comment(
             id: "temp_\(Date().timeIntervalSince1970)",
             videoId: videoId,
-            userId: userId,
+            userId: userEmail, // Use email instead of UUID
             username: username,
             text: text,
             createdAt: Date(),
@@ -11201,9 +11227,10 @@ class MessagingService: ObservableObject {
         }
         
         // Post to server in background
+        // CRITICAL: Send userEmail as userId - backend needs email for notifications and visibility
         let comment = try await ChannelService.shared.postComment(
             videoId: videoId,
-            userId: userId,
+            userId: userEmail, // Use email instead of UUID
             username: username,
             text: text,
             parentCommentId: threadId,
@@ -11591,6 +11618,7 @@ struct FloatingCommentView: View {
     @State private var privateThreads: [String: [Comment]] = [:]
     @State private var threadUnreadStatus: [String: Bool] = [:]
     @State private var cachedUserThreads: [MessagingService.ThreadInfo] = []
+    @State private var privateMessagePollTask: Task<Void, Never>? = nil // Polling task for private message notifications
     
     // Helper function to normalize videoId for comparison (removes FILE# and file- prefixes)
     private func normalizeVideoId(_ videoId: String) -> String {
@@ -11631,7 +11659,12 @@ struct FloatingCommentView: View {
         guard let threadId = selectedThreadId else {
             return []
         }
-        // CRITICAL: Use local state first (includes optimistic updates), fallback to MessagingService
+        // CRITICAL: Check MessagingService cache FIRST (has full history), then local state
+        // This ensures we never show "Start conversation" if history exists
+        if let messagingThread = messagingService.privateThreads[content.SK]?[threadId], !messagingThread.isEmpty {
+            return messagingThread
+        }
+        // Fallback to local state (includes optimistic updates)
         // This ensures messages don't vanish before server confirms
         if let localThread = privateThreads[threadId], !localThread.isEmpty {
             return localThread
@@ -11710,13 +11743,59 @@ struct FloatingCommentView: View {
                 Spacer()
                 
                 Button(action: {
-                    // If viewing a private thread, mark it as read before closing
+                    // If viewing a private thread, mark it as read when closing (user has viewed it)
                     if let threadId = selectedThreadId {
-                        // Mark thread as read when closing comments
-                        markThreadAsRead(threadId: threadId)
-                        threadUnreadStatus[threadId] = false
-                        saveUnreadStatusToCache()
-                        updateCachedUserThreads()
+                        // Mark thread as read when closing comments (user has seen the messages)
+                        Task {
+                            await markThreadAsRead(threadId: threadId)
+                            await MainActor.run {
+                                markPrivateMessageNotificationAsRead(for: threadId)
+                                threadUnreadStatus[threadId] = false
+                                saveUnreadStatusToCache()
+                                updateCachedUserThreads()
+                                
+                                // Re-check unread counts after marking as read
+                                Task {
+                                    if let userEmail = authService.userEmail {
+                                        do {
+                                            try await messagingService.loadUnreadCounts(for: content.SK)
+                                            await MainActor.run {
+                                                messagingService.updateCachedUserThreads(for: content.SK)
+                                                cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                                                
+                                                // Check if unread count = 0, clear indicator
+                                                let currentUsername = authService.username ?? ""
+                                                let normalizedCurrentUsername = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+                                                let threadsWithUnread = cachedUserThreads.filter { threadInfo in
+                                                    let normalizedThreadUsername = threadInfo.username.lowercased().trimmingCharacters(in: .whitespaces)
+                                                    let isNotSelf = normalizedThreadUsername != normalizedCurrentUsername
+                                                    return threadInfo.hasUnread && isNotSelf
+                                                }
+                                                
+                                                let unreadCount = threadsWithUnread.count > 0 ? 1 : 0
+                                                messagingService.unreadCounts[content.SK] = unreadCount
+                                                
+                                                let normalizedVideoId = normalizeVideoId(content.SK)
+                                                NotificationCenter.default.post(
+                                                    name: NSNotification.Name("CommentsViewed"),
+                                                    object: nil,
+                                                    userInfo: [
+                                                        "videoId": normalizedVideoId,
+                                                        "unreadCount": unreadCount
+                                                    ]
+                                                )
+                                                
+                                                if unreadCount == 0 {
+                                                    print("✅ [FloatingCommentView] All threads read after closing - cleared indicator")
+                                                }
+                                            }
+                                        } catch {
+                                            print("❌ [FloatingCommentView] Error reloading unread counts: \(error)")
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         // Clear selected thread
                         selectedThreadId = nil
                     }
@@ -11726,12 +11805,16 @@ struct FloatingCommentView: View {
                     }
                     // Reload comments to get latest count when closing
                     loadComments()
-                    // Notify ContentCard to refresh comment count
-                    NotificationCenter.default.post(
-                        name: NSNotification.Name("CommentsViewed"),
-                        object: nil,
-                        userInfo: ["videoId": content.SK]
-                    )
+                    
+                        // CRITICAL: Re-check unread indicators after a delay to ensure they're in sync
+                        // This ensures indicator and orange highlights update correctly after closing
+                        Task {
+                            // Wait a moment for server to process the "mark as read" request
+                            try? await Task.sleep(nanoseconds: 800_000_000) // 0.8s
+                            
+                            // Update indicators from unread counts (single source of truth)
+                            updateUnreadIndicators()
+                        }
                 }) {
                     Image(systemName: "chevron.down")
                         .foregroundColor(.white)
@@ -12373,41 +12456,19 @@ struct FloatingCommentView: View {
                 selectedThreadId = threadIdToUse
             }
             
-            // CRITICAL: Mark thread as read IMMEDIATELY when opened (optimistic update)
-            // WEBSOCKET WILL CONFIRM - Don't wait for API response
-            let key = "\(content.SK)_\(threadIdToUse)"
-            threadUnreadStatus[threadIdToUse] = false
-            threadUnreadStatus[key] = false // Also update with videoId prefix for consistency
-            
-            // Update MessagingService unread status immediately
-            messagingService.threadUnreadStatus[key] = false
-            
-            // Mark private_message notification as read (same as private_access_granted)
+            // Mark private_message notification as read
             markPrivateMessageNotificationAsRead(for: threadIdToUse)
             
-            // Update cached user threads to remove orange highlight immediately
-            messagingService.updateCachedUserThreads(for: content.SK)
-            cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
-            
-            // Calculate remaining unread count (check all threads for this video)
-            // Only dismiss indicator if NO other unread threads remain
-            let remainingUnreadCount = threadUnreadStatus.values.filter { $0 }.count
-            
-            // CRITICAL: Only clear red badge if no unread threads remain
-            // If there are other unread threads, keep the badge
-            NotificationCenter.default.post(
-                name: NSNotification.Name("CommentsViewed"),
-                object: nil,
-                userInfo: [
-                    "videoId": content.SK,
-                    "unreadCount": remainingUnreadCount
-                ]
-            )
-            
-            print("📊 [FloatingCommentView] Marked thread as read. Remaining unread: \(remainingUnreadCount)")
-            
-            // Mark as read on server (async) - WebSocket will send unread_count_update to confirm
-            markThreadAsRead(threadId: threadIdToUse)
+            // Mark as read on server (async) - then update indicators from server
+            Task {
+                await markThreadAsRead(threadId: threadIdToUse)
+                
+                // CRITICAL: After marking as read, update indicators from server (single source of truth)
+                // This ensures indicator and orange highlights are ALWAYS in sync
+                // If unread count = 0 → clear both indicator and orange highlights
+                // If unread count != 0 → keep both indicator and orange highlights
+                updateUnreadIndicators()
+            }
             
             // CRITICAL: Load thread IMMEDIATELY - don't wait for async
             // First check cache, then load from server
@@ -12418,6 +12479,8 @@ struct FloatingCommentView: View {
             } else {
                 // No cache - thread might not be loaded yet, load it NOW
                 print("⚠️ [FloatingCommentView] No cached messages for thread \(threadIdToUse), loading from server...")
+                // Set loading state to prevent showing "Start conversation" while loading
+                isLoading = true
             }
             
             // CRITICAL: Always load full history from server (same as general chat)
@@ -12427,6 +12490,19 @@ struct FloatingCommentView: View {
                 do {
                     try await messagingService.loadMessages(for: content.SK, useCache: false)
                     await MainActor.run {
+                        // Clear loading state
+                        isLoading = false
+                        
+                        // CRITICAL: Update local state with full history from server
+                        // This ensures "Start conversation" never shows if history exists
+                        if let allThreads = messagingService.privateThreads[content.SK] {
+                            for (threadId, messages) in allThreads {
+                                if !messages.isEmpty {
+                                    privateThreads[threadId] = messages
+                                }
+                            }
+                        }
+                        
                         // Load ALL threads from server (server has full history)
                         let messagingThreads = messagingService.privateThreads[content.SK] ?? [:]
                         print("📦 [FloatingCommentView] Server returned \(messagingThreads.count) threads")
@@ -12502,13 +12578,29 @@ struct FloatingCommentView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
                 if selectedThreadId != nil {
-                    // Show "Start a conversation" message if thread is empty
-                    if currentThreadMessages.isEmpty {
+                    // Show "Start a conversation" message ONLY if thread is truly empty
+                    // CRITICAL: Check both local state AND MessagingService cache to avoid showing empty when history exists
+                    let hasLocalMessages = !currentThreadMessages.isEmpty
+                    let hasCachedMessages = (messagingService.privateThreads[content.SK]?[selectedThreadId!]?.isEmpty == false)
+                    let isLoadingThread = isLoading
+                    
+                    if !hasLocalMessages && !hasCachedMessages && !isLoadingThread {
                         VStack(spacing: 8) {
                             Text("Start a conversation with \(cachedUserThreads.first(where: { $0.id == selectedThreadId })?.username ?? "this user")")
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundColor(.gray)
                                 .multilineTextAlignment(.center)
+                                .padding(.vertical, 20)
+                        }
+                        .frame(maxWidth: .infinity)
+                    } else if !hasLocalMessages && !hasCachedMessages && isLoadingThread {
+                        // Show loading state while fetching history
+                        VStack(spacing: 8) {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .twillyCyan))
+                            Text("Loading conversation...")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.gray)
                                 .padding(.vertical, 20)
                         }
                         .frame(maxWidth: .infinity)
@@ -12529,13 +12621,49 @@ struct FloatingCommentView: View {
                                 // Reload comments to ensure thread messages are loaded
                                 loadComments()
                                 // Mark thread as read when opened
-                                markThreadAsRead(threadId: parentId)
-                                // Update unread status immediately
-                                threadUnreadStatus[parentId] = false
-                                // Save to cache so it persists when clicking out
-                                saveUnreadStatusToCache()
-                                // Update cached user threads to reflect unread status change
-                                updateCachedUserThreads()
+                                Task {
+                                    await markThreadAsRead(threadId: parentId)
+                                    await MainActor.run {
+                                        // Update unread status immediately
+                                        threadUnreadStatus[parentId] = false
+                                        // Save to cache so it persists when clicking out
+                                        saveUnreadStatusToCache()
+                                        // Update cached user threads to reflect unread status change
+                                        updateCachedUserThreads()
+                                        
+                                        // Re-check unread counts
+                                        Task {
+                                            if let userEmail = authService.userEmail {
+                                                try? await messagingService.loadUnreadCounts(for: content.SK)
+                                                await MainActor.run {
+                                                    messagingService.updateCachedUserThreads(for: content.SK)
+                                                    cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                                                    
+                                                    let currentUsername = authService.username ?? ""
+                                                    let normalizedCurrentUsername = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+                                                    let threadsWithUnread = cachedUserThreads.filter { threadInfo in
+                                                        let normalizedThreadUsername = threadInfo.username.lowercased().trimmingCharacters(in: .whitespaces)
+                                                        let isNotSelf = normalizedThreadUsername != normalizedCurrentUsername
+                                                        return threadInfo.hasUnread && isNotSelf
+                                                    }
+                                                    
+                                                    let unreadCount = threadsWithUnread.count > 0 ? 1 : 0
+                                                    messagingService.unreadCounts[content.SK] = unreadCount
+                                                    
+                                                    let normalizedVideoId = normalizeVideoId(content.SK)
+                                                    NotificationCenter.default.post(
+                                                        name: NSNotification.Name("CommentsViewed"),
+                                                        object: nil,
+                                                        userInfo: [
+                                                            "videoId": normalizedVideoId,
+                                                            "unreadCount": unreadCount
+                                                        ]
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                             .id(message.id)
@@ -12579,15 +12707,51 @@ struct FloatingCommentView: View {
                             }
                             
                             // Mark thread as read when opened
-                            markThreadAsRead(threadId: threadIdToUse)
-                            // Update unread status immediately
-                            threadUnreadStatus[threadIdToUse] = false
-                            // Save to cache so it persists when clicking out
-                            saveUnreadStatusToCache()
-                            // Update cached user threads to reflect unread status change (removes orange highlight)
-                            updateCachedUserThreads()
-                            // Reload comments to ensure thread messages are loaded (only once)
-                            loadComments()
+                            Task {
+                                await markThreadAsRead(threadId: threadIdToUse)
+                                await MainActor.run {
+                                    // Update unread status immediately
+                                    threadUnreadStatus[threadIdToUse] = false
+                                    // Save to cache so it persists when clicking out
+                                    saveUnreadStatusToCache()
+                                    // Update cached user threads to reflect unread status change (removes orange highlight)
+                                    updateCachedUserThreads()
+                                    // Reload comments to ensure thread messages are loaded (only once)
+                                    loadComments()
+                                    
+                                    // Re-check unread counts
+                                    Task {
+                                        if let userEmail = authService.userEmail {
+                                            try? await messagingService.loadUnreadCounts(for: content.SK)
+                                            await MainActor.run {
+                                                messagingService.updateCachedUserThreads(for: content.SK)
+                                                cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                                                
+                                                let currentUsername = authService.username ?? ""
+                                                let normalizedCurrentUsername = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+                                                let threadsWithUnread = cachedUserThreads.filter { threadInfo in
+                                                    let normalizedThreadUsername = threadInfo.username.lowercased().trimmingCharacters(in: .whitespaces)
+                                                    let isNotSelf = normalizedThreadUsername != normalizedCurrentUsername
+                                                    return threadInfo.hasUnread && isNotSelf
+                                                }
+                                                
+                                                let unreadCount = threadsWithUnread.count > 0 ? 1 : 0
+                                                messagingService.unreadCounts[content.SK] = unreadCount
+                                                
+                                                let normalizedVideoId = normalizeVideoId(content.SK)
+                                                NotificationCenter.default.post(
+                                                    name: NSNotification.Name("CommentsViewed"),
+                                                    object: nil,
+                                                    userInfo: [
+                                                        "videoId": normalizedVideoId,
+                                                        "unreadCount": unreadCount
+                                                    ]
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                             .id(comment.id)
                     }
@@ -12786,6 +12950,25 @@ struct FloatingCommentView: View {
     var body: some View {
         commentContentView
             .onAppear {
+                // CRITICAL: Clear stale indicators on app start - backend is source of truth
+                // Never show indicator until backend verifies unread status
+                messagingService.unreadCounts[content.SK] = 0
+                // Remove all threadUnreadStatus entries for this video
+                let keysToRemove = messagingService.threadUnreadStatus.keys.filter { $0.hasPrefix("\(content.SK)_") }
+                for key in keysToRemove {
+                    messagingService.threadUnreadStatus.removeValue(forKey: key)
+                }
+                let normalizedVideoId = normalizeVideoId(content.SK)
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("CommentsViewed"),
+                    object: nil,
+                    userInfo: [
+                        "videoId": normalizedVideoId,
+                        "unreadCount": 0
+                    ]
+                )
+                print("🔴 [FloatingCommentView] Cleared all indicators on app start - backend will verify")
+                
                 // LIGHTNING FAST: Use cached data immediately, refresh in background
                 // Comments should feel instant - no loading delay
                 
@@ -12849,7 +13032,7 @@ struct FloatingCommentView: View {
                                 privateThreads[threadId] = messages
                             }
                             
-                            // Update thread unread status from MessagingService
+                            // Update thread unread status from MessagingService (server is source of truth)
                             for threadId in privateThreads.keys {
                                 let key = "\(content.SK)_\(threadId)"
                                 threadUnreadStatus[threadId] = messagingService.threadUnreadStatus[key] == true
@@ -12860,20 +13043,38 @@ struct FloatingCommentView: View {
                             messagingService.updateCachedUserThreads(for: content.SK)
                             cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
                             
-                            // Update red badge with unread count
-                            let unreadCount = messagingService.getUnreadCount(for: content.SK)
+                    // CRITICAL: Only show badge if there are orange highlights (unread threads)
+                    // Backend is source of truth - only show indicator after backend verification
+                    // Also filter out any self-conversations (should never exist, but safety check)
+                    let currentUsername = authService.username ?? ""
+                    let normalizedCurrentUsername = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+                    let threadsWithUnread = cachedUserThreads.filter { threadInfo in
+                        // Filter out self-conversations (current user talking to themselves)
+                        let normalizedThreadUsername = threadInfo.username.lowercased().trimmingCharacters(in: .whitespaces)
+                        let isNotSelf = normalizedThreadUsername != normalizedCurrentUsername
+                        return threadInfo.hasUnread && isNotSelf
+                    }
+                    let unreadCount = threadsWithUnread.count > 0 ? 1 : 0
+                            
+                            // CRITICAL: Only update unreadCounts AFTER backend verification
+                            // This ensures indicator only shows when backend confirms unread messages
+                            messagingService.unreadCounts[content.SK] = unreadCount
+                            
+                            // Update red badge - use normalized videoId for ContentCard
+                            let normalizedVideoId = normalizeVideoId(content.SK)
                             NotificationCenter.default.post(
                                 name: NSNotification.Name("CommentsViewed"),
                                 object: nil,
                                 userInfo: [
-                                    "videoId": content.SK,
+                                    "videoId": normalizedVideoId,
                                     "unreadCount": unreadCount
                                 ]
                             )
                             
-                            // Only log if unread count > 0 (for debugging)
                             if unreadCount > 0 {
-                                print("🔔 [FloatingCommentView] Found \(unreadCount) unread message(s) in \(messagingThreads.count) thread(s)")
+                                print("🔔 [FloatingCommentView] ✅ Backend verified: \(threadsWithUnread.count) thread(s) with unread - showing badge")
+                            } else {
+                                print("ℹ️ [FloatingCommentView] ✅ Backend verified: No unread threads - badge cleared")
                             }
                         }
                     } catch {
@@ -12881,38 +13082,47 @@ struct FloatingCommentView: View {
                     }
                 }
                 
-                // STEP 4: Check for private_message notifications (same as private_access_granted)
-                checkPrivateMessageNotifications()
-                
-                // STEP 5: Update cached user threads immediately (for username scroll)
+                // STEP 4: Update cached user threads immediately (for username scroll)
+                // This uses current threadUnreadStatus (which will be empty on app start, then populated by server)
                 messagingService.updateCachedUserThreads(for: content.SK)
                 cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                
+                // STEP 5: Update unread indicators (uses unread counts as single source of truth)
+                // This ensures indicator and orange highlights are ALWAYS in sync
+                updateUnreadIndicators()
+                
+                // STEP 6: Start efficient polling for unread indicators (fast, works without WebSocket)
+                startUnreadIndicatorPolling()
             }
             .onDisappear {
                 // Disconnect and cleanup via MessagingService
                 messagingService.disconnect(for: content.SK)
+                
+                // Stop polling when view disappears
+                privateMessagePollTask?.cancel()
+                privateMessagePollTask = nil
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
                 // Immediately refresh when app comes to foreground
                 loadComments()
                 
-                // Check for private message notifications (same as inbox notifications)
-                checkPrivateMessageNotifications()
+                // Update indicators from unread counts (single source of truth)
+                updateUnreadIndicators()
                 
                 // Reconnect WebSocket via MessagingService
                 messagingService.connectWebSocket(for: content.SK)
             }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RefreshInboxCount"))) { _ in
-            // Also check when inbox count refreshes (notifications might have changed)
-            checkPrivateMessageNotifications()
+            // Update indicators when inbox count refreshes
+            updateUnreadIndicators()
         }
         .onReceive(websocketService.$inboxNotification) { notification in
-            // When ANY inbox notification arrives (including private_message), check for private messages
-            // This ensures orange highlight appears immediately when notification is created
+            // When ANY inbox notification arrives (including private_message), update indicators
+            // This ensures indicator and orange highlights appear immediately
             if let notification = notification {
                 print("🔔 [FloatingCommentView] Received inbox notification: \(notification.notificationType ?? "unknown")")
-                // Check for private_message notifications to update orange highlight
-                checkPrivateMessageNotifications()
+                // Update indicators from unread counts (single source of truth)
+                updateUnreadIndicators()
             }
         }
             // Handle WebSocket comment notifications - reload unread counts when new private message arrives
@@ -13149,12 +13359,48 @@ struct FloatingCommentView: View {
                                         selectedThreadId = matchingComment.id
                                     }
                                     
-                                    markThreadAsRead(threadId: matchingComment.id)
-                                    threadUnreadStatus[matchingComment.id] = false
-                                    saveUnreadStatusToCache()
-                                    updateCachedUserThreads()
-                                    
-                                    loadComments()
+                                    Task {
+                                        await markThreadAsRead(threadId: matchingComment.id)
+                                        await MainActor.run {
+                                            threadUnreadStatus[matchingComment.id] = false
+                                            saveUnreadStatusToCache()
+                                            updateCachedUserThreads()
+                                            
+                                            loadComments()
+                                            
+                                            // Re-check unread counts
+                                            Task {
+                                                if let userEmail = authService.userEmail {
+                                                    try? await messagingService.loadUnreadCounts(for: content.SK)
+                                                    await MainActor.run {
+                                                        messagingService.updateCachedUserThreads(for: content.SK)
+                                                        cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                                                        
+                                                        let currentUsername = authService.username ?? ""
+                                                        let normalizedCurrentUsername = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+                                                        let threadsWithUnread = cachedUserThreads.filter { threadInfo in
+                                                            let normalizedThreadUsername = threadInfo.username.lowercased().trimmingCharacters(in: .whitespaces)
+                                                            let isNotSelf = normalizedThreadUsername != normalizedCurrentUsername
+                                                            return threadInfo.hasUnread && isNotSelf
+                                                        }
+                                                        
+                                                        let unreadCount = threadsWithUnread.count > 0 ? 1 : 0
+                                                        messagingService.unreadCounts[content.SK] = unreadCount
+                                                        
+                                                        let normalizedVideoId = normalizeVideoId(content.SK)
+                                                        NotificationCenter.default.post(
+                                                            name: NSNotification.Name("CommentsViewed"),
+                                                            object: nil,
+                                                            userInfo: [
+                                                                "videoId": normalizedVideoId,
+                                                                "unreadCount": unreadCount
+                                                            ]
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 } else {
                                     print("❌ [FloatingCommentView] Could not find comment for username: '\(username)' in publicComments either")
                                     print("   - Available usernames in publicComments: \(publicComments.map { "'\($0.username)' (normalized: '\($0.username.lowercased().trimmingCharacters(in: .whitespaces))')" })")
@@ -13183,6 +13429,60 @@ struct FloatingCommentView: View {
     // MARK: - Notification Functions
     
     // Mark private_message notification as read when thread is opened
+    // SIMPLE: Use unread counts as SINGLE source of truth for indicator and orange highlights
+    // This ensures they're ALWAYS in sync - no complex notification checking
+    private func updateUnreadIndicators() {
+        guard authService.userEmail != nil else { return }
+        
+        Task {
+            do {
+                try await messagingService.loadUnreadCounts(for: content.SK)
+                
+                await MainActor.run {
+                    messagingService.updateCachedUserThreads(for: content.SK)
+                    cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                    
+                    // Filter out self-conversations
+                    let currentUsername = authService.username ?? ""
+                    let normalizedCurrentUsername = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
+                    let threadsWithUnread = cachedUserThreads.filter { threadInfo in
+                        let normalizedThreadUsername = threadInfo.username.lowercased().trimmingCharacters(in: .whitespaces)
+                        let isNotSelf = normalizedThreadUsername != normalizedCurrentUsername
+                        return threadInfo.hasUnread && isNotSelf
+                    }
+                    
+                    // CRITICAL: Indicator and orange highlights are ALWAYS in sync
+                    let unreadCount = threadsWithUnread.count > 0 ? 1 : 0
+                    messagingService.unreadCounts[content.SK] = unreadCount
+                    
+                    let normalizedVideoId = normalizeVideoId(content.SK)
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("CommentsViewed"),
+                        object: nil,
+                        userInfo: [
+                            "videoId": normalizedVideoId,
+                            "unreadCount": unreadCount
+                        ]
+                    )
+                }
+            } catch {
+                print("❌ [FloatingCommentView] Error updating indicators: \(error.localizedDescription)")
+                await MainActor.run {
+                    messagingService.unreadCounts[content.SK] = 0
+                    let normalizedVideoId = normalizeVideoId(content.SK)
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("CommentsViewed"),
+                        object: nil,
+                        userInfo: [
+                            "videoId": normalizedVideoId,
+                            "unreadCount": 0
+                        ]
+                    )
+                }
+            }
+        }
+    }
+    
     private func markPrivateMessageNotificationAsRead(for threadId: String) {
         guard let userEmail = authService.userEmail else { return }
         
@@ -13212,74 +13512,31 @@ struct FloatingCommentView: View {
         }
     }
     
-    // Check for private_message notifications (same pattern as private_access_granted)
-    private func checkPrivateMessageNotifications() {
-        guard let userEmail = authService.userEmail else { return }
+    // Start efficient polling for unread indicators (works without WebSocket)
+    // Uses unread counts as single source of truth - keeps indicator and orange highlights in sync
+    private func startUnreadIndicatorPolling() {
+        // Cancel existing polling task
+        privateMessagePollTask?.cancel()
         
-        Task {
-            do {
-                let response = try await ChannelService.shared.getNotifications(userEmail: userEmail, limit: 100, unreadOnly: false)
-                await MainActor.run {
-                    let allNotifications = response.notifications ?? []
-                    
-                    // Find unread private_message notifications for this video
-                    let unreadPrivateMessages = allNotifications.filter { notification in
-                        guard notification.type == "private_message" && !notification.isRead else { return false }
-                        // Check if this notification is for the current video
-                        if let metadata = notification.metadata,
-                           let notifVideoId = metadata["videoId"] as? String {
-                            return normalizeVideoId(notifVideoId) == normalizeVideoId(content.SK)
-                        }
-                        return false
-                    }
-                    
-                    if unreadPrivateMessages.count > 0 {
-                        print("🔔 [FloatingCommentView] Found \(unreadPrivateMessages.count) unread private message notification(s)")
-                        
-                        // Update indicators for each unread notification
-                        for notification in unreadPrivateMessages {
-                            if let metadata = notification.metadata,
-                               let threadId = metadata["threadId"] as? String {
-                                // Mark thread as unread in BOTH places (local and MessagingService)
-                                let key = "\(content.SK)_\(threadId)"
-                                threadUnreadStatus[threadId] = true
-                                threadUnreadStatus[key] = true // Also set with videoId prefix
-                                messagingService.threadUnreadStatus[key] = true
-                                messagingService.threadUnreadStatus[threadId] = true // Also set without prefix for compatibility
-                                
-                                print("   ✅ Marked thread \(threadId) as unread (key: \(key))")
-                            }
-                        }
-                        
-                        // CRITICAL: Update cached user threads to show orange highlights
-                        // This must be called AFTER threadUnreadStatus is updated
-                        messagingService.updateCachedUserThreads(for: content.SK)
-                        cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
-                        
-                        // Verify the update worked
-                        let threadsWithUnread = cachedUserThreads.filter { $0.hasUnread }
-                        print("   📊 Updated cached threads: \(threadsWithUnread.count) threads with orange highlight")
-                        
-                        // Show red badge
-                        NotificationCenter.default.post(
-                            name: NSNotification.Name("CommentsViewed"),
-                            object: nil,
-                            userInfo: [
-                                "videoId": content.SK,
-                                "unreadCount": unreadPrivateMessages.count
-                            ]
-                        )
-                        
-                        print("✅ [FloatingCommentView] Orange highlights and red badge updated from notifications")
-                    } else {
-                        print("ℹ️ [FloatingCommentView] No unread private message notifications found")
-                    }
+        // Poll every 5 seconds - fast enough to feel instant, efficient enough not to drain battery
+        // WebSocket is primary for real-time, polling is fast fallback
+        privateMessagePollTask = Task {
+            while !Task.isCancelled {
+                // Update indicators from unread counts (single source of truth)
+                updateUnreadIndicators()
+                
+                // Wait 5 seconds before next check
+                try? await Task.sleep(nanoseconds: 5_000_000_000) // 5 seconds
+                
+                if Task.isCancelled {
+                    break
                 }
-            } catch {
-                print("❌ [FloatingCommentView] Error checking private message notifications: \(error)")
             }
         }
     }
+    
+    // Check for private_message notifications AND unread counts (comprehensive check)
+    // OPTIMIZED: Only fetch unread notifications for speed (we only care about unread for indicators)
     
     // MARK: - Persistence Functions
     
@@ -14207,21 +14464,19 @@ struct FloatingCommentView: View {
         }
     }
     
-    private func markThreadAsRead(threadId: String) {
-        Task {
-            do {
-                try await messagingService.markThreadRead(threadId: threadId, videoId: content.SK)
-                
-                // Notify inbox to refresh
-                await MainActor.run {
-                    NotificationCenter.default.post(
-                        name: NSNotification.Name("RefreshInboxCount"),
-                        object: nil
-                    )
-                }
-            } catch {
-                print("❌ [FloatingCommentView] Error marking thread as read: \(error)")
+    private func markThreadAsRead(threadId: String) async {
+        do {
+            try await messagingService.markThreadRead(threadId: threadId, videoId: content.SK)
+            
+            // Notify inbox to refresh
+            await MainActor.run {
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("RefreshInboxCount"),
+                    object: nil
+                )
             }
+        } catch {
+            print("❌ [FloatingCommentView] Error marking thread as read: \(error)")
         }
     }
 }
