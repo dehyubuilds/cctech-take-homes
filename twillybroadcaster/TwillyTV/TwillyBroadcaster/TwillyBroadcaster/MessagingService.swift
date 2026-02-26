@@ -206,19 +206,35 @@ class MessagingService: ObservableObject {
         }
         
         // STEP 3: Create ThreadInfo for each thread (with OTHER participant's username)
-        print("🔍 [MessagingService] Creating ThreadInfo for \(threadToOtherParticipant.count) threads")
+        print("\n🔍 [MessagingService] ========== CREATING THREAD INFO ==========")
+        print("   VideoId: \(videoId)")
+        print("   Threads to process: \(threadToOtherParticipant.count)")
         print("   📋 Thread IDs from privateThreads: \(threadToOtherParticipant.keys.joined(separator: ", "))")
-        print("   🔑 Available threadUnreadStatus keys for this video: \(threadUnreadStatus.keys.filter { $0.hasPrefix("\(videoId)_") }.joined(separator: ", "))")
+        
+        let allThreadUnreadKeys = threadUnreadStatus.keys.filter { $0.hasPrefix("\(videoId)_") }
+        print("   🔑 Available threadUnreadStatus keys for this video: \(allThreadUnreadKeys.count)")
+        if !allThreadUnreadKeys.isEmpty {
+            print("   🔑 Keys: \(allThreadUnreadKeys.joined(separator: ", "))")
+            // Show values for each key
+            for key in allThreadUnreadKeys {
+                let value = threadUnreadStatus[key] ?? false
+                print("      - \(key): \(value)")
+            }
+        } else {
+            print("   ⚠️ NO threadUnreadStatus keys found for this video!")
+        }
+        
         for (threadId, otherParticipantUsername) in threadToOtherParticipant {
             let key = "\(videoId)_\(threadId)"
             let hasUnread = threadUnreadStatus[key] == true
             if hasUnread {
                 print("   ✅ Thread \(threadId) (user: \(otherParticipantUsername)): HAS UNREAD (key: \(key))")
             } else {
-                print("   ⚪ Thread \(threadId) (user: \(otherParticipantUsername)): no unread (key: \(key))")
+                print("   ⚪ Thread \(threadId) (user: \(otherParticipantUsername)): NO UNREAD (key: \(key), value: \(threadUnreadStatus[key] ?? false))")
             }
             threads.append(ThreadInfo(id: threadId, username: otherParticipantUsername, hasUnread: hasUnread))
         }
+        print("================================================\n")
         
         // Sort by unread first, then alphabetically
         threads.sort { first, second in
@@ -498,20 +514,38 @@ class MessagingService: ObservableObject {
                     print("📊 [MessagingService] Unread count (dict format): total=\(total) for videoId: \(videoId)")
                     
                     // CRITICAL: Always process threads dictionary
+                    print("\n📊 [MessagingService] ========== PARSING BACKEND RESPONSE ==========")
+                    print("   videoId: \(videoId)")
+                    print("   total: \(total)")
+                    print("   dictValue keys: \(dictValue.keys.joined(separator: ", "))")
+                    
                     if let threads = dictValue["threads"] as? [String: Int] {
                         print("   ✅ Found threads dictionary with \(threads.count) threads")
                         print("   📋 Thread IDs from backend: \(threads.keys.joined(separator: ", "))")
+                        
+                        if threads.isEmpty {
+                            print("   ⚠️ WARNING: threads dictionary is EMPTY even though total=\(total)")
+                        }
+                        
                         for (threadId, count) in threads {
                             let key = "\(videoId)_\(threadId)"
+                            let previousValue = threadUnreadStatus[key]
                             threadUnreadStatus[key] = count > 0
                             if count > 0 {
-                                print("   🔴 Thread \(threadId): \(count) unread → key: \(key)")
+                                print("   🔴 Thread \(threadId): \(count) unread → key: \(key) (was: \(previousValue ?? false))")
+                            } else {
+                                print("   ⚪ Thread \(threadId): 0 unread → key: \(key) (was: \(previousValue ?? false))")
                             }
                         }
                         let matchingKeys = threadUnreadStatus.keys.filter { $0.hasPrefix("\(videoId)_") }
                         print("   🔑 Total threadUnreadStatus keys after update: \(matchingKeys.count)")
                         if matchingKeys.count > 0 {
                             print("   🔑 Keys: \(matchingKeys.joined(separator: ", "))")
+                            for key in matchingKeys {
+                                print("      - \(key): \(threadUnreadStatus[key] ?? false)")
+                            }
+                        } else {
+                            print("   ⚠️ WARNING: No threadUnreadStatus keys found after processing!")
                         }
                     } else {
                         print("   ⚠️ No 'threads' dictionary in response (or it's not [String: Int])")
@@ -519,8 +553,11 @@ class MessagingService: ObservableObject {
                         if let threadsAny = dictValue["threads"] {
                             print("   threads type: \(type(of: threadsAny))")
                             print("   threads value: \(threadsAny)")
+                        } else {
+                            print("   ⚠️ 'threads' key does not exist in response!")
                         }
                     }
+                    print("================================================\n")
                 } else {
                     print("⚠️ [MessagingService] Unexpected response format for videoId: \(videoId), type: \(type(of: videoResponse))")
                 }
