@@ -14263,30 +14263,27 @@ struct FloatingCommentView: View {
                         // Wait a bit for backend to process the message and mark it as unread
                         try? await Task.sleep(nanoseconds: 1000_000_000) // 1.0s delay
                         
-                        // Check unread counts - this will show the indicator for the OTHER user when they open the video
-                        try? await messagingService.loadUnreadCounts(for: content.SK)
+                        // CRITICAL: Use updateUnreadIndicators() to ensure orange highlights update correctly
+                        // This calls loadUnreadCounts AND updateCachedUserThreads in the right order
                         await MainActor.run {
-                            messagingService.updateCachedUserThreads(for: content.SK)
-                            cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
-                            
-                            // Update thread unread status for orange highlights
-                            for threadId in privateThreads.keys {
-                                let key = "\(content.SK)_\(threadId)"
-                                threadUnreadStatus[threadId] = messagingService.threadUnreadStatus[key] == true
-                            }
-                            
-                            // Update red badge
-                            let unreadCount = messagingService.getUnreadCount(for: content.SK)
-                            NotificationCenter.default.post(
-                                name: NSNotification.Name("CommentsViewed"),
-                                object: nil,
-                                userInfo: [
-                                    "videoId": content.SK,
-                                    "unreadCount": unreadCount
-                                ]
-                            )
-                            print("✅ [FloatingCommentView] Updated unread counts after posting: \(unreadCount) unread")
+                            updateUnreadIndicators()
                         }
+                    }
+                }
+                
+                // Update red badge immediately (optimistic)
+                Task.detached {
+                    await MainActor.run {
+                        let unreadCount = messagingService.getUnreadCount(for: content.SK)
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("CommentsViewed"),
+                            object: nil,
+                            userInfo: [
+                                "videoId": content.SK,
+                                "unreadCount": unreadCount
+                            ]
+                        )
+                        print("✅ [FloatingCommentView] Updated unread counts after posting: \(unreadCount) unread")
                     }
                 }
             } catch {
