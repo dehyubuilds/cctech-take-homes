@@ -12902,10 +12902,19 @@ struct FloatingCommentView: View {
                 // Reconnect WebSocket via MessagingService
                 messagingService.connectWebSocket(for: content.SK)
             }
-            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RefreshInboxCount"))) { _ in
-                // Also check when inbox count refreshes (notifications might have changed)
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RefreshInboxCount"))) { _ in
+            // Also check when inbox count refreshes (notifications might have changed)
+            checkPrivateMessageNotifications()
+        }
+        .onReceive(websocketService.$inboxNotification) { notification in
+            // When ANY inbox notification arrives (including private_message), check for private messages
+            // This ensures orange highlight appears immediately when notification is created
+            if let notification = notification {
+                print("🔔 [FloatingCommentView] Received inbox notification: \(notification.notificationType ?? "unknown")")
+                // Check for private_message notifications to update orange highlight
                 checkPrivateMessageNotifications()
             }
+        }
             // Handle WebSocket comment notifications - reload unread counts when new private message arrives
             .onReceive(websocketService.$commentNotification) { notification in
                 guard let notification = notification,
