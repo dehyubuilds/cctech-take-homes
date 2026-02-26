@@ -524,6 +524,11 @@ class MessagingService: ObservableObject {
                 } else {
                     print("⚠️ [MessagingService] Unexpected response format for videoId: \(videoId), type: \(type(of: videoResponse))")
                 }
+                
+                // CRITICAL: Update cached user threads AFTER threadUnreadStatus is populated
+                // This ensures orange highlights appear/disappear correctly
+                updateCachedUserThreads(for: videoId)
+                print("✅ [MessagingService] Updated cached user threads after loading unread counts")
             }
         } catch {
             print("❌ [MessagingService] Error loading unread counts: \(error)")
