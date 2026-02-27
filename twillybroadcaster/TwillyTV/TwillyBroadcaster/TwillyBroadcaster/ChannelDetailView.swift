@@ -46,9 +46,11 @@ struct ChannelDetailView: View {
     @State private var showingPrivateManagement = false // Show private username management
     @State private var unreadAccessInboxCount = 0 // Unread count for access inbox notifications
     @State private var inboxPollTask: Task<Void, Never>? = nil // Task for polling inbox
+    @State private var inboxNotificationDebounceTask: Task<Void, Never>? = nil // Task for debouncing inbox notifications
     @State private var accessInboxNotifications: [AccessInboxNotification] = [] // Access inbox notifications
     @State private var accessInboxNotificationData: [String: AppNotification] = [:] // Store full notification data by ID
     @State private var isLoadingAccessInbox = false // Loading state for access inbox
+    @State private var isLoadingInboxCount = false // Prevent multiple simultaneous inbox count calls
     @State private var privateManagementSearchText = "" // Search text for private management
     @State private var privateManagementSearchResults: [UsernameSearchResult] = [] // Search results for private management
     @State private var isSearchingPrivateManagement = false // Whether private management search is in progress
@@ -564,18 +566,19 @@ struct ChannelDetailView: View {
         }
         .onReceive(websocketService.$inboxNotification) { notification in
             // Handle real-time inbox notifications via WebSocket - SUPER FAST updates
+            // CRITICAL: Debounce to prevent flickering from rapid notifications
             if let notification = notification {
+                // Cancel any pending inbox count reload
+                inboxNotificationDebounceTask?.cancel()
                 
-                // Check if this is a private_access_granted notification
-                if notification.notificationType == "private_access_granted" {
-                    // Update count immediately (optimistic update) - already on main actor
-                    unreadAccessInboxCount += 1
-                    saveUnreadAccessInboxCountToCache(count: unreadAccessInboxCount)
-                    // Then refresh from server to get accurate count
+                // Debounce: Wait 500ms before reloading (prevents flickering from rapid notifications)
+                inboxNotificationDebounceTask = Task {
+                    try? await Task.sleep(nanoseconds: 500_000_000) // 500ms debounce
+                    if !Task.isCancelled {
+                        // CRITICAL FIX: Don't do optimistic update - just refresh from server
+                        // This prevents flickering when server returns different count
                     loadUnreadAccessInboxCount()
-                } else {
-                    // For other notification types, just refresh
-                    loadUnreadAccessInboxCount()
+                    }
                 }
             }
         }
@@ -2068,181 +2071,94 @@ struct ChannelDetailView: View {
     
     private var channelPoster: some View {
         Group {
-            if !currentChannel.posterUrl.isEmpty {
-                // Validate URL before creating
-                if let url = URL(string: currentChannel.posterUrl) {
-                    // Check if it's an SVG file
-                    if currentChannel.posterUrl.lowercased().hasSuffix(".svg") {
-                        // Use SVG view for SVG files
-                        ZStack {
-                            SVGImageView(url: url)
-                                .scaledToFill()
-                            
-                            // Overlay gradient mesh for depth
+            // For Twilly TV channel - show text banner instead of poster image
+            if currentChannel.channelName.lowercased() == "twilly tv" {
+                ZStack(alignment: .center) {
+                    // Background gradient instead of poster image
                             LinearGradient(
                                 gradient: Gradient(colors: [
-                                    Color.twillyTeal.opacity(0.15),
-                                    Color.clear,
-                                    Color.twillyCyan.opacity(0.1)
-                                ]),
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                            
-                            // Diagonal accent line
-                            GeometryReader { geometry in
-                                Path { path in
-                                    path.move(to: CGPoint(x: 0, y: geometry.size.height * 0.3))
-                                    path.addLine(to: CGPoint(x: geometry.size.width * 0.4, y: 0))
-                                }
-                                .stroke(
+                            Color.black,
+                            Color(red: 0.1, green: 0.1, blue: 0.15),
+                            Color.black
+                        ]),
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    
+                    // Text overlay - large and visible
+                    VStack(spacing: 8) {
+                        // Twilly TV title - large and bold
+                        Text("Twilly TV")
+                            .font(.system(size: 48, weight: .black, design: .rounded))
+                            .foregroundStyle(
                                     LinearGradient(
-                                        gradient: Gradient(colors: [
-                                            Color.twillyCyan.opacity(0.6),
-                                            Color.clear
-                                        ]),
+                                    colors: [.white, .twillyCyan, .white],
                                         startPoint: .leading,
                                         endPoint: .trailing
-                                    ),
-                                    lineWidth: 2
                                 )
-                            }
-                        }
-                        .onAppear {
-                            print("✅ [ChannelDetailView] Loading SVG poster")
-                            print("   URL: \(currentChannel.posterUrl)")
-                        }
-                    } else {
-                        // Use AsyncImage for raster images (PNG, JPEG, etc.)
-                        ZStack {
+                            )
+                            .shadow(color: .black.opacity(0.8), radius: 8, x: 0, y: 2)
+                            .shadow(color: .twillyCyan.opacity(0.5), radius: 12, x: 0, y: 0)
+                        
+                        // Tagline - larger and more visible
+                        Text("A social streaming network")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(.white)
+                            .shadow(color: .black.opacity(0.8), radius: 6, x: 0, y: 2)
+                    }
+                    .padding(.top, 20)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 200)
+                .clipped()
+                .cornerRadius(12)
+            } else if !currentChannel.posterUrl.isEmpty {
+                // For other channels, show poster image
+                if let url = URL(string: currentChannel.posterUrl) {
                             AsyncImage(url: url) { phase in
                             switch phase {
                             case .success(let image):
                                 image
                                     .resizable()
                                     .scaledToFill()
-                                    .onAppear {
-                                        print("✅ [ChannelDetailView] Successfully loaded poster image")
-                                        print("   URL: \(currentChannel.posterUrl)")
-                                    }
-                            case .failure(let error):
-                                posterPlaceholder
-                                    .onAppear {
-                                        print("❌ [ChannelDetailView] Failed to load poster image")
-                                        print("   Error: \(error.localizedDescription)")
-                                        print("   Error type: \(type(of: error))")
-                                        if let urlError = error as? URLError {
-                                            print("   URL Error code: \(urlError.code.rawValue)")
-                                            print("   URL Error description: \(urlError.localizedDescription)")
-                                        }
-                                        print("   Poster URL: \(currentChannel.posterUrl)")
-                                        print("   Channel: \(currentChannel.channelName)")
-                                        print("   Creator Email: \(currentChannel.creatorEmail)")
-                                    }
-                            case .empty:
-                                posterPlaceholder
-                                    .onAppear {
-                                        print("⏳ [ChannelDetailView] Poster image is loading (empty state)")
-                                        print("   URL: \(currentChannel.posterUrl)")
+                        case .failure(_), .empty:
+                            ZStack {
+                                Color.gray.opacity(0.3)
+                                Image(systemName: "tv.fill")
+                                    .font(.system(size: 60))
+                                    .foregroundColor(.white.opacity(0.5))
                                     }
                             @unknown default:
-                                posterPlaceholder
-                                    .onAppear {
-                                        print("⚠️ [ChannelDetailView] Unknown AsyncImage phase")
-                                        print("   URL: \(currentChannel.posterUrl)")
-                                    }
-                            }
-                            }
-                            
-                            // Overlay gradient mesh for depth and atmosphere
-                            LinearGradient(
-                                gradient: Gradient(colors: [
-                                    Color.twillyTeal.opacity(0.2),
-                                    Color.clear,
-                                    Color.twillyCyan.opacity(0.15),
-                                    Color.clear
-                                ]),
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                            
-                            // Diagonal accent line for visual interest
-                            GeometryReader { geometry in
-                                Path { path in
-                                    path.move(to: CGPoint(x: 0, y: geometry.size.height * 0.25))
-                                    path.addLine(to: CGPoint(x: geometry.size.width * 0.35, y: 0))
-                                }
-                                .stroke(
-                                    LinearGradient(
-                                        gradient: Gradient(colors: [
-                                            Color.twillyCyan.opacity(0.7),
-                                            Color.clear
-                                        ]),
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    ),
-                                    lineWidth: 2.5
-                                )
-                            }
+                            Color.gray.opacity(0.3)
                         }
                     }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 200)
+                    .clipped()
+                    .cornerRadius(12)
                 } else {
-                    posterPlaceholder
-                        .onAppear {
-                            print("❌ [ChannelDetailView] Invalid poster URL - cannot create URL object")
-                            print("   Raw posterUrl string: '\(currentChannel.posterUrl)'")
-                            print("   Channel: \(currentChannel.channelName)")
-                            print("   Creator Email: \(currentChannel.creatorEmail)")
-                        }
+                    ZStack {
+                        Color.gray.opacity(0.3)
+                        Image(systemName: "tv.fill")
+                            .font(.system(size: 60))
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 200)
+                    .clipped()
+                    .cornerRadius(12)
                 }
             } else {
-                posterPlaceholder
-                    .onAppear {
-                        print("⚠️ [ChannelDetailView] Poster URL is empty for channel: \(currentChannel.channelName)")
-                        print("   Creator Email: \(currentChannel.creatorEmail)")
-                        print("   Channel ID: \(currentChannel.channelId)")
-                    }
-            }
-        }
-        .background(Color.black) // Solid opaque background to completely hide content behind poster
-        .frame(maxWidth: .infinity)
-        .frame(height: currentChannel.channelName.lowercased() == "twilly tv" ? 240 : 200) // Taller for Twilly TV
-        .clipped()
-        .cornerRadius(currentChannel.channelName.lowercased() == "twilly tv" ? 20 : 12) // More rounded for Twilly TV
-        .overlay(
-            RoundedRectangle(cornerRadius: currentChannel.channelName.lowercased() == "twilly tv" ? 20 : 12)
-                .stroke(
-                    LinearGradient(
-                        gradient: Gradient(colors: [
-                            Color.twillyTeal.opacity(0.4),
-                            Color.twillyCyan.opacity(0.3),
-                            Color.twillyTeal.opacity(0.4)
-                        ]),
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1.5
-                )
-        )
-        .shadow(color: Color.twillyCyan.opacity(0.3), radius: 16, x: 0, y: 8)
-        .shadow(color: Color.black.opacity(0.4), radius: 8, x: 0, y: 4)
-        .onAppear {
-            print("🖼️ [ChannelDetailView] ChannelPoster onAppear")
-            print("   Channel: \(currentChannel.channelName)")
-            print("   Channel ID: \(currentChannel.channelId)")
-            print("   Creator Email: \(currentChannel.creatorEmail)")
-            print("   Creator Username: \(currentChannel.creatorUsername)")
-            print("   Poster URL: \(currentChannel.posterUrl.isEmpty ? "EMPTY" : currentChannel.posterUrl)")
-            print("   Poster URL length: \(currentChannel.posterUrl.count) characters")
-            if !currentChannel.posterUrl.isEmpty {
-                if let url = URL(string: currentChannel.posterUrl) {
-                    print("   ✅ URL is valid")
-                    print("   URL scheme: \(url.scheme ?? "nil")")
-                    print("   URL host: \(url.host ?? "nil")")
-                    print("   URL path: \(url.path)")
-                } else {
-                    print("   ❌ URL is INVALID - cannot parse")
+                ZStack {
+                    Color.gray.opacity(0.3)
+                    Image(systemName: "tv.fill")
+                        .font(.system(size: 60))
+                        .foregroundColor(.white.opacity(0.5))
                 }
+        .frame(maxWidth: .infinity)
+                .frame(height: 200)
+        .clipped()
+                .cornerRadius(12)
             }
         }
     }
@@ -2447,6 +2363,13 @@ struct ChannelDetailView: View {
     private func loadUnreadAccessInboxCount() {
         guard let userEmail = authService.userEmail else { return }
         
+        // CRITICAL: Prevent multiple simultaneous calls (prevents flickering)
+        guard !isLoadingInboxCount else {
+            print("⚠️ [ChannelDetailView] Already loading inbox count, skipping duplicate call")
+            return
+        }
+        
+        isLoadingInboxCount = true
         Task {
             do {
                 // Get ALL notifications (not just unread) to filter properly
@@ -2464,11 +2387,13 @@ struct ChannelDetailView: View {
                     // Save to cache for instant display on next load
                     saveUnreadAccessInboxCountToCache(count: newCount)
                     print("📬 [ChannelDetailView] Unread access inbox count: \(newCount) (from \(allNotifications.count) total notifications)")
+                    isLoadingInboxCount = false
                 }
             } catch {
                 print("❌ [ChannelDetailView] Error loading unread access inbox count: \(error)")
                 await MainActor.run {
                     unreadAccessInboxCount = 0
+                    isLoadingInboxCount = false
                 }
             }
         }
@@ -10321,8 +10246,14 @@ struct ContentCard: View {
     @State private var videoDuration: TimeInterval? = nil
     @State private var isLoadingDuration = false
     @State private var shouldHide = false // Hide card if duration < 6 seconds
-    @State private var commentCount: Int? = nil // Comment count for this video
-    @State private var unreadCommentCount: Int = 0 // Unread comment count (badge)
+    @State private var commentCount: Int? = nil // Comment count for this video (loaded once, persists)
+    @State private var unreadCommentCount: Int = 0 // Unread comment count (badge) - loaded once, persists like commentCount
+    @ObservedObject private var messagingService = MessagingService.shared // Observe MessagingService to update comment count (same as FloatingCommentView)
+    
+    // Computed property to track comment count changes (for onChange observation)
+    private var currentCommentCount: Int {
+        messagingService.getPublicComments(for: content.SK).count
+    }
     
     // Computed property to get display title (never show raw m3u8 filename)
     private var displayTitle: String {
@@ -10387,10 +10318,92 @@ struct ContentCard: View {
     }
     
     var body: some View {
+        Group {
         // Hide videos under 6 seconds
         if shouldHide {
             EmptyView()
         } else {
+                cardContent
+            }
+        }
+        .onAppear {
+            loadVideoDuration()
+            // CRITICAL: Immediately sync comment count from MessagingService (like FloatingCommentView does)
+            // This ensures the count matches FloatingCommentView instantly
+            let publicComments = messagingService.getPublicComments(for: content.SK)
+            if commentCount == nil || commentCount != publicComments.count {
+                commentCount = publicComments.count
+                print("📊 [ContentCard] onAppear: Synced comment count IMMEDIATELY to \(publicComments.count) for videoId: \(content.SK)")
+            }
+            loadCommentCount() // This already loads unread count - no need to duplicate
+            
+            // CRITICAL: Also check unread count on appear (in case new messages arrived)
+            // This ensures indicator shows immediately when card appears, not just after opening comments
+            Task {
+                await loadUnreadCount()
+            }
+        }
+        // CRITICAL: Update comment count whenever MessagingService.publicComments changes (same as FloatingCommentView)
+        // This ensures ContentCard updates immediately when FloatingCommentView updates
+        // Since messagingService is @ObservedObject, when publicComments changes, the view re-renders
+        // We update the count by observing the specific videoId's comment count
+        .onChange(of: messagingService.getPublicComments(for: content.SK).count) { newCount in
+            // When comment count for this video changes, update our state
+            if commentCount != newCount {
+                commentCount = newCount
+                print("📊 [ContentCard] MessagingService.publicComments changed: Updated comment count to \(newCount) for videoId: \(content.SK)")
+            }
+        }
+        .onChange(of: AuthService.shared.userEmail) { newEmail in
+            if newEmail != nil {
+                // User logged in - reload counts
+                loadCommentCount()
+            } else {
+                // User logged out - clear counts
+                self.commentCount = 0
+                self.unreadCommentCount = 0
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NewCommentPosted"))) { notification in
+            // Immediately refresh when a new comment is posted (for general chat only)
+            // Private thread messages don't post this notification to prevent flip
+            if let videoId = notification.userInfo?["videoId"] as? String,
+               videoId == content.SK,
+               let isPrivate = notification.userInfo?["isPrivate"] as? Bool,
+               !isPrivate {
+                // Only reload for general chat comments (not private thread replies)
+                // Small delay to ensure server has processed the comment
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    loadCommentCount()
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("CommentsViewed"))) { notification in
+            if let videoId = notification.userInfo?["videoId"] as? String {
+                // CRITICAL: Normalize both videoIds for comparison (handle FILE# prefix differences)
+                // ContentCard might have FILE# prefix while notification might not, or vice versa
+                let normalizedNotifVideoId = normalizeVideoId(videoId)
+                let normalizedContentSK = normalizeVideoId(content.SK)
+                
+                guard normalizedNotifVideoId == normalizedContentSK else {
+                    print("⚠️ [ContentCard] CommentsViewed notification videoId mismatch: \(videoId) vs \(content.SK) (normalized: \(normalizedNotifVideoId) vs \(normalizedContentSK))")
+                    return
+                }
+                
+                // If unreadCount is provided directly, use it immediately (faster)
+                if let unreadCount = notification.userInfo?["unreadCount"] as? Int {
+                    print("🔴 [ContentCard] ✅ Received CommentsViewed notification: videoId=\(videoId), unreadCount=\(unreadCount), setting badge (content.SK=\(content.SK))")
+                    // SIMPLE: Just set it - if backend says there are unread messages, show indicator
+                    self.unreadCommentCount = unreadCount
+                    print("🔴 [ContentCard] ✅ Set unreadCommentCount to \(unreadCount), current value: \(self.unreadCommentCount)")
+                } else {
+                    print("⚠️ [ContentCard] CommentsViewed notification missing unreadCount in userInfo")
+                }
+            }
+        }
+    }
+    
+    private var cardContent: some View {
             HStack(spacing: 12) {
                 // Tappable area for card (everything except play button)
                 Button(action: onTap) {
@@ -10536,6 +10549,44 @@ struct ContentCard: View {
                             HStack(alignment: .top, spacing: 12) {
                                 // Comment icon with unread badge - always visible
                                 Button(action: {
+                                    // PATTERN: When clicked, refresh unread count from API (manual refresh)
+                                    // This is like manually refreshing comment count - updates from backend
+                                    Task {
+                                        guard let userEmail = AuthService.shared.userEmail else {
+                                            onTap()
+                                            return
+                                        }
+                                        
+                                        do {
+                                            // PATTERN: Load unread counts from API (source of truth)
+                                            // CRITICAL: Use content.SK directly (same videoId format as comment counter)
+                                            try await MessagingService.shared.loadUnreadCounts(for: content.SK)
+                                            await MainActor.run {
+                                                // CRITICAL: Use content.SK directly (getUnreadCount normalizes internally)
+                                                let apiUnreadCount = MessagingService.shared.getUnreadCount(for: content.SK)
+                                                
+                                                // PATTERN: Convert API count to indicator (same as loadCommentCount does)
+                                                let unreadCount = apiUnreadCount > 0 ? 1 : 0
+                                                
+                                                // Update indicator from backend (source of truth)
+                                                self.unreadCommentCount = unreadCount
+                                                        
+                                                // PATTERN: Post notification to update indicator (same as comment counter pattern)
+                                                NotificationCenter.default.post(
+                                                    name: NSNotification.Name("CommentsViewed"),
+                                                    object: nil,
+                                                    userInfo: [
+                                                        "videoId": content.SK, // Use content.SK directly (same format)
+                                                        "unreadCount": unreadCount
+                                                    ]
+                                                )
+                                                print("✅ [ContentCard] REQUEST: Updated indicator (unreadCount=\(unreadCount))")
+                                            }
+                                        } catch {
+                                            print("❌ [ContentCard] REQUEST failed to update indicator: \(error)")
+                                        }
+                                    }
+                                    
                                     // Open video player with comments
                                     onTap()
                                 }) {
@@ -10544,15 +10595,13 @@ struct ContentCard: View {
                                             .font(.system(size: 14, weight: .medium))
                                             .foregroundColor(.twillyCyan)
                                         
-                                        // Unread comment badge (red circle) - show "1" if ANY unread messages exist
+                                        // Unread comment badge (red star) - simple indicator
                                         // Binary indicator: 1 = has unread, 0 = none (no badge)
                                         if unreadCommentCount > 0 {
-                                            Text("1")
-                                                .font(.system(size: 8, weight: .bold))
-                                                .foregroundColor(.white)
+                                            Image(systemName: "star.fill")
+                                                .font(.system(size: 9, weight: .bold))
+                                                .foregroundColor(.red)
                                                 .padding(3)
-                                                .background(Color.red)
-                                                .clipShape(Circle())
                                                 .offset(x: 6, y: -6)
                                         }
                                         
@@ -10693,76 +10742,6 @@ struct ContentCard: View {
                     Color.clear
                 }
             }
-            .onAppear {
-                loadVideoDuration()
-                loadCommentCount()
-                
-                // CRITICAL: Start with 0 - backend will verify and update
-                // Never show indicator from cache - only after backend verification
-                self.unreadCommentCount = 0
-                
-                // CRITICAL: For latest video, load unread counts from backend (source of truth)
-                if isLatestContent {
-                    Task {
-                        try? await MessagingService.shared.loadUnreadCounts(for: content.SK)
-                        await MainActor.run {
-                            // Only show indicator if backend confirms unread messages
-                            let verifiedCount = MessagingService.shared.getUnreadCount(for: content.SK)
-                            self.unreadCommentCount = verifiedCount
-                            if verifiedCount > 0 {
-                                print("🔔 [ContentCard] ✅ Backend verified unread count for latest video: \(verifiedCount)")
-                            }
-                        }
-                    }
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("CommentsViewed"))) { notification in
-                if let videoId = notification.userInfo?["videoId"] as? String {
-                    // CRITICAL: Normalize both videoIds for comparison (handle FILE# prefix differences)
-                    // ContentCard might have FILE# prefix while notification might not, or vice versa
-                    let normalizedNotifVideoId = normalizeVideoId(videoId)
-                    let normalizedContentSK = normalizeVideoId(content.SK)
-                    
-                    guard normalizedNotifVideoId == normalizedContentSK else {
-                        print("⚠️ [ContentCard] CommentsViewed notification videoId mismatch: \(videoId) vs \(content.SK) (normalized: \(normalizedNotifVideoId) vs \(normalizedContentSK))")
-                        return
-                    }
-                    
-                    // If unreadCount is provided directly, use it immediately (faster)
-                    if let unreadCount = notification.userInfo?["unreadCount"] as? Int {
-                        print("🔴 [ContentCard] ✅ Received CommentsViewed notification: videoId=\(videoId), unreadCount=\(unreadCount), setting badge")
-                        self.unreadCommentCount = unreadCount
-                    } else {
-                        // Otherwise refresh from server
-                    Task {
-                        // Refresh comment count
-                        do {
-                                let comments = try await ChannelService.shared.getComments(videoId: content.SK, userId: AuthService.shared.userId, viewerEmail: AuthService.shared.userEmail)
-                            await MainActor.run {
-                                // Only count public comments (not private messages)
-                                let publicComments = comments.filter { $0.isPrivate != true && $0.parentCommentId == nil }
-                                self.commentCount = publicComments.count
-                            }
-                        } catch {
-                            print("❌ [ContentCard] Failed to refresh comment count: \(error.localizedDescription)")
-                        }
-                        
-                            // Refresh unread count using MessagingService
-                            Task {
-                            do {
-                                    try await MessagingService.shared.loadUnreadCounts(for: content.SK)
-                                await MainActor.run {
-                                        self.unreadCommentCount = MessagingService.shared.getUnreadCount(for: content.SK)
-                                }
-                            } catch {
-                                print("❌ [ContentCard] Failed to refresh unread count: \(error.localizedDescription)")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
     
     private func formatScheduledDate(_ date: Date) -> String {
@@ -10869,9 +10848,16 @@ struct ContentCard: View {
             .replacingOccurrences(of: "file-", with: "")
     }
     
-    // Load comment count and unread count asynchronously
     private func loadCommentCount() {
-        guard commentCount == nil else { return }
+        guard commentCount == nil else { 
+            // Comment count already loaded, but check unread count if not set
+            if unreadCommentCount == 0 {
+                Task {
+                    await loadUnreadCount()
+                }
+            }
+            return 
+        }
         
         Task {
             do {
@@ -10883,28 +10869,48 @@ struct ContentCard: View {
                     self.commentCount = publicComments.count
                 }
                 
-                // Load unread private message count (red badge indicator)
-                // Use MessagingService as source of truth for consistency
-                if let userEmail = AuthService.shared.userEmail {
-                    do {
-                        // Load unread counts via MessagingService (ensures consistency)
-                        try await MessagingService.shared.loadUnreadCounts(for: content.SK)
-                        await MainActor.run {
-                            // Get unread count from MessagingService
-                            self.unreadCommentCount = MessagingService.shared.getUnreadCount(for: content.SK)
-                        }
-                    } catch {
-                        print("❌ [ContentCard] Failed to load unread count: \(error.localizedDescription)")
-                        await MainActor.run {
-                            self.unreadCommentCount = 0
-                        }
-                    }
-                }
+                // Load unread count
+                await loadUnreadCount()
             } catch {
                 print("❌ [ContentCard] Failed to load comment count: \(error.localizedDescription)")
                 await MainActor.run {
                     self.commentCount = 0
                     self.unreadCommentCount = 0
+                }
+            }
+        }
+    }
+    
+    private func loadUnreadCount() async {
+        // Load unread private message count (red badge indicator)
+        // Use MessagingService as source of truth for consistency
+        if let userEmail = AuthService.shared.userEmail {
+            do {
+                // Load unread counts via MessagingService (ensures consistency)
+                try await MessagingService.shared.loadUnreadCounts(for: content.SK)
+                await MainActor.run {
+                    // Get unread count from MessagingService
+                    let backendUnreadCount = MessagingService.shared.getUnreadCount(for: content.SK)
+                    let newUnreadCount = backendUnreadCount > 0 ? 1 : 0
+                    
+                    // CRITICAL: Don't clear optimistic update - only update if backend says there ARE unread messages
+                    // This preserves the indicator when it's set optimistically
+                    if newUnreadCount > 0 {
+                        // Backend says there are unread - update to 1
+                        self.unreadCommentCount = 1
+                        print("📊 [ContentCard] loadUnreadCount: Updated unreadCommentCount to 1 from backend (API: \(backendUnreadCount))")
+                    } else {
+                        // Backend says 0 - keep current value (don't clear optimistic update)
+                        print("📊 [ContentCard] loadUnreadCount: Backend says 0, keeping current unreadCommentCount: \(self.unreadCommentCount)")
+                    }
+                }
+            } catch {
+                print("❌ [ContentCard] Failed to load unread count: \(error.localizedDescription)")
+                await MainActor.run {
+                    // Only clear on error if it was already 0
+                    if self.unreadCommentCount == 0 {
+                        self.unreadCommentCount = 0
+                    }
                 }
             }
         }
@@ -11392,6 +11398,18 @@ class MessagingService: ObservableObject {
         }
     }
     
+    // Helper to normalize videoId (matches backend exactly: strips FILE# first, then file-)
+    private func normalizeVideoId(_ videoId: String) -> String {
+        var normalized = videoId
+        if normalized.hasPrefix("FILE#") {
+            normalized = String(normalized.dropFirst(5)) // Remove "FILE#"
+        }
+        if normalized.hasPrefix("file-") {
+            normalized = String(normalized.dropFirst(5)) // Remove "file-"
+        }
+        return normalized
+    }
+    
     /// Load unread counts for a video
     func loadUnreadCounts(for videoId: String) async throws {
         guard let viewerEmail = authService.userEmail else {
@@ -11404,17 +11422,22 @@ class MessagingService: ObservableObject {
         )
         
         await MainActor.run {
-            if let videoResponse = counts[videoId] {
+            // CRITICAL: Always use normalized videoId for unreadCounts keys (consistent with backend)
+            let normalizedVideoId = normalizeVideoId(videoId)
+            
+            // Backend returns response with normalized videoId as key
+            let normalizedLookupKey = normalizedVideoId
+            if let videoResponse = counts[normalizedLookupKey] ?? counts[videoId] {
                 if let intValue = videoResponse as? Int {
-                    unreadCounts[videoId] = intValue
+                    unreadCounts[normalizedVideoId] = intValue
                 } else if let dictValue = videoResponse as? [String: Any],
                           let total = dictValue["total"] as? Int {
-                    unreadCounts[videoId] = total
+                    unreadCounts[normalizedVideoId] = total
                     
-                    // Update thread unread status
+                    // Update thread unread status (use normalized videoId for keys)
                     if let threads = dictValue["threads"] as? [String: Int] {
                         for (threadId, count) in threads {
-                            let key = "\(videoId)_\(threadId)"
+                            let key = "\(normalizedVideoId)_\(threadId)"
                             threadUnreadStatus[key] = count > 0
                         }
                     }
@@ -11429,8 +11452,8 @@ class MessagingService: ObservableObject {
                 name: NSNotification.Name("CommentsViewed"),
                 object: nil,
                 userInfo: [
-                    "videoId": videoId,
-                    "unreadCount": unreadCounts[videoId] ?? 0
+                    "videoId": normalizedVideoId,
+                    "unreadCount": unreadCounts[normalizedVideoId] ?? 0
                 ]
             )
         }
@@ -11581,7 +11604,7 @@ enum MessagingError: Error {
 }
 // END MessagingService
 
-struct Comment: Identifiable, Codable {
+struct Comment: Identifiable, Codable, Equatable {
     let id: String
     let videoId: String
     let userId: String
@@ -11594,6 +11617,21 @@ struct Comment: Identifiable, Codable {
     var parentCommentId: String?
     var visibleTo: [String]?
     var mentionedUsername: String?
+    
+    static func == (lhs: Comment, rhs: Comment) -> Bool {
+        return lhs.id == rhs.id &&
+               lhs.videoId == rhs.videoId &&
+               lhs.userId == rhs.userId &&
+               lhs.username == rhs.username &&
+               lhs.text == rhs.text &&
+               lhs.createdAt == rhs.createdAt &&
+               lhs.likeCount == rhs.likeCount &&
+               lhs.isLiked == rhs.isLiked &&
+               lhs.isPrivate == rhs.isPrivate &&
+               lhs.parentCommentId == rhs.parentCommentId &&
+               lhs.visibleTo == rhs.visibleTo &&
+               lhs.mentionedUsername == rhs.mentionedUsername
+    }
 }
 
 // MARK: - Floating Comment View
@@ -11773,9 +11811,9 @@ struct FloatingCommentView: View {
                                                 }
                                                 
                                                 let unreadCount = threadsWithUnread.count > 0 ? 1 : 0
-                                                messagingService.unreadCounts[content.SK] = unreadCount
-                                                
                                                 let normalizedVideoId = normalizeVideoId(content.SK)
+                                                messagingService.unreadCounts[normalizedVideoId] = unreadCount
+                                                
                                                 NotificationCenter.default.post(
                                                     name: NSNotification.Name("CommentsViewed"),
                                                     object: nil,
@@ -12456,18 +12494,32 @@ struct FloatingCommentView: View {
                 selectedThreadId = threadIdToUse
             }
             
+            // CLIENT-SIDE: Clear highlight immediately when thread is clicked (instant feedback)
+            // This is client-side only - server update happens async below
+            let normalizedVideoId = normalizeVideoId(content.SK)
+            let key = "\(normalizedVideoId)_\(threadIdToUse)"
+            messagingService.threadUnreadStatus[key] = false
+            
+            // Update cachedUserThreads to reflect the cleared highlight
+            if let index = cachedUserThreads.firstIndex(where: { $0.id == threadIdToUse || $0.id == threadInfo.id }) {
+                var updatedThreads = cachedUserThreads
+                updatedThreads[index] = MessagingService.ThreadInfo(
+                    id: updatedThreads[index].id,
+                    username: updatedThreads[index].username,
+                    hasUnread: false // Clear highlight client-side
+                )
+                cachedUserThreads = updatedThreads
+            }
+            
             // Mark private_message notification as read
             markPrivateMessageNotificationAsRead(for: threadIdToUse)
             
-            // Mark as read on server (async) - then update indicators from server
+            // REMOVED: Indicator clearing on thread click - indicator now persists
+            // The indicator will only update via API calls (postComment, updateUnreadIndicators)
+            // It will NOT clear when clicking threads - it stays displayed
+            // Mark as read on server (async) - but don't update indicator
             Task {
                 await markThreadAsRead(threadId: threadIdToUse)
-                
-                // CRITICAL: After marking as read, update indicators from server (single source of truth)
-                // This ensures indicator and orange highlights are ALWAYS in sync
-                // If unread count = 0 → clear both indicator and orange highlights
-                // If unread count != 0 → keep both indicator and orange highlights
-                updateUnreadIndicators()
             }
             
             // CRITICAL: Load thread IMMEDIATELY - don't wait for async
@@ -12648,9 +12700,9 @@ struct FloatingCommentView: View {
                                                     }
                                                     
                                                     let unreadCount = threadsWithUnread.count > 0 ? 1 : 0
-                                                    messagingService.unreadCounts[content.SK] = unreadCount
-                                                    
                                                     let normalizedVideoId = normalizeVideoId(content.SK)
+                                                    messagingService.unreadCounts[normalizedVideoId] = unreadCount
+                                                    
                                                     NotificationCenter.default.post(
                                                         name: NSNotification.Name("CommentsViewed"),
                                                         object: nil,
@@ -12736,9 +12788,9 @@ struct FloatingCommentView: View {
                                                 }
                                                 
                                                 let unreadCount = threadsWithUnread.count > 0 ? 1 : 0
-                                                messagingService.unreadCounts[content.SK] = unreadCount
-                                                
                                                 let normalizedVideoId = normalizeVideoId(content.SK)
+                                                messagingService.unreadCounts[normalizedVideoId] = unreadCount
+                                                
                                                 NotificationCenter.default.post(
                                                     name: NSNotification.Name("CommentsViewed"),
                                                     object: nil,
@@ -12950,24 +13002,12 @@ struct FloatingCommentView: View {
     var body: some View {
         commentContentView
             .onAppear {
-                // CRITICAL: Clear stale indicators on app start - backend is source of truth
-                // Never show indicator until backend verifies unread status
-                messagingService.unreadCounts[content.SK] = 0
-                // Remove all threadUnreadStatus entries for this video
-                let keysToRemove = messagingService.threadUnreadStatus.keys.filter { $0.hasPrefix("\(content.SK)_") }
-                for key in keysToRemove {
-                    messagingService.threadUnreadStatus.removeValue(forKey: key)
-                }
+                // CRITICAL: Don't clear existing indicators - preserve them until backend verifies
+                // This prevents flashing when the view reappears (scrolling, navigation, etc.)
+                // Backend will verify and update the indicator correctly
                 let normalizedVideoId = normalizeVideoId(content.SK)
-                NotificationCenter.default.post(
-                    name: NSNotification.Name("CommentsViewed"),
-                    object: nil,
-                    userInfo: [
-                        "videoId": normalizedVideoId,
-                        "unreadCount": 0
-                    ]
-                )
-                print("🔴 [FloatingCommentView] Cleared all indicators on app start - backend will verify")
+                let existingUnreadCount = messagingService.unreadCounts[normalizedVideoId] ?? 0
+                print("🔴 [FloatingCommentView] onAppear - preserving existing unread count: \(existingUnreadCount)")
                 
                 // LIGHTNING FAST: Use cached data immediately, refresh in background
                 // Comments should feel instant - no loading delay
@@ -13033,8 +13073,10 @@ struct FloatingCommentView: View {
                             }
                             
                             // Update thread unread status from MessagingService (server is source of truth)
+                            // CRITICAL FIX: Use normalized videoId for keys (consistent with updateCachedUserThreads)
+                            let normalizedVideoId = normalizeVideoId(content.SK)
                             for threadId in privateThreads.keys {
-                                let key = "\(content.SK)_\(threadId)"
+                                let key = "\(normalizedVideoId)_\(threadId)"
                                 threadUnreadStatus[threadId] = messagingService.threadUnreadStatus[key] == true
                             }
                             
@@ -13043,38 +13085,28 @@ struct FloatingCommentView: View {
                             messagingService.updateCachedUserThreads(for: content.SK)
                             cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
                             
-                    // CRITICAL: Only show badge if there are orange highlights (unread threads)
-                    // Backend is source of truth - only show indicator after backend verification
-                    // Also filter out any self-conversations (should never exist, but safety check)
-                    let currentUsername = authService.username ?? ""
-                    let normalizedCurrentUsername = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
-                    let threadsWithUnread = cachedUserThreads.filter { threadInfo in
-                        // Filter out self-conversations (current user talking to themselves)
-                        let normalizedThreadUsername = threadInfo.username.lowercased().trimmingCharacters(in: .whitespaces)
-                        let isNotSelf = normalizedThreadUsername != normalizedCurrentUsername
-                        return threadInfo.hasUnread && isNotSelf
-                    }
-                    let unreadCount = threadsWithUnread.count > 0 ? 1 : 0
+                    // SIMPLE: Use API count directly - if API says > 0, show indicator as 1
+                    // Don't check highlights - just use the API count from loadUnreadCounts
+                    let apiUnreadCount = messagingService.unreadCounts[normalizedVideoId] ?? 0
+                    let unreadCount = apiUnreadCount > 0 ? 1 : 0
                             
-                            // CRITICAL: Only update unreadCounts AFTER backend verification
-                            // This ensures indicator only shows when backend confirms unread messages
-                            messagingService.unreadCounts[content.SK] = unreadCount
+                            // Update unreadCounts with API-based value
+                            messagingService.unreadCounts[normalizedVideoId] = unreadCount
                             
-                            // Update red badge - use normalized videoId for ContentCard
-                            let normalizedVideoId = normalizeVideoId(content.SK)
+                            // Update red badge - use content.SK (ContentCard normalizes internally)
                             NotificationCenter.default.post(
                                 name: NSNotification.Name("CommentsViewed"),
                                 object: nil,
                                 userInfo: [
-                                    "videoId": normalizedVideoId,
+                                    "videoId": content.SK,
                                     "unreadCount": unreadCount
                                 ]
                             )
                             
                             if unreadCount > 0 {
-                                print("🔔 [FloatingCommentView] ✅ Backend verified: \(threadsWithUnread.count) thread(s) with unread - showing badge")
+                                print("🔔 [FloatingCommentView] ✅ Backend verified: API count = \(apiUnreadCount) - showing badge")
                             } else {
-                                print("ℹ️ [FloatingCommentView] ✅ Backend verified: No unread threads - badge cleared")
+                                print("ℹ️ [FloatingCommentView] ✅ Backend verified: API count = 0 - badge cleared")
                             }
                         }
                     } catch {
@@ -13116,156 +13148,12 @@ struct FloatingCommentView: View {
             // Update indicators when inbox count refreshes
             updateUnreadIndicators()
         }
-        .onReceive(websocketService.$inboxNotification) { notification in
-            // When ANY inbox notification arrives (including private_message), update indicators
-            // This ensures indicator and orange highlights appear immediately
-            if let notification = notification {
-                print("🔔 [FloatingCommentView] Received inbox notification: \(notification.notificationType ?? "unknown")")
-                // Update indicators from unread counts (single source of truth)
-                updateUnreadIndicators()
-            }
-        }
-            // Handle WebSocket comment notifications - reload unread counts when new private message arrives
-            .onReceive(websocketService.$commentNotification) { notification in
-                guard let notification = notification,
-                      normalizeVideoId(notification.videoId) == normalizeVideoId(content.SK),
-                      notification.isPrivate,
-                      let parentCommentId = notification.parentCommentId else { return }
-                
-                print("📬 [FloatingCommentView] Received WebSocket private message notification for thread: \(parentCommentId)")
-                
-                // Check if this thread is currently selected (if so, don't mark as unread)
-                let isCurrentlySelected = selectedThreadId == parentCommentId
-                
-                if !isCurrentlySelected {
-                    // Reload unread counts to get latest status from server
-                    Task {
-                        try? await messagingService.loadUnreadCounts(for: content.SK)
-                        await MainActor.run {
-                            // Update cached user threads with latest unread status
-                            messagingService.updateCachedUserThreads(for: content.SK)
-                            cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
-                            
-                            // Sync thread unread status
-                            for threadId in privateThreads.keys {
-                                let key = "\(content.SK)_\(threadId)"
-                                threadUnreadStatus[threadId] = messagingService.threadUnreadStatus[key] == true
-                            }
-                            
-                            print("🔔 [FloatingCommentView] Updated unread status after WebSocket notification")
-                        }
-                    }
-                }
-                
-                // Reload messages to get the new comment
-                loadComments()
-            }
-            // FASTEST APPROACH: Handle simple indicator notifications (show/clear)
-            .onReceive(websocketService.$privateMessageIndicatorNotification) { notification in
-                // CRITICAL: Ignore nil notifications (initial state or reset)
-                guard let notification = notification else {
-                    return
-                }
-                
-                // CRITICAL: Normalize both videoIds for comparison (backend sends normalized, content.SK may have FILE# prefix)
-                let normalizedNotificationVideoId = normalizeVideoId(notification.videoId)
-                let normalizedContentSK = normalizeVideoId(content.SK)
-                
-                print("🔔 [FloatingCommentView] Received private_message_indicator: action=\(notification.action), videoId=\(normalizedNotificationVideoId), currentVideoId=\(normalizedContentSK), threadId=\(notification.threadId ?? "none")")
-                
-                guard normalizedNotificationVideoId == normalizedContentSK else {
-                    print("⚠️ [FloatingCommentView] VideoId mismatch, ignoring indicator")
-                    return
-                }
-                
-                if notification.action == "show" {
-                    print("✅ [FloatingCommentView] Showing indicator for thread: \(notification.threadId ?? "none")")
-                    // Show indicator immediately
-                    if let threadId = notification.threadId {
-                        let key = "\(content.SK)_\(threadId)"
-                        threadUnreadStatus[threadId] = true
-                        messagingService.threadUnreadStatus[key] = true
-                    }
-                    
-                    // Update cached user threads to show orange highlight
-                    messagingService.updateCachedUserThreads(for: content.SK)
-                    cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
-                    
-                    // Show red badge
-                    NotificationCenter.default.post(
-                        name: NSNotification.Name("CommentsViewed"),
-                        object: nil,
-                        userInfo: [
-                            "videoId": content.SK,
-                            "unreadCount": 1
-                        ]
-                    )
-                    
-                } else if notification.action == "clear" {
-                    // Clear indicator immediately
-                    if let threadId = notification.threadId {
-                        let key = "\(content.SK)_\(threadId)"
-                        threadUnreadStatus[threadId] = false
-                        messagingService.threadUnreadStatus[key] = false
-                    }
-                    
-                    // Update cached user threads to remove orange highlight
-                    messagingService.updateCachedUserThreads(for: content.SK)
-                    cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
-                    
-                    // Check if all threads are read
-                    let hasAnyUnread = threadUnreadStatus.values.contains(true)
-                    if !hasAnyUnread {
-                        // Clear red badge
-                        NotificationCenter.default.post(
-                            name: NSNotification.Name("CommentsViewed"),
-                            object: nil,
-                            userInfo: [
-                                "videoId": content.SK,
-                                "unreadCount": 0
-                            ]
-                        )
-                    }
-                    
-                }
-            }
-            // Handle WebSocket unread count updates - update indicators immediately
-            .onReceive(websocketService.$unreadCountUpdateNotification) { notification in
-                guard let notification = notification else {
-                    return
-                }
-                
-                guard normalizeVideoId(notification.videoId) == normalizeVideoId(content.SK) else {
-                    return
-                }
-                
-                // Update MessagingService unreadCounts (for ContentCard badge)
-                messagingService.unreadCounts[content.SK] = notification.totalUnread
-                
-                // Update thread unread status from notification
-                for (threadId, count) in notification.threadUnreadCounts {
-                    let key = "\(content.SK)_\(threadId)"
-                    let hasUnread = count > 0
-                    threadUnreadStatus[threadId] = hasUnread
-                    messagingService.threadUnreadStatus[key] = hasUnread
-                }
-                
-                // Update cached user threads to show/hide orange highlights
-                messagingService.updateCachedUserThreads(for: content.SK)
-                cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
-                
-                // CRITICAL: Notify ContentCard to update red badge indicator
-                NotificationCenter.default.post(
-                    name: NSNotification.Name("CommentsViewed"),
-                    object: nil,
-                    userInfo: [
-                        "videoId": content.SK,
-                        "unreadCount": notification.totalUnread
-                    ]
-                )
-                
-                print("🔔 [FloatingCommentView] Updated orange highlights and red badge from unread count update")
-            }
+        // REMOVED: WebSocket handlers for indicator updates - indicator now only updates via API calls
+        // The indicator is updated via:
+        // 1. postComment() - after posting a message (with delay for backend processing)
+        // 2. updateUnreadIndicators() - called on view appear and when needed
+        // 3. API polling in loadUnreadCounts() - backend is source of truth
+            // Simple polling fallback - WebSocket is optional
             // WebSocket updates are handled by MessagingService
             // When MessagingService receives WebSocket notifications, it updates its state
             // and FloatingCommentView syncs via loadComments() which is called automatically
@@ -13385,9 +13273,9 @@ struct FloatingCommentView: View {
                                                         }
                                                         
                                                         let unreadCount = threadsWithUnread.count > 0 ? 1 : 0
-                                                        messagingService.unreadCounts[content.SK] = unreadCount
-                                                        
                                                         let normalizedVideoId = normalizeVideoId(content.SK)
+                                                        messagingService.unreadCounts[normalizedVideoId] = unreadCount
+                                                        
                                                         NotificationCenter.default.post(
                                                             name: NSNotification.Name("CommentsViewed"),
                                                             object: nil,
@@ -13432,53 +13320,56 @@ struct FloatingCommentView: View {
     // SIMPLE: Use unread counts as SINGLE source of truth for indicator and orange highlights
     // This ensures they're ALWAYS in sync - no complex notification checking
     private func updateUnreadIndicators() {
-        guard authService.userEmail != nil else { return }
+        print("🔍 [FloatingCommentView] ========== updateUnreadIndicators CALLED ==========")
+        print("   videoId: \(content.SK)")
+        
+        guard let userEmail = authService.userEmail else {
+            print("   ⚠️ No userEmail - returning early")
+            return
+        }
+        
+        print("   ✅ userEmail: \(userEmail)")
+        print("   📡 Calling messagingService.loadUnreadCounts...")
+        
+        // Get previous value BEFORE loadUnreadCounts updates it (to detect changes)
+        let normalizedVideoId = normalizeVideoId(content.SK)
+        let previousUnreadCount = messagingService.unreadCounts[normalizedVideoId] ?? 0
         
         Task {
             do {
                 try await messagingService.loadUnreadCounts(for: content.SK)
+                print("   ✅ loadUnreadCounts completed successfully")
                 
                 await MainActor.run {
                     messagingService.updateCachedUserThreads(for: content.SK)
                     cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
                     
-                    // Filter out self-conversations
-                    let currentUsername = authService.username ?? ""
-                    let normalizedCurrentUsername = currentUsername.lowercased().trimmingCharacters(in: .whitespaces)
-                    let threadsWithUnread = cachedUserThreads.filter { threadInfo in
-                        let normalizedThreadUsername = threadInfo.username.lowercased().trimmingCharacters(in: .whitespaces)
-                        let isNotSelf = normalizedThreadUsername != normalizedCurrentUsername
-                        return threadInfo.hasUnread && isNotSelf
-                    }
+                    // SIMPLE: Use API count directly - if API says > 0, show indicator as 1
+                    // Don't check highlights - just use the API count from loadUnreadCounts
+                    let actualUnreadCount = messagingService.unreadCounts[normalizedVideoId] ?? 0
+                    let finalUnreadCount = actualUnreadCount > 0 ? 1 : 0
                     
-                    // CRITICAL: Indicator and orange highlights are ALWAYS in sync
-                    let unreadCount = threadsWithUnread.count > 0 ? 1 : 0
-                    messagingService.unreadCounts[content.SK] = unreadCount
-                    
-                    let normalizedVideoId = normalizeVideoId(content.SK)
+                    // Only update and post notification if value actually changed (prevents flickering)
+                    if finalUnreadCount != previousUnreadCount {
+                        messagingService.unreadCounts[normalizedVideoId] = finalUnreadCount
                     NotificationCenter.default.post(
                         name: NSNotification.Name("CommentsViewed"),
                         object: nil,
                         userInfo: [
-                            "videoId": normalizedVideoId,
-                            "unreadCount": unreadCount
+                            "videoId": content.SK,
+                            "unreadCount": finalUnreadCount
                         ]
                     )
+                        print("   ✅ Updated indicator: \(finalUnreadCount) (was \(previousUnreadCount)), API count: \(actualUnreadCount)")
+                    } else {
+                        print("   ⏭️ Skipped indicator update: value unchanged (\(finalUnreadCount)), API count: \(actualUnreadCount)")
+                    }
                 }
             } catch {
                 print("❌ [FloatingCommentView] Error updating indicators: \(error.localizedDescription)")
-                await MainActor.run {
-                    messagingService.unreadCounts[content.SK] = 0
-                    let normalizedVideoId = normalizeVideoId(content.SK)
-                    NotificationCenter.default.post(
-                        name: NSNotification.Name("CommentsViewed"),
-                        object: nil,
-                        userInfo: [
-                            "videoId": normalizedVideoId,
-                            "unreadCount": 0
-                        ]
-                    )
-                }
+                print("   Error details: \(error)")
+                // CRITICAL: Don't clear indicator on error - preserve existing value to prevent flickering
+                // Only clear when user actually clicks the highlighted username
             }
         }
     }
@@ -14245,6 +14136,43 @@ struct FloatingCommentView: View {
                     }
                     
                     cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                    
+                    // PATTERN: FLOATINGCOMMENTVIEW PATTERN - Optimistic updates for indicator and highlight
+                    // IMMEDIATE: Update indicator and highlight right away (same as comment appears immediately)
+                    // PERSISTENCE: State persists until explicitly cleared (same as comments persist)
+                    if let threadId = selectedThreadId {
+                        let videoId = content.SK
+                        let normalizedVideoId = normalizeVideoId(videoId)
+                        let key = "\(normalizedVideoId)_\(threadId)"
+                        
+                        // STEP 1: OPTIMISTIC UPDATE - Set highlight IMMEDIATELY (synchronous, no await)
+                        // Same pattern as optimistic comment - appears instantly
+                        // Find the OTHER participant (recipient) and highlight their thread
+                        if let recipientThread = cachedUserThreads.first(where: { $0.id == threadId }) {
+                            let recipientUsername = recipientThread.username
+                            let currentUsername = authService.username ?? ""
+                            
+                            // Only highlight if it's NOT the current user (can't highlight yourself)
+                            if recipientUsername.lowercased() != currentUsername.lowercased() {
+                                // CRITICAL: Set threadUnreadStatus IMMEDIATELY (this is what updateCachedUserThreads reads)
+                                // Same pattern as optimistic comment - update state immediately
+                                messagingService.threadUnreadStatus[key] = true
+                                
+                                // Update cached user threads IMMEDIATELY (reads from threadUnreadStatus)
+                                // This makes the highlight appear instantly (same as comment appears instantly)
+                                messagingService.updateCachedUserThreads(for: videoId)
+                                cachedUserThreads = messagingService.getCachedUserThreads(for: videoId)
+                                
+                                print("✅ [FloatingCommentView] OPTIMISTIC: Highlighted '\(recipientUsername)' IMMEDIATELY (key: \(key))")
+                            }
+                        }
+                        
+                        // NOTE: Don't set indicator for sender - indicator should only show for recipient
+                        // The recipient will receive a backend notification and see the indicator
+                        // Backend sends unread_count_update to recipient
+                        print("✅ [FloatingCommentView] Private message posted - recipient will receive indicator via backend notification, videoId: \(videoId)")
+                    }
+                    
                     isPosting = false
                     
                     // Scroll to bottom
@@ -14255,35 +14183,72 @@ struct FloatingCommentView: View {
                     )
                 }
                 
-                // For private threads: Update unread counts after posting
-                // CRITICAL: This is the PRIMARY way indicators are shown - works even if recipient isn't online
-                // WebSocket is just for real-time updates when both users are online
-                if selectedThreadId != nil {
-                    Task.detached {
-                        // Wait a bit for backend to process the message and mark it as unread
-                        try? await Task.sleep(nanoseconds: 1000_000_000) // 1.0s delay
+                // PATTERN: FLOATINGCOMMENTVIEW PATTERN - Silent backend verification
+                // Verify with backend in background (non-blocking, doesn't affect UI)
+                // Same pattern as comment - optimistic appears immediately, backend verifies silently
+                if let threadId = selectedThreadId {
+                    let videoId = content.SK
+                    
+                    Task.detached { [videoId, threadId] in
+                        // Wait for backend to save the message (same delay as comment verification)
+                        try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
                         
-                        // CRITICAL: Use updateUnreadIndicators() to ensure orange highlights update correctly
-                        // This calls loadUnreadCounts AND updateCachedUserThreads in the right order
-                        await MainActor.run {
-                            updateUnreadIndicators()
-                        }
-                    }
-                }
-                
-                // Update red badge immediately (optimistic)
-                Task.detached {
+                        do {
+                            // Verify with backend (silent update - doesn't affect UI if already correct)
+                            // Same pattern as comment - backend replaces optimistic silently
+                            try await messagingService.loadUnreadCounts(for: videoId)
+                            
                     await MainActor.run {
-                        let unreadCount = messagingService.getUnreadCount(for: content.SK)
-                        NotificationCenter.default.post(
-                            name: NSNotification.Name("CommentsViewed"),
-                            object: nil,
-                            userInfo: [
-                                "videoId": content.SK,
-                                "unreadCount": unreadCount
-                            ]
-                        )
-                        print("✅ [FloatingCommentView] Updated unread counts after posting: \(unreadCount) unread")
+                                let normalizedVideoId = normalizeVideoId(videoId)
+                                let apiUnreadCount = messagingService.getUnreadCount(for: videoId)
+                                let unreadCount = apiUnreadCount > 0 ? 1 : 0
+                                
+                                // CRITICAL: Don't clear optimistic update if backend says 0 (sender case)
+                                // Only update if backend says there ARE unread messages (recipient case)
+                                // This preserves bidirectional indicator - sender keeps seeing it
+                                let currentIndicator = messagingService.unreadCounts[normalizedVideoId] ?? 0
+                                if unreadCount > 0 {
+                                    // Backend says there are unread - update to 1 (recipient case)
+                                    if currentIndicator != 1 {
+                                        messagingService.unreadCounts[normalizedVideoId] = 1
+                                        
+                                        // Post notification to sync
+                                        NotificationCenter.default.post(
+                                            name: NSNotification.Name("CommentsViewed"),
+                                            object: nil,
+                                            userInfo: [
+                                                "videoId": videoId,
+                                                "unreadCount": 1
+                                            ]
+                                        )
+                                        
+                                        print("✅ [FloatingCommentView] VERIFIED: Indicator set to 1 (recipient has unread, API: \(apiUnreadCount))")
+                                    }
+                                } else {
+                                    // Backend says 0 - keep current indicator (don't clear optimistic update for sender)
+                                    // This ensures bidirectional - sender keeps seeing indicator
+                                    if currentIndicator == 1 {
+                                        print("✅ [FloatingCommentView] VERIFIED: Keeping indicator at 1 (sender case, API: \(apiUnreadCount))")
+                                    }
+                                }
+                                
+                                // Verify highlight with backend (silent update)
+                                // Update threadUnreadStatus from backend response
+                                let key = "\(normalizedVideoId)_\(threadId)"
+                                let hasUnreadFromBackend = messagingService.threadUnreadStatus[key] == true
+                                
+                                // Only update if different (prevents unnecessary UI updates)
+                                // Note: cachedUserThreads will update automatically via @ObservedObject messagingService
+                                if messagingService.threadUnreadStatus[key] != hasUnreadFromBackend {
+                                    messagingService.threadUnreadStatus[key] = hasUnreadFromBackend
+                                    messagingService.updateCachedUserThreads(for: videoId)
+                                    
+                                    print("✅ [FloatingCommentView] VERIFIED: Highlight synced with backend: \(hasUnreadFromBackend) for key: \(key)")
+                                }
+                            }
+                        } catch {
+                            print("❌ [FloatingCommentView] Failed to verify with backend: \(error)")
+                        }
                     }
                 }
             } catch {

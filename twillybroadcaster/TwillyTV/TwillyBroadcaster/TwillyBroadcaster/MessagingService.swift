@@ -210,9 +210,13 @@ class MessagingService: ObservableObject {
         print("   VideoId: \(videoId)")
         print("   Threads to process: \(threadToOtherParticipant.count)")
         print("   📋 Thread IDs from privateThreads: \(threadToOtherParticipant.keys.joined(separator: ", "))")
+        print("   📋 Thread ID → Username mapping: \(threadToOtherParticipant.map { "\($0.key):\($0.value)" }.joined(separator: ", "))")
         
-        let allThreadUnreadKeys = threadUnreadStatus.keys.filter { $0.hasPrefix("\(videoId)_") }
+        // CRITICAL: Always use normalized videoId for threadUnreadStatus keys (consistent with backend)
+        let normalizedVideoId = normalizeVideoId(videoId)
+        let allThreadUnreadKeys = threadUnreadStatus.keys.filter { $0.hasPrefix("\(normalizedVideoId)_") }
         print("   🔑 Available threadUnreadStatus keys for this video: \(allThreadUnreadKeys.count)")
+        print("   🔑 Looking for keys with prefix: '\(normalizedVideoId)_'")
         if !allThreadUnreadKeys.isEmpty {
             print("   🔑 Keys: \(allThreadUnreadKeys.joined(separator: ", "))")
             // Show values for each key
@@ -222,10 +226,28 @@ class MessagingService: ObservableObject {
             }
         } else {
             print("   ⚠️ NO threadUnreadStatus keys found for this video!")
+            // Show all available keys for debugging
+            let allKeys = Array(threadUnreadStatus.keys)
+            if !allKeys.isEmpty {
+                print("   🔍 All available threadUnreadStatus keys: \(allKeys.prefix(10).joined(separator: ", "))")
+            }
+        }
+        
+        // CRITICAL: Check for thread ID mismatches
+        let expectedThreadIds = Set(threadToOtherParticipant.keys)
+        let unreadThreadIds = Set(allThreadUnreadKeys.map { $0.replacingOccurrences(of: "\(normalizedVideoId)_", with: "") })
+        let missingThreadIds = expectedThreadIds.subtracting(unreadThreadIds)
+        let extraThreadIds = unreadThreadIds.subtracting(expectedThreadIds)
+        if !missingThreadIds.isEmpty {
+            print("   ⚠️ WARNING: Thread IDs in privateThreads but NOT in threadUnreadStatus: \(missingThreadIds.joined(separator: ", "))")
+        }
+        if !extraThreadIds.isEmpty {
+            print("   ⚠️ WARNING: Thread IDs in threadUnreadStatus but NOT in privateThreads: \(extraThreadIds.joined(separator: ", "))")
         }
         
         for (threadId, otherParticipantUsername) in threadToOtherParticipant {
-            let key = "\(videoId)_\(threadId)"
+            // Always use normalized videoId for keys (consistent with backend)
+            let key = "\(normalizedVideoId)_\(threadId)"
             let hasUnread = threadUnreadStatus[key] == true
             if hasUnread {
                 print("   ✅ Thread \(threadId) (user: \(otherParticipantUsername)): HAS UNREAD (key: \(key))")
@@ -289,12 +311,32 @@ class MessagingService: ObservableObject {
                     privateThreads[videoId]?[threadId] = []
                 }
                 privateThreads[videoId]?[threadId]?.append(optimisticComment)
+                
+                // CRITICAL: Post CommentsViewed notification for RECIPIENT (not sender)
+                // Backend will send notification to recipient, but we post here for immediate update
+                // The notification will be received by the recipient's ContentCard and show the indicator
+                let normalizedVideoId = normalizeVideoId(videoId)
+                // Don't set unreadCounts here - recipient will get it via backend notification
+                // Just log that message was posted
+                print("📢 [MessagingService] Private message posted, recipient will receive indicator via backend notification, videoId: \(videoId)")
             } else {
                 // Public comment (general chat)
                 if publicComments[videoId] == nil {
                     publicComments[videoId] = []
                 }
                 publicComments[videoId]?.append(optimisticComment)
+                
+                // CRITICAL: Post NewCommentPosted notification IMMEDIATELY (optimistic update)
+                // This ensures ContentCard updates count instantly, matching FloatingCommentView
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("NewCommentPosted"),
+                    object: nil,
+                    userInfo: [
+                        "videoId": videoId,
+                        "isPrivate": false
+                    ]
+                )
+                print("📢 [MessagingService] Posted NewCommentPosted notification IMMEDIATELY (optimistic) for videoId: \(videoId)")
             }
             
             // Update cached user threads immediately (no flash, no cache save - save after server response)
@@ -310,11 +352,30 @@ class MessagingService: ObservableObject {
                         privateThreads[videoId]?[threadId] = []
                     }
                     privateThreads[videoId]?[threadId]?.append(optimisticComment)
+                    
+                    // CRITICAL: Post CommentsViewed notification for RECIPIENT (not sender)
+                    // Backend will send notification to recipient, but we post here for immediate update
+                    // The notification will be received by the recipient's ContentCard and show the indicator
+                    let normalizedVideoId = normalizeVideoId(videoId)
+                    // Don't set unreadCounts here - recipient will get it via backend notification
+                    // Just log that message was posted
+                    print("📢 [MessagingService] Private message posted, recipient will receive indicator via backend notification, videoId: \(videoId)")
                 } else {
                     if publicComments[videoId] == nil {
                         publicComments[videoId] = []
                     }
                     publicComments[videoId]?.append(optimisticComment)
+                    
+                    // CRITICAL: Post NewCommentPosted notification IMMEDIATELY (optimistic update)
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NewCommentPosted"),
+                        object: nil,
+                        userInfo: [
+                            "videoId": videoId,
+                            "isPrivate": false
+                        ]
+                    )
+                    print("📢 [MessagingService] Posted NewCommentPosted notification IMMEDIATELY (optimistic) for videoId: \(videoId)")
                 }
                 updateCachedUserThreads(for: videoId)
             }
@@ -368,6 +429,10 @@ class MessagingService: ObservableObject {
                     // No comments yet - create array
                     publicComments[videoId] = [comment]
                 }
+                
+                // NOTE: NewCommentPosted notification was already posted when optimistic comment was added
+                // This ensures ContentCard updates immediately, matching FloatingCommentView
+                // No need to post again here - it was posted optimistically above
             }
             
             // Update cached user threads
@@ -444,7 +509,9 @@ class MessagingService: ObservableObject {
         
         // Optimistic update - immediate UI feedback
         await MainActor.run {
-            let key = "\(videoId)_\(threadId)"
+            // Always use normalized videoId for keys (consistent with backend)
+            let normalizedVideoId = normalizeVideoId(videoId)
+            let key = "\(normalizedVideoId)_\(threadId)"
             threadUnreadStatus[key] = false
             updateCachedUserThreads(for: videoId)
         }
@@ -462,56 +529,55 @@ class MessagingService: ObservableObject {
     
     /// Load unread counts for a video
     func loadUnreadCounts(for videoId: String) async throws {
+        print("🔍 [MessagingService] ========== loadUnreadCounts CALLED ==========")
+        print("   videoId: \(videoId)")
+        
         guard let viewerEmail = authService.userEmail else {
             print("⚠️ [MessagingService] Cannot load unread counts - no user email")
             return
         }
         
+        print("   viewerEmail: \(viewerEmail)")
+        
         do {
+            print("   📡 Calling getUnreadCommentCountsDetailed...")
             let counts = try await ChannelService.shared.getUnreadCommentCountsDetailed(
                 videoIds: [videoId],
                 viewerEmail: viewerEmail
             )
             
+            print("   ✅ Received response from backend")
+            print("   📦 Response keys: \(counts.keys.joined(separator: ", "))")
+            print("   📦 Full response: \(counts)")
+            
             await MainActor.run {
-                // Try all possible videoId formats (original, normalized, file part)
-                var videoResponse: Any? = counts[videoId]
+                // CRITICAL: Backend always normalizes videoId (strips FILE# and file- prefixes)
+                // So we must normalize our lookup key to match
+                let normalizedLookupKey = normalizeVideoId(videoId)
                 
-                if videoResponse == nil {
-                    let normalizedVideoId = videoId.replacingOccurrences(of: "FILE#file-", with: "file-").replacingOccurrences(of: "FILE#", with: "")
-                    videoResponse = counts[normalizedVideoId]
-                    if videoResponse == nil {
-                        let filePart = videoId.replacingOccurrences(of: "FILE#file-", with: "").replacingOccurrences(of: "FILE#", with: "")
-                        videoResponse = counts[filePart]
-                    }
-                }
+                print("   🔑 Original videoId: \(videoId)")
+                print("   🔑 Normalized lookup key: \(normalizedLookupKey)")
+                print("   🔑 Available keys in response: \(counts.keys.joined(separator: ", "))")
                 
-                // If still not found, try matching by normalized comparison
-                if videoResponse == nil {
-                    let normalizedVideoId = videoId.replacingOccurrences(of: "FILE#file-", with: "file-").replacingOccurrences(of: "FILE#", with: "")
-                    for (key, value) in counts {
-                        let normalizedKey = key.replacingOccurrences(of: "FILE#file-", with: "file-").replacingOccurrences(of: "FILE#", with: "")
-                        if normalizedKey == normalizedVideoId {
-                            videoResponse = value
-                            break
-                        }
-                    }
-                }
-                
-                guard let videoResponse = videoResponse else {
-                    print("❌ [MessagingService] No response for videoId: \(videoId)")
+                // Backend returns response with normalized videoId as key
+                guard let videoResponse = counts[normalizedLookupKey] else {
+                    print("❌ [MessagingService] No response for normalized videoId: \(normalizedLookupKey)")
+                    print("   Original videoId: \(videoId)")
                     print("   Available keys in counts: \(counts.keys.joined(separator: ", "))")
                     return
                 }
                 
                 // Parse response
+                // CRITICAL: Always use normalized videoId for unreadCounts keys (consistent with backend)
+                let normalizedVideoIdForCounts = normalizeVideoId(videoId)
+                
                 if let intValue = videoResponse as? Int {
-                    print("📊 [MessagingService] Unread count (Int format): \(intValue) for videoId: \(videoId)")
-                    unreadCounts[videoId] = intValue
+                    print("📊 [MessagingService] Unread count (Int format): \(intValue) for videoId: \(videoId) (normalized: \(normalizedVideoIdForCounts))")
+                    unreadCounts[normalizedVideoIdForCounts] = intValue
                 } else if let dictValue = videoResponse as? [String: Any] {
                     let total = dictValue["total"] as? Int ?? 0
-                    unreadCounts[videoId] = total
-                    print("📊 [MessagingService] Unread count (dict format): total=\(total) for videoId: \(videoId)")
+                    unreadCounts[normalizedVideoIdForCounts] = total
+                    print("📊 [MessagingService] Unread count (dict format): total=\(total) for videoId: \(videoId) (normalized: \(normalizedVideoIdForCounts))")
                     
                     // CRITICAL: Always process threads dictionary
                     print("\n📊 [MessagingService] ========== PARSING BACKEND RESPONSE ==========")
@@ -522,22 +588,38 @@ class MessagingService: ObservableObject {
                     if let threads = dictValue["threads"] as? [String: Int] {
                         print("   ✅ Found threads dictionary with \(threads.count) threads")
                         print("   📋 Thread IDs from backend: \(threads.keys.joined(separator: ", "))")
+                        print("   📋 Thread counts from backend: \(threads.map { "\($0.key):\($0.value)" }.joined(separator: ", "))")
                         
                         if threads.isEmpty {
                             print("   ⚠️ WARNING: threads dictionary is EMPTY even though total=\(total)")
                         }
                         
+                        // CRITICAL: Log what thread IDs we have in privateThreads for comparison
+                        let privateThreadIds = Set((privateThreads[videoId] ?? [:]).keys)
+                        print("   📋 Thread IDs in privateThreads: \(privateThreadIds.joined(separator: ", "))")
+                        
+                        // CRITICAL: Always use normalized videoId for threadUnreadStatus keys (consistent with backend)
+                        let normalizedVideoId = normalizeVideoId(videoId)
+                        
                         for (threadId, count) in threads {
-                            let key = "\(videoId)_\(threadId)"
+                            // Always use normalized videoId for keys (backend normalizes, so we must too)
+                            let key = "\(normalizedVideoId)_\(threadId)"
                             let previousValue = threadUnreadStatus[key]
                             threadUnreadStatus[key] = count > 0
+                            
+                            // Check if this threadId exists in privateThreads
+                            let existsInPrivateThreads = privateThreadIds.contains(threadId)
+                            if !existsInPrivateThreads {
+                                print("   ⚠️ WARNING: Backend returned threadId '\(threadId)' that doesn't exist in privateThreads!")
+                            }
+                            
                             if count > 0 {
-                                print("   🔴 Thread \(threadId): \(count) unread → key: \(key) (was: \(previousValue ?? false))")
+                                print("   🔴 Thread \(threadId): \(count) unread → key: \(key) (was: \(previousValue ?? false), exists in privateThreads: \(existsInPrivateThreads))")
                             } else {
-                                print("   ⚪ Thread \(threadId): 0 unread → key: \(key) (was: \(previousValue ?? false))")
+                                print("   ⚪ Thread \(threadId): 0 unread → key: \(key) (was: \(previousValue ?? false), exists in privateThreads: \(existsInPrivateThreads))")
                             }
                         }
-                        let matchingKeys = threadUnreadStatus.keys.filter { $0.hasPrefix("\(videoId)_") }
+                        let matchingKeys = threadUnreadStatus.keys.filter { $0.hasPrefix("\(normalizedVideoId)_") }
                         print("   🔑 Total threadUnreadStatus keys after update: \(matchingKeys.count)")
                         if matchingKeys.count > 0 {
                             print("   🔑 Keys: \(matchingKeys.joined(separator: ", "))")
@@ -584,15 +666,23 @@ class MessagingService: ObservableObject {
                 object: nil,
                 userInfo: [
                     "videoId": normalizedVideoId,
-                    "unreadCount": unreadCounts[videoId] ?? 0
+                    "unreadCount": unreadCounts[normalizedVideoId] ?? 0
                 ]
             )
         }
     }
     
     // Helper to normalize videoId (consistent with ContentCard)
+    // Helper to normalize videoId (matches backend exactly: strips FILE# first, then file-)
     private func normalizeVideoId(_ videoId: String) -> String {
-        return videoId.replacingOccurrences(of: "FILE#file-", with: "file-").replacingOccurrences(of: "FILE#", with: "")
+        var normalized = videoId
+        if normalized.hasPrefix("FILE#") {
+            normalized = String(normalized.dropFirst(5)) // Remove "FILE#"
+        }
+        if normalized.hasPrefix("file-") {
+            normalized = String(normalized.dropFirst(5)) // Remove "file-"
+        }
+        return normalized
     }
     
     /// Clear all cache - SERVER IS SOURCE OF TRUTH
@@ -688,12 +778,16 @@ class MessagingService: ObservableObject {
     
     /// Get unread count for a video
     func getUnreadCount(for videoId: String) -> Int {
-        return unreadCounts[videoId] ?? 0
+        // CRITICAL: Always use normalized videoId for lookup (consistent with how we store)
+        let normalizedVideoId = normalizeVideoId(videoId)
+        return unreadCounts[normalizedVideoId] ?? 0
     }
     
     /// Check if thread has unread messages
     func hasUnreadThread(videoId: String, threadId: String) -> Bool {
-        let key = "\(videoId)_\(threadId)"
+        // Always use normalized videoId for keys (consistent with backend)
+        let normalizedVideoId = normalizeVideoId(videoId)
+        let key = "\(normalizedVideoId)_\(threadId)"
         return threadUnreadStatus[key] == true
     }
     
@@ -729,8 +823,85 @@ class MessagingService: ObservableObject {
         websocketService.$commentNotification
             .compactMap { $0 }
             .sink { [weak self] notification in
+                guard let self = self else { return }
+                
+                // PATTERN: FLOATINGCOMMENTVIEW PATTERN - Optimistic update for indicator
+                // IMMEDIATE: Update indicator and highlight right away when receiving private message
+                // This ensures bidirectional indicators - recipient sees it instantly
+                if let isPrivate = notification.isPrivate, isPrivate,
+                   let threadId = notification.threadId {
+                    let videoId = notification.videoId
+                    let normalizedVideoId = normalizeVideoId(videoId)
+                    let key = "\(normalizedVideoId)_\(threadId)"
+                    
+                    // STEP 1: OPTIMISTIC UPDATE - Set indicator and highlight IMMEDIATELY (synchronous)
+                    // Same pattern as when posting - appears instantly
+                    DispatchQueue.main.async {
+                        // Set indicator to 1 immediately (recipient has unread message)
+                        self.unreadCounts[normalizedVideoId] = 1
+                        
+                        // Set highlight immediately (thread has unread)
+                        self.threadUnreadStatus[key] = true
+                        
+                        // Update cached user threads immediately (reads from threadUnreadStatus)
+                        self.updateCachedUserThreads(for: videoId)
+                        
+                        // Post notification IMMEDIATELY to update ContentCard
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("CommentsViewed"),
+                            object: nil,
+                            userInfo: [
+                                "videoId": videoId,
+                                "unreadCount": 1 // Optimistic: recipient has unread message
+                            ]
+                        )
+                        
+                        print("✅ [MessagingService] OPTIMISTIC: Updated indicator and highlight IMMEDIATELY on receive (videoId: \(videoId), threadId: \(threadId))")
+                    }
+                }
+                
+                // STEP 2: Load messages from server (silent update in background)
+                // Same pattern as when posting - backend verifies silently
                 Task {
-                    try? await self?.loadMessages(for: notification.videoId) // This will save to cache automatically
+                    try? await self.loadMessages(for: notification.videoId) // This will save to cache automatically
+                    
+                    // Verify with backend (silent update - doesn't affect UI if already correct)
+                    try? await self.loadUnreadCounts(for: notification.videoId)
+                    
+                    await MainActor.run {
+                        let normalizedVideoId = normalizeVideoId(notification.videoId)
+                        let apiUnreadCount = self.getUnreadCount(for: notification.videoId)
+                        let unreadCount = apiUnreadCount > 0 ? 1 : 0
+                        
+                        // CRITICAL: Don't clear optimistic update if backend says 0 (sender case)
+                        // Only update if backend says there ARE unread messages (recipient case)
+                        // This preserves bidirectional indicator - sender keeps seeing it
+                        let currentIndicator = self.unreadCounts[normalizedVideoId] ?? 0
+                        if unreadCount > 0 {
+                            // Backend says there are unread - update to 1 (recipient case)
+                            if currentIndicator != 1 {
+                                self.unreadCounts[normalizedVideoId] = 1
+                                
+                                // Post notification to sync
+                                NotificationCenter.default.post(
+                                    name: NSNotification.Name("CommentsViewed"),
+                                    object: nil,
+                                    userInfo: [
+                                        "videoId": notification.videoId,
+                                        "unreadCount": 1
+                                    ]
+                                )
+                                
+                                print("✅ [MessagingService] VERIFIED: Indicator set to 1 (recipient has unread, API: \(apiUnreadCount))")
+                            }
+                        } else {
+                            // Backend says 0 - keep current indicator (don't clear optimistic update for sender)
+                            // This ensures bidirectional - sender keeps seeing indicator
+                            if currentIndicator == 1 {
+                                print("✅ [MessagingService] VERIFIED: Keeping indicator at 1 (sender case, API: \(apiUnreadCount))")
+                            }
+                        }
+                    }
                 }
             }
             .store(in: &cancellables)
