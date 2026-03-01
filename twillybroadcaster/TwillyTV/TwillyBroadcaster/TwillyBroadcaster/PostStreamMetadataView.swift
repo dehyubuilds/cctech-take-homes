@@ -62,7 +62,7 @@ struct PostStreamMetadataView: View {
                                     .scaleEffect(1.5)
                             }
                             
-                            Text(videoReady ? "Stream Ready!" : "Processing Stream...")
+                            Text(videoReady ? "Drop Ready!" : "Processing Drop...")
                                 .font(.title)
                                 .fontWeight(.bold)
                                 .foregroundStyle(
@@ -79,7 +79,7 @@ struct PostStreamMetadataView: View {
                                 .shadow(color: Color.twillyCyan.opacity(0.5), radius: 4, x: 0, y: 2)
                             
                             if !videoReady {
-                                Text("Enter details below - they'll be saved when video is ready")
+                                Text("Enter details below - they'll be saved when Drop is ready")
                                     .font(.subheadline)
                                     .foregroundColor(.white.opacity(0.7))
                                     .multilineTextAlignment(.center)
@@ -87,11 +87,11 @@ struct PostStreamMetadataView: View {
                             }
                             
                             if let channelName = channelName {
-                                Text("Add details for your video in \(channelName)")
+                                Text("Add details for your Drop in \(channelName)")
                                     .font(.subheadline)
                                     .foregroundColor(.white.opacity(0.6))
                             } else {
-                                Text("Add details for your video")
+                                Text("Add details for your Drop")
                                     .font(.subheadline)
                                     .foregroundColor(.white.opacity(0.6))
                             }
@@ -105,7 +105,7 @@ struct PostStreamMetadataView: View {
                                 Text("Title")
                                     .font(.headline)
                                     .foregroundColor(.white)
-                                TextField("Enter video title", text: $title)
+                                TextField("Enter Drop title", text: $title)
                                     .padding(12)
                                     .background(Color.white.opacity(0.15))
                                     .cornerRadius(8)
@@ -115,6 +115,12 @@ struct PostStreamMetadataView: View {
                                         RoundedRectangle(cornerRadius: 8)
                                             .stroke(Color.white.opacity(0.3), lineWidth: 1)
                                     )
+                                    .onChange(of: title) { newValue in
+                                        // Limit to 50 characters to fit on one line
+                                        if newValue.count > 50 {
+                                            title = String(newValue.prefix(50))
+                                        }
+                                    }
                             }
                             
                             // Description
@@ -124,7 +130,7 @@ struct PostStreamMetadataView: View {
                                     .foregroundColor(.white)
                                 ZStack(alignment: .topLeading) {
                                     if description.isEmpty {
-                                        Text("Enter video description")
+                                        Text("Enter Drop description")
                                             .foregroundColor(.white.opacity(0.4))
                                             .padding(.horizontal, 4)
                                             .padding(.top, 8)

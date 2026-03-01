@@ -38,7 +38,7 @@ struct WelcomeView: View {
                         )
                         .shadow(color: .twillyCyan.opacity(0.5), radius: 20)
                     
-                    Text("A Premium streaming network")
+                    Text("A social streaming network")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(.gray)
                         .tracking(1)

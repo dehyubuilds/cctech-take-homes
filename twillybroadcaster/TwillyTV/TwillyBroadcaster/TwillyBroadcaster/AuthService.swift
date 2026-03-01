@@ -146,6 +146,17 @@ class AuthService: ObservableObject {
                         self.isLoadingUsername = false
                         print("✅ [AuthService] Username already set: \(self.username ?? "nil"), skipping load (same user)")
                     }
+                    
+                    // CRITICAL: Check all unreads on login/restart and send indicator notifications
+                    // This ensures indicators persist across app restarts
+                    Task {
+                        do {
+                            try await ChannelService.shared.checkAllUnreads(viewerEmail: newUserEmail)
+                            print("✅ [AuthService] Checked all unreads and sent indicator notifications")
+                        } catch {
+                            print("⚠️ [AuthService] Failed to check all unreads: \(error.localizedDescription)")
+                        }
+                    }
                 }
             } else {
                 // User is not signed in

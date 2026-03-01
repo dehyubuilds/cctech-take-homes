@@ -78,6 +78,8 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
     
     // Orientation support
     private var currentOrientation: UIDeviceOrientation = .portrait
+    @Published var isLandscapeMode: Bool = false // Track if device is rotated to landscape
+    @Published var deviceOrientation: UIDeviceOrientation = .portrait // Track actual device orientation for Snapchat-like tracking
     
     // Overlay support - using HaishinKit's Screen API (for client-side)
     // Also sends metadata to backend for server-side encoding
@@ -111,8 +113,20 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
     
     // Get preview orientation - LOCKED TO PORTRAIT
     func getPreviewOrientation() -> AVCaptureVideoOrientation {
-        // Always return portrait - app is locked to portrait mode
-        return .portrait
+        // Snapchat-like: Always right side up based on device orientation
+        switch deviceOrientation {
+        case .portrait:
+            return .portrait
+        case .landscapeLeft:
+            // Device turned left → use landscapeRight video orientation (right side up)
+            return .landscapeRight
+        case .landscapeRight:
+            // Device turned right → use landscapeLeft video orientation (right side up)
+            return .landscapeLeft
+        default:
+            // Fallback to portrait
+            return .portrait
+        }
     }
     
     override init() {
@@ -147,11 +161,52 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
     
     // MARK: - Orientation Management
     
+    func setLandscapeMode(_ enabled: Bool, deviceOrientation: UIDeviceOrientation = .portrait) {
+        // Allow changing landscape mode at any time (even while streaming)
+        // This enables dynamic orientation changes like Snapchat/Instagram
+        
+        isLandscapeMode = enabled
+        self.deviceOrientation = deviceOrientation
+        print("🔄 [StreamManager] Landscape mode set to: \(enabled ? "landscape" : "portrait"), device orientation: \(deviceOrientation.rawValue)")
+        
+        // Update stream orientation immediately (works even during streaming)
+        updateStreamOrientation()
+        
+        // Note: We don't need to update the stream URL when orientation changes
+        // The same /live/ path works for both portrait and landscape
+        // Video orientation is handled separately via updateStreamOrientation()
+    }
+    
     func updateStreamOrientation() {
-        // LOCKED TO PORTRAIT - Always use portrait settings regardless of device rotation
-        let videoOrientation: AVCaptureVideoOrientation = .portrait
-        let videoSize: CGSize = CGSize(width: 720, height: 1280)
-        currentOrientation = .portrait
+        let videoOrientation: AVCaptureVideoOrientation
+        let videoSize: CGSize
+        
+        // Snapchat-like: Always right side up based on device orientation
+        switch deviceOrientation {
+        case .portrait:
+            videoOrientation = .portrait
+            videoSize = CGSize(width: 720, height: 1280) // Portrait dimensions
+            currentOrientation = .portrait
+            print("📱 Orientation set to PORTRAIT - \(videoSize.width)x\(videoSize.height), orientation: \(videoOrientation.rawValue)")
+        case .landscapeLeft:
+            // Device turned left → use landscapeRight video orientation (right side up)
+            videoOrientation = .landscapeRight
+            videoSize = CGSize(width: 1280, height: 720) // Landscape dimensions
+            currentOrientation = .landscapeRight
+            print("📱 Orientation set to LANDSCAPE (left turn → right side up) - \(videoSize.width)x\(videoSize.height), orientation: \(videoOrientation.rawValue)")
+        case .landscapeRight:
+            // Device turned right → use landscapeLeft video orientation (right side up)
+            videoOrientation = .landscapeLeft
+            videoSize = CGSize(width: 1280, height: 720) // Landscape dimensions
+            currentOrientation = .landscapeLeft
+            print("📱 Orientation set to LANDSCAPE (right turn → right side up) - \(videoSize.width)x\(videoSize.height), orientation: \(videoOrientation.rawValue)")
+        default:
+            // Fallback to portrait
+            videoOrientation = .portrait
+            videoSize = CGSize(width: 720, height: 1280)
+            currentOrientation = .portrait
+            print("📱 Orientation fallback to PORTRAIT - \(videoSize.width)x\(videoSize.height), orientation: \(videoOrientation.rawValue)")
+        }
         
         // Update video orientation first - this tells the encoder how to rotate frames
         rtmpStream.videoOrientation = videoOrientation
@@ -161,8 +216,6 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
             videoSize: videoSize,
             bitRate: 2000000 // 2 Mbps
         )
-        
-        print("📱 Orientation LOCKED to Portrait - \(videoSize.width)x\(videoSize.height), orientation: \(videoOrientation.rawValue)")
     }
     
     @objc private func on(error: Notification) {
@@ -221,13 +274,18 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
     func setStreamKey(_ url: String, channelName: String? = nil) {
         let input = url.trimmingCharacters(in: .whitespacesAndNewlines)
         
+        // Use same stream route for both portrait and landscape
+        // The video orientation is handled separately via updateStreamOrientation()
+        let rtmpApplication = "live"
+        
         if input.contains("rtmp://") {
-            // Full URL provided: rtmp://100.24.103.57:1935/live/sk_xxxxx
+            // Full URL provided - use as is (always use /live/ path)
             fullStreamURL = input
         } else {
             // If just key provided, construct full URL
-            // Default server: rtmp://100.24.103.57:1935/live
-            fullStreamURL = "rtmp://100.24.103.57:1935/live/\(input)"
+            // Default server: rtmp://100.24.103.57:1935/live/
+            fullStreamURL = "rtmp://100.24.103.57:1935/\(rtmpApplication)/\(input)"
+            print("🔄 [StreamManager] Constructed RTMP URL: \(fullStreamURL)")
         }
         
         streamURL = fullStreamURL
@@ -237,7 +295,7 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
             currentChannelName = channelName
         }
         
-        // Extract and store stream key
+        // Extract and store stream key (base key without path)
         if let (_, streamKey) = parseRTMPURL() {
             currentStreamKey = streamKey
         }
@@ -436,11 +494,10 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
             return
         }
         
-        // CRITICAL FIX: If flag is stuck (set but no actual operation happening), reset it
-        // This prevents the flag from blocking camera flips indefinitely
+        // SNAPCHAT-STYLE: Always allow camera flip - reset flag if stuck
+        // This ensures camera flip is always responsive, even if previous operation is stuck
         if isAttachingCamera {
-            print("⚠️ Camera attachment flag is set - resetting to allow flip")
-            // Reset the flag - if there's a real operation, it will set it again
+            print("⚠️ Camera attachment flag is set - forcing reset to allow immediate flip")
             isAttachingCamera = false
         }
         
@@ -448,22 +505,16 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
         let newPosition: AVCaptureDevice.Position = currentCameraPosition == .back ? .front : .back
         print("🔍 StreamManager: Switching to: \(newPosition == .back ? "back" : "front")")
         
-        // Use try-catch for crash prevention
-        do {
-            switchCamera(to: newPosition)
-        } catch {
-            print("❌ Error toggling camera: \(error.localizedDescription)")
-            // Reset flag on error
-            isAttachingCamera = false
-        }
-        // Don't post CameraReady here - it will be posted by attachCamera() when the camera is actually attached
+        // SNAPCHAT-STYLE: Execute camera flip immediately on main thread (non-blocking)
+        // Don't use try-catch here - let switchCamera handle errors internally
+        switchCamera(to: newPosition)
     }
     
     func switchCamera(to position: AVCaptureDevice.Position) {
-        // CRITICAL: Prevent multiple simultaneous camera switches
-        // CRITICAL FIX: Don't block on isAttachingCamera - if it's stuck, reset it
-        if isAttachingCamera {
-            print("⚠️ Camera switch: Flag is set - resetting to allow switch")
+        // SNAPCHAT-STYLE: Always allow camera switch - never block
+        // During streaming, don't reset flag if already attaching - let it complete
+        if isAttachingCamera && !isStreaming {
+            print("⚠️ Camera switch: Flag is set - forcing reset for immediate switch")
             isAttachingCamera = false
         }
         
@@ -472,12 +523,23 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
             return
         }
         
-        // Set flag immediately to prevent concurrent switches
-        isAttachingCamera = true
-        
-        // Update position and camera reference
+        // Update position and camera reference immediately (before setting flag)
         currentCameraPosition = position
         currentCamera = camera
+        
+        // Set flag AFTER updating references to prevent race conditions
+        isAttachingCamera = true
+        
+        // CRITICAL: Add timeout to ensure flag is always cleared (prevents deadlock)
+        // Use longer timeout for streaming to allow async attachment to complete
+        let timeout = isStreaming ? 3.0 : 1.5
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            guard let self = self else { return }
+            if self.isAttachingCamera {
+                print("⚠️ Camera switch timeout: Resetting flag to prevent deadlock")
+                self.isAttachingCamera = false
+            }
+        }
         
         // If recording, switch camera in the recording session
         if isRecording {
@@ -487,71 +549,91 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
                 self?.isAttachingCamera = false
             }
         } else if isStreaming {
-            // When streaming, directly attach new camera to RTMP stream without detaching first
-            // This prevents black screen during active stream
+            // SNAPCHAT-STYLE: Seamless camera flip during streaming (NON-BLOCKING)
             print("📷 Switching camera during active stream to: \(position == .back ? "Back" : "Front")")
             
             // Reset zoom when camera changes
             currentZoomFactor = 1.0
             initialZoomFactor = 1.0
             
-            // Use camera queue for thread safety
-            cameraQueue.async { [weak self] in
+            // CRITICAL: Notify preview to prepare for seamless transition (keep old preview visible)
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: NSNotification.Name("CameraFlipStarting"), object: nil, userInfo: ["newPosition": position])
+            }
+            
+            // SNAPCHAT-STYLE: Seamless camera flip during streaming (TRULY NON-BLOCKING)
+            // Execute directly on main thread - the attachCamera callback is async, so it won't block
+            // This ensures the UI never freezes during camera flip
+            DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 
-                // Directly attach new camera to RTMP stream (no detach step to prevent black screen)
+                // SNAPCHAT-STYLE: Attach new camera directly (old one is automatically replaced)
+                // The callback is asynchronous, so this returns immediately and won't block
                 self.rtmpStream.attachCamera(camera) { [weak self] captureUnit, error in
                     guard let self = self else { return }
                     
+                    // Always clear flag on completion
                     self.isAttachingCamera = false
                     
-                    if let error = error {
-                        DispatchQueue.main.async {
-                            print("❌ Camera attachment error during stream: \(error)")
-                            // Don't crash - just log and try to continue with current camera
-                            // Reset to previous camera position if switch failed
+                    // Handle result on main thread (but don't block)
+                    DispatchQueue.main.async {
+                        if let error = error {
+                            print("❌ Camera attachment error during stream: \(error.localizedDescription)")
+                            // Revert to previous camera position on error
                             let previousPosition: AVCaptureDevice.Position = position == .back ? .front : .back
                             if let previousCamera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: previousPosition) {
                                 self.currentCameraPosition = previousPosition
                                 self.currentCamera = previousCamera
+                                // Try to reattach previous camera (non-blocking)
+                                self.rtmpStream.attachCamera(previousCamera) { _, _ in }
                             }
-                        }
-                    } else {
-                        DispatchQueue.main.async {
+                            // Notify preview that flip failed
+                            NotificationCenter.default.post(name: NSNotification.Name("CameraFlipFailed"), object: nil)
+                        } else {
                             print("✅ Camera switched successfully during stream")
                             // Reset zoom after camera switch
                             self.setZoomFactor(1.0)
-                            // Update orientation after camera switch
+                            // CRITICAL: Force orientation update after camera switch to ensure correct orientation
+                            // This ensures landscape orientation is correct regardless of which way phone is turned
                             self.updateStreamOrientation()
-                            // Notify that camera is ready for preview - post multiple times to ensure it's received
-                            NotificationCenter.default.post(name: NSNotification.Name("CameraReady"), object: nil)
-                            NotificationCenter.default.post(name: NSNotification.Name("ForceRefreshPreview"), object: nil)
-                            // Additional notification with slight delay to ensure preview updates
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                NotificationCenter.default.post(name: NSNotification.Name("ForceRefreshPreview"), object: nil)
-                            }
+                            // Force RTMP stream to use correct orientation (landscapeRight = home button on right, as if turning left)
+                            self.rtmpStream.videoOrientation = self.isLandscapeMode ? .landscapeRight : .portrait
+                            // SNAPCHAT-STYLE: Notify preview that new camera is ready (single notification)
+                            // Don't post ForceRefreshPreview here - cameraFlipComplete will handle it
+                            NotificationCenter.default.post(name: NSNotification.Name("CameraFlipComplete"), object: nil)
                         }
                     }
                 }
             }
         } else {
-            // Not streaming or recording - use normal attach flow
-            // CRITICAL FIX: Don't reset flag here - let attachCamera() manage it
-            // attachCamera() will set and reset the flag itself
-            attachCamera(camera)
-            // Update orientation after camera switch
+            // SNAPCHAT-STYLE: Preview mode camera flip (non-streaming, non-recording)
+            // This must be instant and non-blocking
+            print("📷 Switching camera in preview mode to: \(position == .back ? "Back" : "Front")")
+            
+            // Update orientation immediately
             updateStreamOrientation()
-            // Post notification to force preview refresh immediately
+            
+            // SNAPCHAT-STYLE: Execute attachment asynchronously to prevent blocking
+            // Use main thread but don't wait for completion
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                // Call attachCamera which will handle the attachment asynchronously
+                self.attachCamera(camera)
+            }
+            
+            // Post notification to force preview refresh immediately (don't wait for attachment)
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: NSNotification.Name("ForceRefreshPreview"), object: nil)
             }
-            // CRITICAL FIX: Add safety timeout to ensure flag is reset even if attachCamera() fails silently
-            // This prevents the flag from getting stuck and blocking future camera flips
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            
+            // CRITICAL: Safety timeout to ensure flag is always cleared (prevents deadlock)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 guard let self = self else { return }
                 if self.isAttachingCamera {
-                    print("⚠️ Safety timeout: Resetting camera attachment flag (attachCamera may have failed silently)")
+                    print("⚠️ Preview camera switch timeout: Resetting flag to prevent deadlock")
                     self.isAttachingCamera = false
+                    // Force preview refresh after timeout
+                    NotificationCenter.default.post(name: NSNotification.Name("ForceRefreshPreview"), object: nil)
                 }
             }
         }
@@ -634,10 +716,14 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
             // Use current orientation (supports both portrait and landscape)
             videoConnection.videoOrientation = getPreviewOrientation()
         }
-        // Update mirroring for new camera (no mirroring - natural view)
+        // Update mirroring for new camera
+        // Mirror front-facing camera in portrait mode (like a mirror - move right, see right)
+        // Back-facing camera: no mirroring (natural view)
+        // Landscape: no mirroring for either camera
         videoConnection.automaticallyAdjustsVideoMirroring = false
-        videoConnection.isVideoMirrored = false // SNAPCHAT-STYLE: No mirroring
-        print("📱 Updated movie output: mirrored=false (natural selfie view)")
+        let isFrontCamera = currentCameraPosition == .front
+        videoConnection.isVideoMirrored = isFrontCamera && !isLandscapeMode
+        print("📱 Updated movie output: mirrored=\(isFrontCamera && !isLandscapeMode) (front: \(isFrontCamera), portrait: \(!isLandscapeMode))")
         
         // Commit configuration - recording continues seamlessly
         session.commitConfiguration()
@@ -685,8 +771,12 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
                 // Use current orientation (supports both portrait and landscape)
                 connection.videoOrientation = getPreviewOrientation()
                 connection.automaticallyAdjustsVideoMirroring = false
-                connection.isVideoMirrored = false // SNAPCHAT-STYLE: No mirroring
-                print("📱 Updated preview layer: mirrored=false (natural selfie view)")
+                // Mirror front-facing camera in portrait mode (like a mirror - move right, see right)
+                // Back-facing camera: no mirroring (natural view)
+                // Landscape: no mirroring for either camera
+                let isFrontCamera = currentCameraPosition == .front
+                connection.isVideoMirrored = isFrontCamera && !isLandscapeMode
+                print("📱 Updated preview layer: mirrored=\(isFrontCamera && !isLandscapeMode) (front: \(isFrontCamera), portrait: \(!isLandscapeMode))")
             }
         }
         
@@ -1192,7 +1282,7 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
     }
     
     private func attachCamera(_ device: AVCaptureDevice? = nil) {
-        // Ensure we're on the main thread for UI-related operations
+        // SNAPCHAT-STYLE: Ensure we're on the main thread for UI-related operations
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in
                 self?.attachCamera(device)
@@ -1200,11 +1290,20 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
             return
         }
         
-        // Prevent multiple simultaneous attachments
-        // CRITICAL FIX: If flag is stuck, reset it before proceeding
+        // SNAPCHAT-STYLE: Always allow camera attachment - never block
+        // If flag is set, it means a previous operation is in progress
+        // We'll proceed anyway but add a safety timeout to clear the flag
         if isAttachingCamera {
-            print("⚠️ attachCamera: Flag is set - resetting before proceeding")
-            isAttachingCamera = false
+            print("⚠️ attachCamera: Flag is set - proceeding anyway with safety timeout")
+            // Add safety timeout to ensure flag is always cleared
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self = self else { return }
+                if self.isAttachingCamera {
+                    print("⚠️ attachCamera: Safety timeout - clearing flag")
+                    self.isAttachingCamera = false
+                }
+            }
+            // Don't return - proceed with attachment (the callback will clear the flag)
         }
         
         // Use specified device or current camera position
@@ -1269,54 +1368,56 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
         // Reset attempts on successful start
         cameraSetupAttempts = 0
         
-        // Attach camera to stream (for preview and streaming)
-        // CRITICAL: Wrap in error handling to prevent crashes
-        do {
-            rtmpStream.attachCamera(cameraDevice) { [weak self] captureUnit, error in
-                guard let self = self else { return }
-                
-                // CRITICAL FIX: Always clear flag on completion (success or error)
-                // This ensures camera can be flipped again even if there was an error
-                self.isAttachingCamera = false
-                print("✅ Camera attachment callback completed, flag cleared")
-                
-                if let error = error {
-                    DispatchQueue.main.async {
-                        print("❌ Camera attachment error: \(error)")
-                        // Retry camera setup after a delay if we haven't exceeded max attempts
-                        if self.cameraSetupAttempts < self.maxCameraSetupAttempts {
-                            self.cameraSetupAttempts += 1
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                                self.setupCameraPreview()
+        // SNAPCHAT-STYLE: Attach camera to stream with robust error handling (NON-BLOCKING)
+        // Execute on main thread but don't block - attachment callback is asynchronous
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            // CRITICAL: The attachCamera callback is asynchronous, so this won't block the main thread
+            self.rtmpStream.attachCamera(cameraDevice) { [weak self] captureUnit, error in
+                    guard let self = self else { return }
+                    
+                    // CRITICAL: Always clear flag on completion (success or error)
+                    // This ensures camera can be flipped again even if there was an error
+                    self.isAttachingCamera = false
+                    print("✅ Camera attachment callback completed, flag cleared")
+                    
+                    if let error = error {
+                        DispatchQueue.main.async {
+                            print("❌ Camera attachment error: \(error.localizedDescription)")
+                            // Robust error recovery - retry with exponential backoff
+                            if self.cameraSetupAttempts < self.maxCameraSetupAttempts {
+                                self.cameraSetupAttempts += 1
+                                let retryDelay = Double(self.cameraSetupAttempts) * 0.5 // Exponential backoff
+                                DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay) {
+                                    print("🔄 Retrying camera attachment (attempt \(self.cameraSetupAttempts)/\(self.maxCameraSetupAttempts))")
+                                    self.setupCameraPreview()
+                                }
+                            } else {
+                                print("❌ Max camera setup attempts reached, giving up")
+                                self.cameraSetupAttempts = 0 // Reset for next manual attempt
+                                // Notify UI of error
+                                NotificationCenter.default.post(name: NSNotification.Name("CameraError"), object: nil, userInfo: ["error": error.localizedDescription])
                             }
-                        } else {
-                            print("❌ Max camera setup attempts reached, giving up")
-                            self.cameraSetupAttempts = 0 // Reset for next manual attempt
+                        }
+                    } else {
+                        DispatchQueue.main.async {
+                            print("✅ Camera attached successfully")
+                            // Reset zoom after camera is attached
+                            self.setZoomFactor(1.0)
+                            // Set RTMP stream orientation based on current device orientation
+                            self.updateStreamOrientation()
+                            // SNAPCHAT-STYLE: Notify that camera is ready with multiple notifications for reliability
+                            NotificationCenter.default.post(name: NSNotification.Name("CameraReady"), object: nil)
+                            // Force immediate preview refresh to prevent black screen
+                            NotificationCenter.default.post(name: NSNotification.Name("ForceRefreshPreview"), object: nil)
+                            // Additional delayed refresh to ensure preview updates
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                NotificationCenter.default.post(name: NSNotification.Name("ForceRefreshPreview"), object: nil)
+                            }
                         }
                     }
-                } else {
-                    DispatchQueue.main.async {
-                        print("✅ Camera attached successfully")
-                        // Reset zoom after camera is attached
-                        self.setZoomFactor(1.0)
-                    // Set RTMP stream orientation based on current device orientation
-                    self.updateStreamOrientation()
-                    // Notify that camera is ready for preview
-                    NotificationCenter.default.post(name: NSNotification.Name("CameraReady"), object: nil)
-                    // CRITICAL: Force preview refresh to prevent black screen after camera flip
-                    NotificationCenter.default.post(name: NSNotification.Name("ForceRefreshPreview"), object: nil)
-                    }
                 }
-            }
-        } catch {
-            // CRITICAL: Prevent crash if attachCamera throws
-            print("❌ Fatal error attaching camera: \(error)")
-            isAttachingCamera = false
-            cameraSetupAttempts += 1
-            // Retry after delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-                self?.setupCameraPreview()
-            }
         }
         
         // Attach microphone (for streaming)
@@ -1419,7 +1520,10 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
             }
             
             camera.videoZoomFactor = factor
-            currentZoomFactor = factor
+            // CRITICAL: Update @Published property on main thread to prevent background thread UI updates
+            DispatchQueue.main.async { [weak self] in
+                self?.currentZoomFactor = factor
+            }
             
             // Also apply zoom to recording session if recording
             if isRecording, let recordingCamera = localRecordingSession?.inputs.first(where: { ($0 as? AVCaptureDeviceInput)?.device.hasMediaType(.video) == true }) as? AVCaptureDeviceInput {
@@ -1575,7 +1679,10 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
         if let videoConnection = movieOutput.connection(with: .video) {
             videoConnection.videoOrientation = .portrait
             videoConnection.automaticallyAdjustsVideoMirroring = false
-            videoConnection.isVideoMirrored = false
+            // Mirror front-facing camera in portrait mode (like a mirror - move right, see right)
+            // Back-facing camera: no mirroring (natural view)
+            let isFrontCamera = currentCameraPosition == .front
+            videoConnection.isVideoMirrored = isFrontCamera && !isLandscapeMode
         }
         
         guard session.canAddOutput(movieOutput) else {
@@ -1591,7 +1698,10 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
         if let connection = previewLayer.connection {
             connection.videoOrientation = .portrait
             connection.automaticallyAdjustsVideoMirroring = false
-            connection.isVideoMirrored = false
+            // Mirror front-facing camera in portrait mode (like a mirror - move right, see right)
+            // Back-facing camera: no mirroring (natural view)
+            let isFrontCamera = currentCameraPosition == .front
+            connection.isVideoMirrored = isFrontCamera && !isLandscapeMode
         }
         
         // Store references
@@ -1950,12 +2060,15 @@ class StreamManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDel
                 connection.videoOrientation = videoOrientation
                 
                 // CRITICAL: Set mirroring to match preview exactly
-                // Front camera = mirror (like Snapchat), Back camera = no mirror
+                // Mirror front-facing camera in portrait mode (like a mirror - move right, see right)
+                // Back-facing camera: no mirroring (natural view)
+                // Landscape: no mirroring for either camera
                 // This ensures what you see in preview is exactly what gets recorded
                 connection.automaticallyAdjustsVideoMirroring = false
-                connection.isVideoMirrored = false // SNAPCHAT-STYLE: No mirroring
+                let isFrontCamera = currentCameraPosition == .front
+                connection.isVideoMirrored = isFrontCamera && !isLandscapeMode
                 
-                print("📱 Movie output: orientation=portrait, mirrored=false (natural selfie view)")
+                print("📱 Movie output: orientation=\(videoOrientation.rawValue), mirrored=\(isFrontCamera && !isLandscapeMode) (front: \(isFrontCamera), portrait: \(!isLandscapeMode))")
             }
         }
         

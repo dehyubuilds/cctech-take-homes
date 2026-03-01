@@ -11,6 +11,43 @@
     import UIKit
     import Combine
 
+    // Stream mode enum for 3-state toggle (public/private/premium)
+    enum StreamMode: String, CaseIterable {
+        case `public` = "Public"
+        case `private` = "Private"
+        case premium = "Premium"
+        
+        var icon: String {
+            switch self {
+            case .public: return "lock.open.fill"
+            case .private: return "lock.fill"
+            case .premium: return "dollarsign.circle.fill" // Money icon for premium
+            }
+        }
+        
+        var color: Color {
+            switch self {
+            case .public: return .twillyCyan
+            case .private: return .orange
+            case .premium: return .yellow
+            }
+        }
+        
+        var isPrivateUsername: Bool {
+            switch self {
+            case .public: return false
+            case .private, .premium: return true
+            }
+        }
+        
+        var isPremium: Bool {
+            switch self {
+            case .premium: return true
+            case .public, .private: return false
+            }
+        }
+    }
+
     // Global storage for local video info (to pass to ChannelDetailView)
     var globalLocalVideoInfo: (channelName: String, url: URL, title: String?, description: String?, price: Double?)?
 
@@ -75,6 +112,7 @@
         @State private var isShowingCountdown = false
         @State private var countdownValue = 3
         @State private var countdownTask: Task<Void, Never>? = nil // Track countdown task for cancellation
+        @GestureState private var isButtonPressed = false // Track button press state for visual feedback
         @State private var showingInviteCodeEntry = false
         @State private var hasTwillyTVAccess = false // Track if user has streaming access to Twilly TV
         @State private var showingStreamScreen = false // Show stream screen when navigated from channel detail
@@ -92,6 +130,8 @@
         @State private var wasDismissedWithoutSelection = false // Track if selector was dismissed without selection
         @State private var selectedStreamVisibility: Bool? = nil // User's selected visibility for the current stream (not affected by account-level update failures)
         @State private var streamModeIsPrivate = false // Toggle for public/private stream mode (default: public)
+        @State private var streamMode: StreamMode = .public // 3-state: public, private, premium
+        @State private var isPremiumEnabled = false // Whether premium mode is enabled in settings
         
         // UserDefaults key for persisting visibility preference
         private let visibilityPreferenceKey = "StreamVisibilityPreference"
@@ -100,6 +140,14 @@
         // 15-minute stream limit
         private let streamTimeLimit: TimeInterval = 15 * 60 // 15 minutes in seconds
         @State private var streamTimeLimitTimer: Timer? = nil // Timer for monitoring stream time limit
+        
+        // Stream drop: post now vs schedule
+        @State private var postImmediately = true
+        @State private var scheduledDropDate: Date? = nil
+        @State private var showingDatePicker = false
+        
+        // Landscape mode support
+        @State private var isLandscapeMode: Bool = false // Track if device is rotated to landscape
         
     @ViewBuilder
     var body: some View {
@@ -120,10 +168,23 @@
             checkAuthStatus()
             // Load saved visibility preference first (defaults to public)
             loadSavedVisibilityPreference()
+            // Load premium enabled from UserDefaults
+            loadPremiumEnabled()
             Task {
                 await checkUserRole()
                 // Load visibility state from server when view appears (but use saved preference as default)
                 loadUsernameVisibility()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("PremiumEnabledChanged"))) { notification in
+            // Reload premium enabled when it changes in settings
+            if let enabled = notification.userInfo?["enabled"] as? Bool {
+                isPremiumEnabled = enabled
+                print("✅ [ContentView] Premium enabled updated from settings: \(enabled)")
+            } else {
+                // Fallback: reload from UserDefaults (when settings sheet is dismissed)
+                loadPremiumEnabled()
+                print("✅ [ContentView] Premium enabled reloaded from UserDefaults after settings dismissed")
             }
         }
         .overlay(
@@ -196,6 +257,13 @@
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ShowStreamScreen"))) { _ in
+            // CRITICAL: Block navigation to stream screen if already streaming
+            // User must stop current stream before navigating
+            if streamManager.isStreaming {
+                print("🚫 [ContentView] Navigation blocked - stream is active. Stop stream to navigate.")
+                return
+            }
+            
             // TV Network Model: All authenticated users can access stream screen via swipe
             if authService.isAuthenticated {
                 // Don't auto-select a channel - let user select from the channel picker
@@ -274,8 +342,10 @@
         } else {
             if showingStreamScreen {
                 streamScreenView
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
             } else {
                 twillyTVChannelView
+                    .transition(.move(edge: .leading).combined(with: .opacity))
             }
         }
     }
@@ -301,14 +371,22 @@
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 20)
                         .onEnded { value in
-                            // Only process swipe when on stream screen
+                            // CRITICAL: Block all swipes while streaming is active
+                            // User can only leave by explicitly stopping or 15-minute timer ending
+                            guard !streamManager.isStreaming else {
+                                print("🚫 [CameraPreview] Swipe blocked - stream is active. Stop stream to navigate away.")
+                                return
+                            }
+                            
+                            // Only process swipe when on stream screen and in portrait mode
                             guard showingStreamScreen else { return }
+                            guard !streamManager.isLandscapeMode else { return } // Only allow swipe in portrait mode
                             
                             // Swipe LEFT (negative width = finger moving left) to go to Twilly TV
                             // User swipes from right edge going left
                             let swipeLeft = value.translation.width < -80 || value.predictedEndTranslation.width < -150
                             
-                            print("🔍 [CameraPreview] Swipe detected - width: \(value.translation.width), predicted: \(value.predictedEndTranslation.width), showingStreamScreen: \(showingStreamScreen)")
+                            print("🔍 [CameraPreview] Swipe detected - width: \(value.translation.width), predicted: \(value.predictedEndTranslation.width), showingStreamScreen: \(showingStreamScreen), landscape: \(streamManager.isLandscapeMode)")
                             
                             if swipeLeft {
                                 // Discover page removed for all accounts - just go back to Twilly TV
@@ -348,8 +426,8 @@
         private var topControls: some View {
             VStack {
                 HStack {
-                    // Twilly Streamer text - Clean, solid color design
-                    Text("Twilly Streamer")
+                    // Stream Drop header
+                    Text("Stream Drop")
                         .font(.system(size: 24, weight: .bold, design: .rounded))
                         .foregroundStyle(
                             LinearGradient(
@@ -361,45 +439,50 @@
                                 endPoint: .trailing
                             )
                         )
+                        .shadow(color: Color.white.opacity(0.7), radius: 8, x: 0, y: 0)
                         .shadow(color: Color.twillyCyan.opacity(0.5), radius: 6, x: 0, y: 2)
-                    .padding(.leading, 16)
+                        .padding(.leading, 16)
                     
                     Spacer()
                     
-                    // Camera flip button at top right (stream screen only)
-                    // SNAPCHAT-LIKE: Always available, responsive tap area
-                    if !streamManager.isRecording {
-                        Button(action: {
-                            // Haptic feedback for better UX
-                            let impactFeedback = UIImpactFeedbackGenerator(style: .light)
-                            impactFeedback.impactOccurred()
-                            
-                            // Prevent multiple rapid taps
-                            print("📷 [ContentView] Camera flip button tapped")
-                            streamManager.toggleCamera()
-                        }) {
-                            Image(systemName: "camera.rotate.fill")
-                                .font(.title2)
-                                .foregroundColor(.white)
-                                .padding(12)
-                                .background(Color.black.opacity(0.6))
-                                .clipShape(Circle())
+                    // Control buttons at top right
+                    HStack(spacing: 12) {
+                        
+                        // Camera flip button (always visible when not recording, even during streaming)
+                        // SNAPCHAT-LIKE: Always available, responsive tap area
+                        if !streamManager.isRecording {
+                            Button(action: {
+                                // Haptic feedback for better UX
+                                let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+                                impactFeedback.impactOccurred()
+                                
+                                // Prevent multiple rapid taps
+                                print("📷 [ContentView] Camera flip button tapped")
+                                streamManager.toggleCamera()
+                            }) {
+                                Image(systemName: "camera.rotate.fill")
+                                    .font(.title2)
+                                    .foregroundColor(.white)
+                                    .padding(12)
+                                    .background(Color.black.opacity(0.6))
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(PlainButtonStyle()) // Remove default button styling for better responsiveness
+                            .contentShape(Circle()) // Ensure entire circle is tappable
+                            .simultaneousGesture(
+                                // Add tap gesture for immediate response
+                                TapGesture()
+                                    .onEnded {
+                                        // Haptic feedback
+                                        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+                                        impactFeedback.impactOccurred()
+                                    }
+                            )
                         }
-                        .buttonStyle(PlainButtonStyle()) // Remove default button styling for better responsiveness
-                        .contentShape(Circle()) // Ensure entire circle is tappable
-                        .simultaneousGesture(
-                            // Add tap gesture for immediate response
-                            TapGesture()
-                                .onEnded {
-                                    // Haptic feedback
-                                    let impactFeedback = UIImpactFeedbackGenerator(style: .light)
-                                    impactFeedback.impactOccurred()
-                                }
-                        )
                     }
+                    .padding(.trailing, 16)
                 }
                 .padding(.top, 12)
-                .padding(.trailing, 16)
                 Spacer()
             }
         }
@@ -437,18 +520,16 @@
                     authenticatedControlsView
                 }
             }
-            .padding(.bottom, 12) // Snapchat-style positioning - close to bottom edge
+            .padding(.bottom, 12) // Same padding for both portrait and landscape - UI rotates automatically
         }
         
         @ViewBuilder
         private var authenticatedControlsView: some View {
-            // Show streaming controls for "Twilly TV" channel
+            // Old working layout: VStack from bottom — button, visibility, Post Immediately, swipe (no .position)
             VStack(spacing: 12) {
-                // Capture button - circular around icon (fixed position)
-                // Positioned lower like Snapchat's record button
                 HStack {
-                            Spacer()
-                            Button(action: {
+                    Spacer()
+                    Button(action: {
                                 // SNAPCHAT-LIKE: Immediate haptic feedback for responsive feel
                                 let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
                                 impactFeedback.impactOccurred()
@@ -457,13 +538,51 @@
                                 if streamManager.isStreaming {
                                     // Stop streaming - will save to channel and show metadata form
                                     print("🛑 [ContentView] Stopping stream...")
+                                    // Capture schedule state and stream key before stopping (for convert-to-post / premiere)
+                                    let streamKey = streamManager.currentStreamKey
+                                    let postNow = postImmediately
+                                    let scheduledDate = scheduledDropDate
+                                    let userEmail = authService.userEmail ?? ""
+                                    // INSTANT: Update button state immediately
+                                    streamManager.isStreaming = false
                                     streamManager.stopStreaming()
+                                    // Tell backend to mark as post-now or scheduled (HELD) so premiere shows on timeline
+                                    if let key = streamKey, !key.isEmpty, !userEmail.isEmpty {
+                                        Task {
+                                            do {
+                                                _ = try await ChannelService.shared.convertStreamToPost(
+                                                    channelName: "Twilly TV",
+                                                    streamKey: key,
+                                                    userEmail: userEmail,
+                                                    postImmediately: postNow,
+                                                    scheduledDropDate: postNow ? nil : scheduledDate
+                                                )
+                                                if !postNow, scheduledDate != nil {
+                                                    print("📅 [ContentView] Scheduled drop sent to backend - premiere will show on timeline")
+                                                }
+                                            } catch {
+                                                print("⚠️ [ContentView] convertStreamToPost failed: \(error.localizedDescription)")
+                                            }
+                                        }
+                                    }
                                 } else {
-                                    // Prevent starting stream during countdown
+                                    // Cancel countdown if button is pressed during countdown
                                     if isShowingCountdown {
-                                        print("⏸️ [ContentView] Countdown active - cannot start stream")
+                                        print("🚫 [ContentView] Stream button pressed during countdown - canceling")
+                                        // Strong haptic feedback to indicate cancellation
+                                        let notificationFeedback = UINotificationFeedbackGenerator()
+                                        notificationFeedback.notificationOccurred(.warning)
+                                        
+                                        // Cancel the countdown
+                                        cancelCountdown()
+                                        
+                                        // Show notification that stream was canceled
+                                        showNotification("Stream canceled")
                                         return
                                     }
+                                    
+                                    // INSTANT: Update button state immediately before any async work
+                                    streamManager.isStreaming = true
                                     
                                     // Start streaming directly based on toggle state
                                     print("▶️ [ContentView] Stream button clicked - starting stream with mode: \(streamModeIsPrivate ? "private" : "public")")
@@ -473,6 +592,11 @@
                                     isUsernamePublic = isPublic
                                     saveVisibilityPreference(isPublic)
                                     updateUsernameVisibility(isPublic)
+                                    
+                                    // Hide swipe indicator immediately when stream button is pressed
+                                    withAnimation(.easeOut(duration: 0.3)) {
+                                        showSwipeIndicator = false
+                                    }
                                     
                                     // Start stream directly
                                     Task {
@@ -517,7 +641,7 @@
                                     Circle()
                                         .fill(captureButtonGradient)
                                         .frame(width: 85, height: 85)
-                                        .shadow(color: Color.twillyTeal.opacity(0.3), radius: 12, x: 0, y: 6)
+                                        .shadow(color: (streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyTeal).opacity(0.3), radius: 12, x: 0, y: 6)
                                     
                                     // Icon centered within fixed frame
                                     Image(systemName: streamManager.isStreaming ? "stop.fill" : "record.circle.fill")
@@ -525,120 +649,202 @@
                                         .foregroundColor(.white)
                                         .frame(width: 85, height: 85)
                                 }
-                                .animation(nil, value: streamManager.isStreaming) // Disable automatic animations
+                                .scaleEffect(isButtonPressed ? 0.92 : 1.0) // Press down effect
+                                .opacity(isButtonPressed ? 0.85 : 1.0) // Slight opacity change on press
+                                .animation(.easeInOut(duration: 0.15), value: isButtonPressed)
+                                .animation(.easeInOut(duration: 0.25), value: streamManager.isStreaming) // Animate icon/gradient when going live
                             }
                             .frame(width: 85, height: 85) // Fixed frame to prevent position shifts
                             .contentShape(Circle()) // Ensure entire circle is tappable
-                            .animation(nil, value: streamManager.isStreaming) // Disable button container animations
+                            .animation(.easeInOut(duration: 0.25), value: streamManager.isStreaming)
                             .buttonStyle(PlainButtonStyle()) // Remove default button styling for better responsiveness
                             .simultaneousGesture(
-                                // Add tap gesture for immediate response (Snapchat-like)
-                                TapGesture()
-                                    .onEnded {
-                                        // Additional haptic feedback on tap
-                                        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
-                                        impactFeedback.impactOccurred()
+                                // Press gesture for visual feedback
+                                DragGesture(minimumDistance: 0)
+                                    .updating($isButtonPressed) { _, state, _ in
+                                        state = true
                                     }
                             )
-                            Spacer()
-                        }
-                        .frame(height: 85) // Fixed container height to accommodate larger button
-                        .padding(.horizontal, 20)
-                        
-                        // LIVE indicator when streaming OR Public/Private toggle when not streaming
-                        // Aligned under the stop button (centered)
-                        VStack(spacing: 6) {
-                            if streamManager.isStreaming {
-                                // SNAPCHAT-STYLE: LIVE indicator with pulsing red dot
-                                HStack(spacing: 6) {
-                                    // Pulsing red dot
-                                    Circle()
-                                        .fill(Color.red)
-                                        .frame(width: 8, height: 8)
-                                        .scaleEffect(1.2)
-                                        .opacity(0.8)
-                                        .animation(
-                                            Animation.easeInOut(duration: 1.0)
-                                                .repeatForever(autoreverses: true),
-                                            value: streamManager.isStreaming
-                                        )
-                                    
-                                    Text("LIVE")
-                                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                                        .foregroundColor(.white)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .background(
-                                            LinearGradient(
-                                                gradient: Gradient(colors: [Color.red, Color.red.opacity(0.8)]),
-                                                startPoint: .leading,
-                                                endPoint: .trailing
-                                            )
-                                        )
-                                        .cornerRadius(6)
-                                        .shadow(color: Color.red.opacity(0.5), radius: 4, x: 0, y: 2)
-                                }
-                                
-                                // Show 15-minute countdown timer when streaming (below LIVE indicator)
-                                StreamCountdownTimerView(
-                                    timeRemaining: max(0, streamTimeLimit - streamManager.duration),
-                                    isPrivate: streamModeIsPrivate,
-                                    onTimeExpired: {
-                                        // Automatically stop stream when 15 minutes is reached
-                                        print("⏰ [ContentView] 15-minute limit reached - stopping stream automatically")
-                                        streamManager.stopStreaming()
-                                    }
-                                )
-                            } else {
-                                // Show toggle when not streaming (including during countdown) - same design as Twilly TV channel page
-                                Button(action: {
-                                    withAnimation {
-                                        streamModeIsPrivate.toggle()
-                                    }
-                                    // Update selectedStreamVisibility when toggle changes
-                                    selectedStreamVisibility = !streamModeIsPrivate // true = public, false = private
-                                    isUsernamePublic = !streamModeIsPrivate
-                                }) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: streamModeIsPrivate ? "lock.fill" : "lock.open.fill")
-                                            .font(.system(size: 14))
-                                        Text(streamModeIsPrivate ? "Private" : "Public")
-                                            .font(.caption)
-                                            .fontWeight(.medium)
-                                    }
-                                    .foregroundColor(streamModeIsPrivate ? .orange : .twillyCyan)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(streamModeIsPrivate ? Color.orange.opacity(0.2) : Color.twillyCyan.opacity(0.2))
-                                    .cornerRadius(8)
-                                }
-                            }
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 4)
-                        .animation(nil, value: streamManager.isStreaming) // Disable animation to prevent position shifts
-                        
-                        if streamManager.isRecording {
-                            // Show wave animation when recording (not streaming)
-                            HStack(spacing: 8) {
-                                Spacer()
-                                CaptureWaveView()
-                                    .frame(width: 30, height: 24)
-                                Spacer()
-                            }
-                            .frame(height: 36)
-                            .frame(maxWidth: .infinity)
-                            .padding(.horizontal, 20)
-                        }
-                        
-                        // Swipe indicator - shows then disappears
-                        swipeIndicator
-                            .padding(.top, 8)
-                            .padding(.bottom, 12) // Snapchat-style positioning - close to bottom edge
                     }
+                    .frame(width: 85, height: 85)
+                    Spacer()
+                }
+                .frame(height: 85)
+                .padding(.horizontal, 20)
+                
+                // Visibility (or LIVE when streaming) — first row below button
+                Group {
+                    if streamManager.isStreaming {
+                        VStack(spacing: 6) {
+                            Text("LIVE")
+                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(
+                                    LinearGradient(
+                                        gradient: Gradient(colors: [Color.red, Color.red.opacity(0.8)]),
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .cornerRadius(6)
+                                .shadow(color: Color.red.opacity(0.5), radius: 4, x: 0, y: 2)
+                            StreamCountdownTimerView(
+                                timeRemaining: max(0, streamTimeLimit - streamManager.duration),
+                                isPrivate: streamModeIsPrivate,
+                                streamMode: streamMode,
+                                onTimeExpired: {
+                                    print("⏰ [ContentView] 15-minute limit reached - stopping stream automatically")
+                                    streamManager.stopStreaming()
+                                }
+                            )
+                        }
+                        .allowsHitTesting(false)
+                    } else {
+                        if isPremiumEnabled {
+                            // 3-state toggle: Public -> Private -> Premium -> Public
+                            Button(action: {
+                                withAnimation {
+                                    switch streamMode {
+                                    case .public:
+                                        streamMode = .private
+                                        streamModeIsPrivate = true
+                                    case .private:
+                                        streamMode = .premium
+                                        streamModeIsPrivate = true
+                                    case .premium:
+                                        streamMode = .public
+                                        streamModeIsPrivate = false
+                                    }
+                                }
+                                // Update selectedStreamVisibility when toggle changes
+                                selectedStreamVisibility = streamMode.isPrivateUsername == false
+                                isUsernamePublic = streamMode.isPrivateUsername == false
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: streamMode.icon)
+                                        .font(.system(size: 14))
+                                    Text(streamMode.rawValue)
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background((streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.55))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .strokeBorder((streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.95), lineWidth: 1.5)
+                                )
+                                .cornerRadius(10)
+                                .shadow(color: (streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.35), radius: 6, x: 0, y: 2)
+                            }
+                        } else {
+                            Button(action: {
+                                withAnimation {
+                                    streamModeIsPrivate.toggle()
+                                    streamMode = streamModeIsPrivate ? .private : .public
+                                }
+                                // Update selectedStreamVisibility when toggle changes
+                                selectedStreamVisibility = !streamModeIsPrivate // true = public, false = private
+                                isUsernamePublic = !streamModeIsPrivate
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: streamModeIsPrivate ? "lock.fill" : "lock.open.fill")
+                                        .font(.system(size: 14))
+                                    Text(streamModeIsPrivate ? "Private" : "Public")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background((streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.55))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .strokeBorder((streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.95), lineWidth: 1.5)
+                                )
+                                .cornerRadius(10)
+                                .shadow(color: (streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.35), radius: 6, x: 0, y: 2)
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+                
+                // Post Immediately / Schedule Drop — below visibility (stacked, no .position)
+                if !streamManager.isStreaming {
+                    VStack(spacing: 6) {
+                        Button(action: {
+                            withAnimation {
+                                postImmediately.toggle()
+                                if postImmediately {
+                                    scheduledDropDate = nil
+                                    showingDatePicker = false
+                                } else {
+                                    scheduledDropDate = Date().addingTimeInterval(3600)
+                                    showingDatePicker = true
+                                }
+                            }
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: postImmediately ? "paperplane.fill" : "calendar")
+                                    .font(.system(size: 14, weight: .semibold))
+                                Text(postImmediately ? "Post Immediately" : "Schedule Drop")
+                                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background((streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(postImmediately ? 0.5 : 0.65))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .strokeBorder((streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.95), lineWidth: 1.5)
+                            )
+                            .cornerRadius(10)
+                            .shadow(color: (streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.35), radius: 6, x: 0, y: 2)
+                        }
+                        if !postImmediately && showingDatePicker {
+                            DatePicker(
+                                "Air time",
+                                selection: Binding(
+                                    get: { scheduledDropDate ?? Date().addingTimeInterval(3600) },
+                                    set: { scheduledDropDate = $0 }
+                                ),
+                                displayedComponents: [.date, .hourAndMinute]
+                            )
+                            .datePickerStyle(.compact)
+                            .accentColor(streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan)
+                            .padding(8)
+                            .background(Color.black.opacity(0.7))
+                            .cornerRadius(8)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                }
+                
+                if streamManager.isRecording {
+                    HStack(spacing: 8) {
+                        Spacer()
+                        CaptureWaveView()
+                            .frame(width: 30, height: 24)
+                        Spacer()
+                    }
+                    .frame(height: 36)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 20)
+                }
+                
+                // Swipe indicator at bottom (same position as old working version)
+                swipeIndicator
+                    .padding(.top, 8)
+                    .padding(.bottom, 12)
             }
-        }
         
         
         // MARK: - Username Visibility
@@ -647,10 +853,14 @@
         private func loadSavedVisibilityPreference() {
             if let savedPreference = UserDefaults.standard.object(forKey: visibilityPreferenceKey) as? Bool {
                 isUsernamePublic = savedPreference
+                streamModeIsPrivate = !savedPreference
+                streamMode = savedPreference ? .public : .private
                 print("✅ [ContentView] Loaded saved visibility preference: \(savedPreference ? "public" : "private")")
             } else {
                 // Default to public if no preference saved
                 isUsernamePublic = true
+                streamModeIsPrivate = false
+                streamMode = .public
                 print("✅ [ContentView] No saved preference, defaulting to public")
             }
         }
@@ -659,6 +869,14 @@
         private func saveVisibilityPreference(_ isPublic: Bool) {
             UserDefaults.standard.set(isPublic, forKey: visibilityPreferenceKey)
             print("💾 [ContentView] Saved visibility preference: \(isPublic ? "public" : "private")")
+        }
+        
+        // Load premium enabled from UserDefaults
+        private func loadPremiumEnabled() {
+            // Force synchronize to get latest value
+            UserDefaults.standard.synchronize()
+            isPremiumEnabled = UserDefaults.standard.bool(forKey: "PremiumEnabled")
+            print("✅ [ContentView] Loaded premium enabled: \(isPremiumEnabled)")
         }
         
         private func loadUsernameVisibility() {
@@ -791,11 +1009,7 @@
             
             print("✅ [ContentView] User authenticated - proceeding with stream setup")
             
-            // Show immediate feedback - start countdown overlay early to indicate processing
-            await MainActor.run {
-                isShowingCountdown = true
-                countdownValue = 3
-            }
+            // No countdown - stream starts immediately
             
             // Find Twilly TV channel - use cached first (instant), then fetch if needed
             var channel: DiscoverableChannel?
@@ -857,6 +1071,8 @@
                 // Set stream key early (before countdown) so button can prepare
                 await MainActor.run {
                     streamManager.setStreamKey(streamKey, channelName: twillyTVChannel.channelName)
+                    // CRITICAL: Update stream orientation based on landscape mode before starting
+                    streamManager.updateStreamOrientation()
                 }
                 
                 // CRITICAL: Set username type for this stream DURING COUNTDOWN (BEFORE stream starts)
@@ -878,10 +1094,17 @@
                 do {
                     // CRITICAL: This is BLOCKING - it will complete BEFORE the countdown continues
                     // The EC2 immediate endpoint call inside is also blocking, so global map is set instantly
-                    try await ChannelService.shared.setStreamUsernameType(streamKey: streamKey, isPrivateUsername: isPrivate, streamUsername: streamUsername)
+                    let isPremium = streamMode.isPremium
+                    try await ChannelService.shared.setStreamUsernameType(
+                        streamKey: streamKey,
+                        isPrivateUsername: isPrivate,
+                        streamUsername: streamUsername,
+                        isPremium: isPremium
+                    )
                     print("✅ [ContentView] CRITICAL: Stream privacy set DURING COUNTDOWN - global map is ready!")
                     print("   StreamKey: \(streamKey)")
                     print("   isPrivateUsername: \(isPrivate)")
+                    print("   isPremium: \(isPremium)")
                     print("   StreamUsername: \(streamUsername)")
                     print("   Stream will start with correct privacy setting ✅")
                 } catch {
@@ -899,51 +1122,22 @@
                 // Clear selectedStreamVisibility after use so it doesn't persist for next stream
                 selectedStreamVisibility = nil
                 
-                // Start countdown task that can be cancelled
-                let task = Task {
-                    // Check for cancellation before each step
-                    guard !Task.isCancelled else { return }
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    guard !Task.isCancelled else { return }
-                    await MainActor.run { countdownValue = 2 }
-                    
-                    guard !Task.isCancelled else { return }
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    guard !Task.isCancelled else { return }
-                    await MainActor.run { countdownValue = 1 }
-                    
-                    guard !Task.isCancelled else { return }
-                    // Start streaming during "1" countdown for seamless transition
-                    try? await Task.sleep(nanoseconds: 500_000_000) // Half second into "1"
-                    guard !Task.isCancelled else { return }
-                    
-                    await MainActor.run {
-                        guard !Task.isCancelled else { return }
-                        streamManager.startStreaming()
-                        // Start monitoring for 15-minute limit
-                        startStreamTimeLimitMonitoring()
-                    }
-                    
-                    guard !Task.isCancelled else { return }
-                    // Hide countdown overlay after stream starts (smooth transition)
-                    try? await Task.sleep(nanoseconds: 500_000_000) // Remaining half second
-                    await MainActor.run {
-                        withAnimation(.easeOut(duration: 0.3)) {
-                            isShowingCountdown = false
-                            countdownTask = nil
-                        }
-                    }
-                }
-                
+                // Start streaming immediately - no countdown
+                // NOTE: isStreaming already set synchronously in button action for instant response
                 await MainActor.run {
-                    countdownTask = task
+                    // CRITICAL: Update stream orientation before starting (ensures landscape is applied)
+                    streamManager.updateStreamOrientation()
+                    streamManager.startStreaming()
+                    // Start monitoring for 15-minute limit
+                    startStreamTimeLimitMonitoring()
+                    // Flash notification that streaming has started
+                    showNotification("Streaming!")
                 }
-                
-                // Wait for task to complete or be cancelled
-                await task.value
             } catch {
                 print("❌ [ContentView] Error getting stream key: \(error)")
                 await MainActor.run {
+                    // Revert optimistic update if streaming failed
+                    streamManager.isStreaming = false
                     isShowingCountdown = false
                     countdownTask?.cancel()
                     countdownTask = nil
@@ -1000,6 +1194,13 @@
                     startPoint: .leading,
                     endPoint: .trailing
                 )
+            } else if streamMode == .premium {
+                // Premium mode - yellow gradient
+                return LinearGradient(
+                    gradient: Gradient(colors: [Color.yellow.opacity(0.9), Color.yellow]),
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
             } else if streamModeIsPrivate {
                 // Private mode - orange gradient
                 return LinearGradient(
@@ -1008,6 +1209,7 @@
                     endPoint: .trailing
                 )
             } else {
+                // Public mode - teal/cyan gradient
                 return LinearGradient(
                     gradient: Gradient(colors: [Color.twillyTeal, Color.twillyCyan]),
                     startPoint: .leading,
@@ -1097,50 +1299,48 @@
             .frame(height: 44) // Slightly taller for more presence
         }
         
-        // Subtle swipe indicator for stream screen (disappears after a few seconds)
+        // Subtle swipe indicator for stream screen (centered, disappears after 2 seconds or when streaming starts)
+        @ViewBuilder
         private var swipeIndicator: some View {
-            HStack {
-                Spacer()
-                if showSwipeIndicator {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.left")
-                            .font(.system(size: 12, weight: .medium))
-                        Text("Swipe left for Twilly TV")
-                            .font(.caption)
-                            .fontWeight(.medium)
-                    }
-                    .foregroundColor(.white.opacity(0.7))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(
-                        Capsule()
-                            .fill(Color.black.opacity(0.4))
-                            .overlay(
-                                Capsule()
-                                    .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                            )
-                    )
-                    .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
-                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                    .onAppear {
-                        // Auto-hide after 4 seconds (more subtle, stays longer)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
-                            withAnimation(.easeOut(duration: 0.6)) {
-                                showSwipeIndicator = false
-                            }
+            if showSwipeIndicator {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.left")
+                        .font(.system(size: 12, weight: .medium))
+                    Text("Swipe left for Twilly TV")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                }
+                .foregroundColor(.white.opacity(0.7))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    Capsule()
+                        .fill(Color.black.opacity(0.4))
+                        .overlay(
+                            Capsule()
+                                .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                        )
+                )
+                .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
+                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                .onAppear {
+                    // Auto-hide after 2 seconds
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                        withAnimation(.easeOut(duration: 0.6)) {
+                            showSwipeIndicator = false
                         }
                     }
                 }
-                Spacer()
+            } else {
+                EmptyView()
             }
-            .frame(height: 28)
-            .frame(maxWidth: .infinity)
         }
         
         @ViewBuilder
         private var streamDurationView: some View {
             // Use separate views to avoid property access issues with @EnvironmentObject
             StreamDurationDisplayView(streamManager: streamManager)
+        }
         }
     
     // Separate view to avoid property access issues with @EnvironmentObject
@@ -1196,12 +1396,50 @@
         }
     }
 
-    // 15-minute countdown timer for streaming
+    // Drives 1-second countdown so the timer closure always sees current value
+    private class StreamCountdownRunner: ObservableObject {
+        @Published var displaySeconds: TimeInterval = 0
+        private var timer: Timer?
+        var onTimeExpired: (() -> Void)?
+        
+        func start(initial: TimeInterval) {
+            displaySeconds = max(0, initial)
+            timer?.invalidate()
+            guard initial > 0 else { return }
+            timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                guard let self = self else { return }
+                DispatchQueue.main.async {
+                    if self.displaySeconds <= 1 {
+                        self.displaySeconds = 0
+                        self.timer?.invalidate()
+                        self.timer = nil
+                        self.onTimeExpired?()
+                        return
+                    }
+                    self.displaySeconds -= 1
+                }
+            }
+            if let t = timer { RunLoop.main.add(t, forMode: .common) }
+        }
+        
+        func stop() {
+            timer?.invalidate()
+            timer = nil
+        }
+        
+        func syncIfNeeded(from value: TimeInterval) {
+            let v = max(0, value)
+            if abs(displaySeconds - v) > 2 { displaySeconds = v }
+        }
+    }
+    
+    // 15-minute countdown timer for streaming (ticks down by 1 second for smooth display)
     struct StreamCountdownTimerView: View {
         let timeRemaining: TimeInterval
         let isPrivate: Bool
+        let streamMode: StreamMode
         let onTimeExpired: () -> Void
-        @State private var timer: Timer?
+        @StateObject private var runner = StreamCountdownRunner()
         
         var body: some View {
             Text(countdownText)
@@ -1219,28 +1457,35 @@
                 .shadow(color: shadowColor.opacity(0.6), radius: 30, x: 0, y: 0)
                 .shadow(color: shadowColor.opacity(0.4), radius: 40, x: 0, y: 0)
                 .onAppear {
-                    // Check if time has expired
+                    runner.onTimeExpired = onTimeExpired
                     if timeRemaining <= 0 {
                         onTimeExpired()
+                        return
                     }
+                    runner.start(initial: max(0, timeRemaining))
                 }
                 .onChange(of: timeRemaining) { newValue in
-                    // Check if time has expired
+                    runner.syncIfNeeded(from: newValue)
                     if newValue <= 0 {
+                        runner.displaySeconds = 0
+                        runner.stop()
                         onTimeExpired()
                     }
                 }
                 .onDisappear {
-                    // CRITICAL: Clean up timer when view disappears
-                    timer?.invalidate()
-                    timer = nil
+                    runner.stop()
                 }
         }
         
+        private var displaySeconds: TimeInterval { runner.displaySeconds }
+        
         private var countdownColors: [Color] {
-            if timeRemaining < 60 {
+            if displaySeconds < 60 {
                 // Less than 1 minute remaining - red/orange warning
                 return [Color.red, Color.orange]
+            } else if streamMode == .premium {
+                // Premium mode - yellow gradient (matches stream button)
+                return [Color.yellow.opacity(0.9), Color.yellow]
             } else if isPrivate {
                 // Private mode - orange gradient (matches stream button)
                 return [Color.orange.opacity(0.9), Color.orange]
@@ -1251,8 +1496,10 @@
         }
         
         private var shadowColor: Color {
-            if timeRemaining < 60 {
+            if displaySeconds < 60 {
                 return Color.red
+            } else if streamMode == .premium {
+                return Color.yellow
             } else if isPrivate {
                 return Color.orange
             } else {
@@ -1261,8 +1508,11 @@
         }
         
         private var countdownText: String {
-            let minutes = Int(timeRemaining) / 60
-            let seconds = Int(timeRemaining) % 60
+            if displaySeconds <= 0 {
+                return "0:00"
+            }
+            let minutes = Int(displaySeconds) / 60
+            let seconds = Int(displaySeconds) % 60
             return String(format: "%d:%02d", minutes, seconds)
         }
     }
@@ -1532,6 +1782,33 @@
                     Text("Please select a channel before starting to capture.")
                 }
                 .onAppear {
+                    // Always default to Public mode when streamer page appears
+                    streamMode = .public
+                    streamModeIsPrivate = false
+                    selectedStreamVisibility = true // true = public
+                    isUsernamePublic = true
+                    print("✅ [ContentView] Reset stream mode to Public on stream screen appear")
+                    
+                    // LOCK TO PORTRAIT: Streamer page must stay in portrait
+                    AppDelegate.orientationLock = .portrait
+                    
+                    // Force portrait orientation (iOS 16+)
+                    if #available(iOS 16.0, *) {
+                        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                            windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { (error: Error?) in
+                                if let error = error {
+                                    print("❌ [ContentView] Failed to lock stream screen to portrait: \(error.localizedDescription)")
+                                } else {
+                                    print("✅ [ContentView] Stream screen locked to portrait mode")
+                                }
+                            }
+                        }
+                    } else {
+                        // iOS < 16: Use UIDevice
+                        UIDevice.current.setValue(UIInterfaceOrientation.portrait.rawValue, forKey: "orientation")
+                        print("✅ [ContentView] Stream screen locked to portrait mode (iOS < 16)")
+                    }
+                    
                     // CRITICAL: Stream screen must appear instantly - no blocking operations
                     // All operations are non-blocking and happen in background
                     print("✅ [ContentView] Stream screen appeared - setting up non-blocking")
@@ -1603,6 +1880,21 @@
                         streamManager.currentStreamKey = nil
                         streamChannelId = nil
                         streamChannelName = nil
+                    } else {
+                        // Stream started - prevent navigation away
+                        print("🔒 [StreamScreenView] Stream started - navigation locked until stream stops")
+                    }
+                }
+                // CRITICAL: Prevent navigation away while streaming
+                // Block any attempts to change showingStreamScreen while stream is active
+                .onChange(of: showingStreamScreen) { newValue in
+                    // If trying to hide stream screen while streaming, block it
+                    if !newValue && streamManager.isStreaming {
+                        print("🚫 [StreamScreenView] Navigation blocked - stream is active. Stop stream to navigate away.")
+                        // Force stream screen to stay visible
+                        DispatchQueue.main.async {
+                            showingStreamScreen = true
+                        }
                     }
                 }
         }
@@ -1685,6 +1977,78 @@
                 cameraPreviewWithModifiers
                 topControls
                 bottomControlsOverlay
+                
+                // Swipe indicator is now inside bottomControlsOverlay (same position as old working version)
+            }
+            .onAppear {
+                // Always default to Public mode when main content appears
+                streamMode = .public
+                streamModeIsPrivate = false
+                selectedStreamVisibility = true // true = public
+                isUsernamePublic = true
+                print("✅ [ContentView] Reset stream mode to Public on main content appear")
+                
+                // Ensure orientation is unlocked for main content (streaming interface)
+                AppDelegate.orientationLock = .all
+                
+                // Force unlock by requesting all orientations (iOS 16+)
+                if #available(iOS 16.0, *) {
+                    if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                        windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .all)) { (error: Error?) in
+                            if let error = error {
+                                print("❌ [ContentView] Failed to unlock orientations: \(error.localizedDescription)")
+                            } else {
+                                print("✅ [ContentView] Successfully unlocked all orientations for main content")
+                            }
+                        }
+                    }
+                }
+                
+                // Enable orientation notifications
+                UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+                
+                // Set initial orientation based on current device orientation
+                let currentOrientation = UIDevice.current.orientation
+                let initialIsLandscape = currentOrientation == .landscapeLeft || currentOrientation == .landscapeRight
+                isLandscapeMode = initialIsLandscape
+                streamManager.setLandscapeMode(initialIsLandscape, deviceOrientation: currentOrientation)
+                print("🔄 [ContentView] Initial orientation: \(initialIsLandscape ? "landscape" : "portrait") (device orientation: \(currentOrientation.rawValue))")
+            }
+            .onDisappear {
+                // Disable orientation notifications when view disappears
+                UIDevice.current.endGeneratingDeviceOrientationNotifications()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+                // Detect device rotation - UI will rotate automatically, we just need to update stream orientation
+                let orientation = UIDevice.current.orientation
+                
+                print("🔄 [ContentView] Orientation notification received: \(orientation.rawValue) (\(orientation == .landscapeLeft ? "landscapeLeft" : orientation == .landscapeRight ? "landscapeRight" : orientation == .portrait ? "portrait" : "other"))")
+                
+                // Only respond to valid orientations (ignore face up/down, unknown, flat)
+                guard orientation.isValidInterfaceOrientation,
+                      orientation != .faceUp,
+                      orientation != .faceDown,
+                      orientation != .unknown else {
+                    print("⚠️ [ContentView] Ignoring invalid orientation: \(orientation.rawValue)")
+                    return
+                }
+                
+                // Snapchat-like: Track actual device orientation for always right-side-up video
+                let newIsLandscape = orientation == .landscapeLeft || orientation == .landscapeRight
+                
+                // Always update device orientation (even if landscape state hasn't changed, orientation might have)
+                let orientationChanged = isLandscapeMode != newIsLandscape || streamManager.deviceOrientation != orientation
+                
+                print("🔄 [ContentView] Current isLandscapeMode: \(isLandscapeMode), newIsLandscape: \(newIsLandscape), deviceOrientation: \(orientation.rawValue)")
+                
+                if orientationChanged {
+                    isLandscapeMode = newIsLandscape
+                    streamManager.setLandscapeMode(newIsLandscape, deviceOrientation: orientation)
+                    previewRefreshKey = UUID()
+                    print("✅ [ContentView] Device rotated to: \(newIsLandscape ? "landscape" : "portrait") (orientation: \(orientation.rawValue))")
+                } else {
+                    print("ℹ️ [ContentView] Orientation unchanged: \(newIsLandscape ? "landscape" : "portrait")")
+                }
             }
         }
         
@@ -2164,7 +2528,7 @@
                             }
                         } else {
                             // Normal RTMP stream preview (also shown while recording session is starting)
-                            // Use key to force refresh when recapture happens
+                            // Use key to force refresh when recapture happens or landscape mode changes
                             CameraPreviewView(streamManager: streamManager)
                                 .id(previewRefreshKey)
                                 .ignoresSafeArea()
@@ -2203,18 +2567,24 @@
                                     }
                                 }
                                 
-                                Spacer()
+                                if streamManager.isLandscapeMode {
+                                    Spacer()
+                                        .frame(height: 0) // Removed spacer to move countdown up above text
+                                } else {
+                                    Spacer()
+                                }
                                 
                                 Text("\(countdownValue)")
+                                    .offset(y: streamManager.isLandscapeMode ? -40 : 0) // Move up in landscape to be above text
                                     .font(.system(size: 120, weight: .bold))
                                     .foregroundStyle(
                                         LinearGradient(
-                                            colors: streamModeIsPrivate ? [.orange.opacity(0.9), .orange] : [.twillyTeal, .twillyCyan],
+                                            colors: streamMode == .premium ? [.yellow.opacity(0.9), .yellow] : streamModeIsPrivate ? [.orange.opacity(0.9), .orange] : [.twillyTeal, .twillyCyan],
                                             startPoint: .leading,
                                             endPoint: .trailing
                                         )
                                     )
-                                    .shadow(color: streamModeIsPrivate ? .orange.opacity(0.5) : .twillyCyan.opacity(0.5), radius: 20)
+                                    .shadow(color: streamMode == .premium ? .yellow.opacity(0.5) : streamModeIsPrivate ? .orange.opacity(0.5) : .twillyCyan.opacity(0.5), radius: 20)
                                     .scaleEffect(streamManager.isStreaming ? 0.3 : 1.0)
                                     .opacity(streamManager.isStreaming ? 0.0 : 1.0)
                                     .animation(.easeOut(duration: 0.3), value: streamManager.isStreaming)
@@ -2235,7 +2605,7 @@
                                     VStack(spacing: 8) {
                                         Text("Starting stream...")
                                             .font(.system(size: 24, weight: .semibold))
-                                            .foregroundColor(.white.opacity(0.9))
+                                            .foregroundColor(streamMode == .premium ? .yellow.opacity(0.9) : streamModeIsPrivate ? .orange.opacity(0.9) : .twillyCyan.opacity(0.9))
                                             .transition(.opacity)
                                         
                                         Text("Tap to cancel")
@@ -2243,6 +2613,14 @@
                                             .foregroundColor(.white.opacity(0.6))
                                     }
                                     .transition(.opacity)
+                                    .contentShape(Rectangle()) // Make tappable area larger
+                                    .padding(.top, streamManager.isLandscapeMode ? -80 : 0) // Move up more in landscape to be under button
+                                    .onTapGesture {
+                                        // Only cancel countdown if not streaming
+                                        if !streamManager.isStreaming {
+                                            cancelCountdown()
+                                        }
+                                    }
                                 }
                                 
                                 Spacer()
@@ -2520,28 +2898,6 @@
                     streamChannelName = channel.channelName
                 }
                 
-                // Show 3-second countdown before starting stream
-                await MainActor.run {
-                    isShowingCountdown = true
-                    countdownValue = 3
-                }
-                
-                // Countdown: 3, 2, 1
-                // Wait 1 second before showing 2
-                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
-                await MainActor.run {
-                    countdownValue = 2
-                }
-                
-                // Wait 1 second before showing 1
-                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
-                await MainActor.run {
-                    countdownValue = 1
-                }
-                
-                // Wait 1 second to show "1" before starting stream
-                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
-                
                 // CRITICAL: Set username type for this stream BEFORE stream starts
                 // Use the stream mode toggle (streamModeIsPrivate)
                 let isPrivate = await MainActor.run { streamModeIsPrivate }
@@ -2549,17 +2905,22 @@
                 let streamUsername = isPrivate ? "\(baseUsername)🔒" : baseUsername
                 
                 do {
-                    try await ChannelService.shared.setStreamUsernameType(streamKey: streamKey, isPrivateUsername: isPrivate, streamUsername: streamUsername)
-                    print("✅ [ContentView] Stream privacy set for channel stream: isPrivate=\(isPrivate)")
+                    let isPremium = streamMode.isPremium
+                    try await ChannelService.shared.setStreamUsernameType(streamKey: streamKey, isPrivateUsername: isPrivate, streamUsername: streamUsername, isPremium: isPremium)
+                    print("✅ [ContentView] Stream privacy set for channel stream: isPrivate=\(isPrivate), isPremium=\(isPremium)")
                 } catch {
                     print("⚠️ [ContentView] Failed to set stream username type: \(error.localizedDescription)")
                 }
                 
-                // Start streaming after countdown completes
+                // Start streaming immediately - no countdown
+                // NOTE: isStreaming already set synchronously in button action for instant response
                 await MainActor.run {
-                    isShowingCountdown = false
                     streamManager.setStreamKey(streamKey, channelName: channel.channelName)
                     streamManager.startStreaming()
+                    // Start monitoring for 15-minute limit
+                    startStreamTimeLimitMonitoring()
+                    // Flash notification that streaming has started
+                    showNotification("Streaming!")
                 }
             } catch {
                 print("❌ [ContentView] Error getting collaborator stream key: \(error)")
@@ -2568,6 +2929,8 @@
                     print("   URLError code: \(urlError.code.rawValue)")
                 }
                 await MainActor.run {
+                    // Revert optimistic update if streaming failed
+                    streamManager.isStreaming = false
                     showingNotification = true
                     notificationMessage = "Failed to get stream key: \(error.localizedDescription)"
                 }
@@ -2820,16 +3183,21 @@
     struct CameraPreviewView: UIViewRepresentable {
         let streamManager: StreamManager
         func makeUIView(context: Context) -> MTHKView {
-            // Initialize with a reasonable default size
-            let hkView = MTHKView(frame: CGRect(x: 0, y: 0, width: 375, height: 300))
+            // Initialize with full screen size to ensure proper filling (especially for landscape)
+            let screenSize = UIScreen.main.bounds.size
+            let hkView = MTHKView(frame: CGRect(x: 0, y: 0, width: screenSize.width, height: screenSize.height))
             hkView.backgroundColor = UIColor.black
             hkView.videoGravity = .resizeAspectFill
+            hkView.clipsToBounds = true
             
             // Use preview orientation (accounts for camera position)
             hkView.videoOrientation = streamManager.getPreviewOrientation()
             
-            // SNAPCHAT-STYLE: No mirroring - natural selfie view
-            hkView.isMirrored = false
+            // Mirror front-facing camera in portrait mode (like a mirror - move right, see right)
+            // Back-facing camera: no mirroring (natural view)
+            // Landscape: no mirroring for either camera
+            let isFrontCamera = streamManager.currentCameraPosition == .front
+            hkView.isMirrored = isFrontCamera && !streamManager.isLandscapeMode
             
             // Store reference in coordinator
             context.coordinator.view = hkView
@@ -2863,6 +3231,28 @@
                 object: nil
             )
             
+            // SNAPCHAT-STYLE: Listen for seamless camera flip notifications
+            NotificationCenter.default.addObserver(
+                context.coordinator,
+                selector: #selector(Coordinator.cameraFlipStarting(notification:)),
+                name: NSNotification.Name("CameraFlipStarting"),
+                object: nil
+            )
+            
+            NotificationCenter.default.addObserver(
+                context.coordinator,
+                selector: #selector(Coordinator.cameraFlipComplete),
+                name: NSNotification.Name("CameraFlipComplete"),
+                object: nil
+            )
+            
+            NotificationCenter.default.addObserver(
+                context.coordinator,
+                selector: #selector(Coordinator.cameraFlipFailed),
+                name: NSNotification.Name("CameraFlipFailed"),
+                object: nil
+            )
+            
             // Wait for proper layout and camera to be ready before attaching stream
             DispatchQueue.main.async {
                 // Check if camera is already attached, if not wait for notification
@@ -2888,12 +3278,36 @@
         }
         
         func updateUIView(_ uiView: MTHKView, context: Context) {
+            // CRITICAL: All UI updates must be on main thread
+            // SwiftUI may call this from background threads when @Published properties change
+            guard Thread.isMainThread else {
+                DispatchQueue.main.async {
+                    self.updateUIView(uiView, context: context)
+                }
+                return
+            }
+            
             // Only update if necessary to reduce performance overhead
             // Avoid unnecessary updates that cause freezing
             
             // Ensure coordinator has view reference
             if context.coordinator.view == nil {
                 context.coordinator.view = uiView
+            }
+            
+            // CRITICAL: Ensure view fills entire screen (especially important for landscape mode)
+            // Update frame to match screen size to prevent black space
+            let screenSize = UIScreen.main.bounds.size
+            let currentSize = uiView.frame.size
+            if abs(currentSize.width - screenSize.width) > 1 || abs(currentSize.height - screenSize.height) > 1 {
+                uiView.frame = CGRect(origin: .zero, size: screenSize)
+                uiView.setNeedsLayout()
+                uiView.layoutIfNeeded()
+            }
+            
+            // Ensure clipsToBounds is set for proper filling
+            if !uiView.clipsToBounds {
+                uiView.clipsToBounds = true
             }
             
             // Only update properties if they've changed to reduce overhead
@@ -2907,9 +3321,13 @@
                 uiView.videoGravity = .resizeAspectFill
             }
             
-            // SNAPCHAT-STYLE: No mirroring - natural selfie view
-            if uiView.isMirrored {
-                uiView.isMirrored = false
+            // Mirror front-facing camera in portrait mode (like a mirror - move right, see right)
+            // Back-facing camera: no mirroring (natural view)
+            // Landscape: no mirroring for either camera
+            let isFrontCamera = streamManager.currentCameraPosition == .front
+            let shouldMirror = isFrontCamera && !streamManager.isLandscapeMode
+            if uiView.isMirrored != shouldMirror {
+                uiView.isMirrored = shouldMirror
             }
             
             // If recording, switch to recording session preview, otherwise use RTMP stream
@@ -3008,20 +3426,92 @@
             }
             
             @objc func forceRefreshPreview() {
-                // Force refresh preview - reset attachment state and reattach
+                // SNAPCHAT-STYLE: Force refresh preview with seamless transition
                 guard let streamManager = streamManager else { return }
                 DispatchQueue.main.async {
-                    // Update last camera position to current position to force reattach
-                    self.lastCameraPosition = streamManager.currentCameraPosition
-                    // Detach old stream first
+                    // CRITICAL: Update video orientation for landscape mode
                     if let view = self.view {
-                        view.attachStream(nil)
+                        let previewOrientation = streamManager.getPreviewOrientation()
+                        view.videoOrientation = previewOrientation
+                        view.videoGravity = .resizeAspectFill
+                        print("🔍 ForceRefreshPreview - Updated orientation to: \(previewOrientation.rawValue) (landscape: \(streamManager.isLandscapeMode))")
                     }
+                    
+                    // During streaming, camera is managed by the stream - just ensure preview is connected
+                    if streamManager.isStreaming {
+                        // Stream manages camera attachment - just ensure preview view is connected to stream
+                        if !self.hasAttached {
+                            self.attachStreamIfReady(streamManager: streamManager)
+                        }
+                        return
+                    }
+                    
+                    // Not streaming - handle camera position changes
+                    let currentPosition = streamManager.currentCameraPosition
+                    if let lastPosition = self.lastCameraPosition, lastPosition == currentPosition {
+                        // Position hasn't changed - just ensure stream is attached
+                        if !self.hasAttached {
+                            self.attachStreamIfReady(streamManager: streamManager)
+                        }
+                        return
+                    }
+                    
+                    // Camera position changed - update and reattach
+                    self.lastCameraPosition = currentPosition
+                    // SNAPCHAT-STYLE: Keep old preview visible during transition
+                    // Don't detach immediately - let new camera attach first
                     self.hasAttached = false
-                    // Small delay to ensure detach completes before reattaching
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    // Reattach immediately (new camera should already be attached to stream)
+                    self.attachStreamIfReady(streamManager: streamManager)
+                }
+            }
+            
+            @objc func cameraFlipStarting(notification: Notification) {
+                // SNAPCHAT-STYLE: Prepare for seamless camera flip
+                // Keep current preview visible during transition
+                guard let userInfo = notification.userInfo,
+                      let newPosition = userInfo["newPosition"] as? AVCaptureDevice.Position else { return }
+                print("📷 Camera flip starting - keeping current preview visible until new camera is ready")
+                // Don't detach stream yet - keep old preview visible
+            }
+            
+            @objc func cameraFlipComplete() {
+                // SNAPCHAT-STYLE: New camera is ready - refresh preview seamlessly
+                guard let streamManager = streamManager else { return }
+                DispatchQueue.main.async {
+                    print("✅ Camera flip complete - refreshing preview")
+                    self.lastCameraPosition = streamManager.currentCameraPosition
+                    
+                    // CRITICAL: Update video orientation for landscape mode
+                    // Always use landscapeLeft for landscape (as if turning left) regardless of which way phone is turned
+                    if let view = self.view {
+                        let previewOrientation = streamManager.getPreviewOrientation()
+                        view.videoOrientation = previewOrientation
+                        view.videoGravity = .resizeAspectFill
+                        print("🔍 Camera flip complete - Updated orientation to: \(previewOrientation.rawValue) (landscape: \(streamManager.isLandscapeMode), device orientation: \(UIDevice.current.orientation.rawValue))")
+                    }
+                    
+                    // During streaming, camera is already attached to stream - just ensure preview is connected
+                    if streamManager.isStreaming {
+                        // Stream already has the new camera attached, just ensure preview view is connected
+                        if !self.hasAttached {
+                            self.attachStreamIfReady(streamManager: streamManager)
+                        }
+                    } else {
+                        // Not streaming - need to attach camera to preview
+                        self.hasAttached = false
                         self.attachStreamIfReady(streamManager: streamManager)
                     }
+                }
+            }
+            
+            @objc func cameraFlipFailed() {
+                // Camera flip failed - ensure preview is still working
+                guard let streamManager = streamManager else { return }
+                DispatchQueue.main.async {
+                    print("⚠️ Camera flip failed - ensuring preview is still attached")
+                    // Try to reattach current stream
+                    self.attachStreamIfReady(streamManager: streamManager)
                 }
             }
             
@@ -3152,15 +3642,34 @@
                     return
                 }
                 
-                // CRITICAL: Check if camera is actually available before attaching stream
-                guard streamManager.getCurrentCamera() != nil else {
+                // CRITICAL: Ensure view frame fills entire screen (especially for landscape mode)
+                // Update frame to match screen size to prevent black space
+                let screenSize = UIScreen.main.bounds.size
+                if view.frame.size != screenSize {
+                    view.frame = CGRect(origin: .zero, size: screenSize)
+                    view.setNeedsLayout()
+                    view.layoutIfNeeded()
+                }
+                
+                // SNAPCHAT-STYLE: Check if camera is actually available before attaching stream
+                guard let camera = streamManager.getCurrentCamera(), camera.isConnected else {
                     print("⚠️ Camera not ready yet, waiting for camera to be attached...")
-                    // Wait for camera to be ready
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        self.attachStreamIfReady(streamManager: streamManager)
+                    // Wait for camera to be ready with exponential backoff
+                    cameraWaitAttempts += 1
+                    if cameraWaitAttempts < maxCameraWaitAttempts {
+                        let delay = min(0.2 * Double(cameraWaitAttempts), 1.0) // Max 1 second delay
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                            self.attachStreamIfReady(streamManager: streamManager)
+                        }
+                    } else {
+                        print("⚠️ Max camera wait attempts reached, giving up")
+                        cameraWaitAttempts = 0 // Reset for next attempt
                     }
                     return
                 }
+                
+                // Reset wait attempts on success
+                cameraWaitAttempts = 0
                 
                 // Check if camera position changed - if so, detach and reattach to refresh preview
                 if let lastPosition = lastCameraPosition, lastPosition != streamManager.currentCameraPosition {
@@ -3190,10 +3699,14 @@
                     return
                 }
                 
+                // CRITICAL: Ensure video gravity is set to fill (prevents black space)
+                view.videoGravity = .resizeAspectFill
+                view.clipsToBounds = true
+                
                 // Attach stream
                 view.attachStream(streamManager.rtmpStream)
                 hasAttached = true
-                print("✅ Camera stream attached to preview view")
+                print("✅ Camera stream attached to preview view (frame: \(frame.width)x\(frame.height))")
             }
             
             func switchToRecordingPreview(streamManager: StreamManager, view: MTHKView) {

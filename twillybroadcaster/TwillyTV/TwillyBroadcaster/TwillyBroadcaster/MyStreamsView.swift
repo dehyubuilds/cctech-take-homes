@@ -31,6 +31,7 @@ struct MyStreamsView: View {
     
     @ObservedObject private var authService = AuthService.shared
     @ObservedObject private var channelService = ChannelService.shared
+    @ObservedObject private var websocketService = UnifiedWebSocketService.shared
     @Environment(\.dismiss) var dismiss
     
     @State private var streams: [StreamItem] = []
@@ -213,6 +214,42 @@ struct MyStreamsView: View {
             }
             .onDisappear {
                 stopAllPolling()
+            }
+            .onReceive(websocketService.$streamProcessingNotification) { notification in
+                // Handle real-time stream processing updates via WebSocket
+                // PERFORMANCE OPTIMIZATION: Updates are already debounced by UnifiedWebSocketService
+                if let notification = notification {
+                    print("📡 [MyStreamsView] Received WebSocket stream processing notification: \(notification.streamKey) - \(notification.status)")
+                    
+                    // PERFORMANCE OPTIMIZATION: Update specific stream only (no full reload unless needed)
+                    if let index = streams.firstIndex(where: { $0.streamKey == notification.streamKey }) {
+                        // Update only the changed stream (faster than reloading all)
+                        streams[index].isProcessing = (notification.status == "processing")
+                        streams[index].isReady = (notification.status == "ready")
+                        streams[index].hasHlsUrl = (notification.hlsUrl != nil)
+                        streams[index].hasThumbnail = (notification.thumbnailUrl != nil)
+                        
+                        // If stream is ready, stop polling for it
+                        if notification.status == "ready" {
+                            pollTasks[notification.streamKey]?.cancel()
+                            pollTasks.removeValue(forKey: notification.streamKey)
+                            isWaitingForStream = false
+                            
+                            // PERFORMANCE OPTIMIZATION: Only reload if we need full data (HLS URL, thumbnail)
+                            // Otherwise, the direct update above is sufficient
+                            if notification.hlsUrl != nil || notification.thumbnailUrl != nil {
+                                Task {
+                                    await loadStreams()
+                                }
+                            }
+                        }
+                    } else if notification.status == "ready" {
+                        // New stream appeared, reload all streams (necessary for new items)
+                        Task {
+                            await loadStreams()
+                        }
+                    }
+                }
             }
             .sheet(isPresented: $showingEditModal) {
                 if let stream = editingStream {
@@ -792,6 +829,12 @@ struct StreamEditView: View {
                                 .background(Color.white.opacity(0.15))
                                 .cornerRadius(8)
                                 .foregroundColor(.white)
+                                .onChange(of: title) { newValue in
+                                    // Limit to 50 characters to fit on one line
+                                    if newValue.count > 50 {
+                                        title = String(newValue.prefix(50))
+                                    }
+                                }
                         }
                         
                         VStack(alignment: .leading, spacing: 8) {

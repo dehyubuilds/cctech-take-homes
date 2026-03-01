@@ -46,11 +46,9 @@ struct ChannelDetailView: View {
     @State private var showingPrivateManagement = false // Show private username management
     @State private var unreadAccessInboxCount = 0 // Unread count for access inbox notifications
     @State private var inboxPollTask: Task<Void, Never>? = nil // Task for polling inbox
-    @State private var inboxNotificationDebounceTask: Task<Void, Never>? = nil // Task for debouncing inbox notifications
     @State private var accessInboxNotifications: [AccessInboxNotification] = [] // Access inbox notifications
     @State private var accessInboxNotificationData: [String: AppNotification] = [:] // Store full notification data by ID
     @State private var isLoadingAccessInbox = false // Loading state for access inbox
-    @State private var isLoadingInboxCount = false // Prevent multiple simultaneous inbox count calls
     @State private var privateManagementSearchText = "" // Search text for private management
     @State private var privateManagementSearchResults: [UsernameSearchResult] = [] // Search results for private management
     @State private var isSearchingPrivateManagement = false // Whether private management search is in progress
@@ -152,11 +150,63 @@ struct ChannelDetailView: View {
     
     // MARK: - Body View Helpers (Breaking up complex expression for compiler)
     
+    private var isTwillyTVChannel: Bool {
+        currentChannel.channelName.lowercased() == "twilly tv"
+    }
+    
     private var baseContentView: some View {
         ZStack {
             backgroundGradient
             mainScrollView
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            channelBottomNavBar
+        }
+    }
+    
+    /// Bottom nav bar: all icons from the top bar (Public/Private, All/My, Favorites for Twilly TV + Inbox, Person, Settings for all), evenly spaced
+    private var channelBottomNavBar: some View {
+        HStack(spacing: 0) {
+            if isTwillyTVChannel {
+                privateToggleButton.frame(maxWidth: .infinity)
+                twillyLogoFilterButton.frame(maxWidth: .infinity)
+                favoritesButton.frame(maxWidth: .infinity)
+            } else {
+                navigationTitleView.frame(maxWidth: .infinity)
+            }
+            Button(action: { showingPrivateInbox = true }) {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "envelope.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(.white)
+                    if unreadAccessInboxCount > 0 {
+                        Text("\(unreadAccessInboxCount > 99 ? "99+" : "\(unreadAccessInboxCount)")")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(4)
+                            .background(Color.red)
+                            .clipShape(Circle())
+                            .offset(x: 8, y: -8)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            Button(action: { showingPrivateManagement = true }) {
+                Image(systemName: "person.circle")
+                    .font(.system(size: 20))
+                    .foregroundColor(.white)
+            }
+            .frame(maxWidth: .infinity)
+            Button(action: { showingSettings = true }) {
+                Image(systemName: "gear")
+                    .font(.system(size: 20))
+                    .foregroundColor(.white)
+            }
+            .frame(maxWidth: .infinity)
+        }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+            .background(Color(red: 0.1, green: 0.1, blue: 0.15)) // Match poster/channel background dark blue-gray
     }
     
     @ViewBuilder
@@ -175,12 +225,8 @@ struct ChannelDetailView: View {
         viewWithNavigation
         .toolbar {
             ToolbarItem(placement: .principal) {
-                // Show navigation title for non-Twilly TV channels
-                if currentChannel.channelName.lowercased() != "twilly tv" {
-                    navigationTitleView
-                } else {
-                    EmptyView()
-                }
+                // Title moved to bottom bar for all channels
+                EmptyView()
             }
         }
     }
@@ -566,19 +612,18 @@ struct ChannelDetailView: View {
         }
         .onReceive(websocketService.$inboxNotification) { notification in
             // Handle real-time inbox notifications via WebSocket - SUPER FAST updates
-            // CRITICAL: Debounce to prevent flickering from rapid notifications
             if let notification = notification {
-                // Cancel any pending inbox count reload
-                inboxNotificationDebounceTask?.cancel()
                 
-                // Debounce: Wait 500ms before reloading (prevents flickering from rapid notifications)
-                inboxNotificationDebounceTask = Task {
-                    try? await Task.sleep(nanoseconds: 500_000_000) // 500ms debounce
-                    if !Task.isCancelled {
-                        // CRITICAL FIX: Don't do optimistic update - just refresh from server
-                        // This prevents flickering when server returns different count
+                // Check if this is a private_access_granted notification
+                if notification.notificationType == "private_access_granted" {
+                    // Update count immediately (optimistic update) - already on main actor
+                    unreadAccessInboxCount += 1
+                    saveUnreadAccessInboxCountToCache(count: unreadAccessInboxCount)
+                    // Then refresh from server to get accurate count
                     loadUnreadAccessInboxCount()
-                    }
+                } else {
+                    // For other notification types, just refresh
+                    loadUnreadAccessInboxCount()
                 }
             }
         }
@@ -868,63 +913,13 @@ struct ChannelDetailView: View {
     // MARK: - Toolbar Items
     @ViewBuilder
     private var leadingToolbarItems: some View {
-        // Twilly TV specific toolbar items
-        if currentChannel.channelName.lowercased() == "twilly tv" {
-            HStack(spacing: 12) {
-                // Public/Private toggle (first, on the left)
-            privateToggleButton
-                
-                // Twilly logo button to toggle filter (my content vs all content)
-                twillyLogoFilterButton
-                
-                // Favorites star button
-                favoritesButton
-            }
-            .padding(.leading, 8)
-        }
+        // All icons moved to bottom nav bar
+        EmptyView()
     }
     
-    @ViewBuilder
     private var trailingToolbarItems: some View {
-        // Private access inbox button (for notifications when added to private)
-        Button(action: {
-            showingPrivateInbox = true
-        }) {
-            ZStack(alignment: .topTrailing) {
-                Image(systemName: "envelope.fill")
-                    .font(.system(size: 20))
-                    .foregroundColor(.white)
-                
-                // Unread badge
-                if unreadAccessInboxCount > 0 {
-                    Text("\(unreadAccessInboxCount > 99 ? "99+" : "\(unreadAccessInboxCount)")")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(4)
-                        .background(Color.red)
-                        .clipShape(Circle())
-                        .offset(x: 8, y: -8)
-                }
-            }
-        }
-        
-        // Private username management button (person icon)
-        Button(action: {
-            showingPrivateManagement = true
-        }) {
-            Image(systemName: "person.circle")
-                .font(.system(size: 20))
-                .foregroundColor(.white)
-        }
-        
-        // Settings button
-        Button(action: {
-            showingSettings = true
-        }) {
-            Image(systemName: "gear")
-                .font(.system(size: 20))
-                .foregroundColor(.white)
-        }
+        // All icons moved to bottom nav bar
+        EmptyView()
     }
     
     private var twillyLogoFilterButton: some View {
@@ -2074,9 +2069,8 @@ struct ChannelDetailView: View {
             // For Twilly TV channel - show text banner instead of poster image
             if currentChannel.channelName.lowercased() == "twilly tv" {
                 ZStack(alignment: .center) {
-                    // Background gradient instead of poster image
-                            LinearGradient(
-                                gradient: Gradient(colors: [
+                    LinearGradient(
+                        gradient: Gradient(colors: [
                             Color.black,
                             Color(red: 0.1, green: 0.1, blue: 0.15),
                             Color.black
@@ -2084,23 +2078,18 @@ struct ChannelDetailView: View {
                         startPoint: .top,
                         endPoint: .bottom
                     )
-                    
-                    // Text overlay - large and visible
                     VStack(spacing: 8) {
-                        // Twilly TV title - large and bold
                         Text("Twilly TV")
                             .font(.system(size: 48, weight: .black, design: .rounded))
                             .foregroundStyle(
-                                    LinearGradient(
+                                LinearGradient(
                                     colors: [.white, .twillyCyan, .white],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
+                                    startPoint: .leading,
+                                    endPoint: .trailing
                                 )
                             )
                             .shadow(color: .black.opacity(0.8), radius: 8, x: 0, y: 2)
                             .shadow(color: .twillyCyan.opacity(0.5), radius: 12, x: 0, y: 0)
-                        
-                        // Tagline - larger and more visible
                         Text("A social streaming network")
                             .font(.system(size: 20, weight: .semibold))
                             .foregroundColor(.white)
@@ -2113,52 +2102,180 @@ struct ChannelDetailView: View {
                 .clipped()
                 .cornerRadius(12)
             } else if !currentChannel.posterUrl.isEmpty {
-                // For other channels, show poster image
+                // Validate URL before creating
                 if let url = URL(string: currentChannel.posterUrl) {
+                    // Check if it's an SVG file
+                    if currentChannel.posterUrl.lowercased().hasSuffix(".svg") {
+                        // Use SVG view for SVG files
+                        ZStack {
+                            SVGImageView(url: url)
+                                .scaledToFill()
+                            
+                            // Overlay gradient mesh for depth
+                            LinearGradient(
+                                gradient: Gradient(colors: [
+                                    Color.twillyTeal.opacity(0.15),
+                                    Color.clear,
+                                    Color.twillyCyan.opacity(0.1)
+                                ]),
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                            
+                            // Diagonal accent line
+                            GeometryReader { geometry in
+                                Path { path in
+                                    path.move(to: CGPoint(x: 0, y: geometry.size.height * 0.3))
+                                    path.addLine(to: CGPoint(x: geometry.size.width * 0.4, y: 0))
+                                }
+                                .stroke(
+                                    LinearGradient(
+                                        gradient: Gradient(colors: [
+                                            Color.twillyCyan.opacity(0.6),
+                                            Color.clear
+                                        ]),
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    ),
+                                    lineWidth: 2
+                                )
+                            }
+                        }
+                        .onAppear {
+                            print("✅ [ChannelDetailView] Loading SVG poster")
+                            print("   URL: \(currentChannel.posterUrl)")
+                        }
+                    } else {
+                        // Use AsyncImage for raster images (PNG, JPEG, etc.)
+                        ZStack {
                             AsyncImage(url: url) { phase in
                             switch phase {
                             case .success(let image):
                                 image
                                     .resizable()
                                     .scaledToFill()
-                        case .failure(_), .empty:
-                            ZStack {
-                                Color.gray.opacity(0.3)
-                                Image(systemName: "tv.fill")
-                                    .font(.system(size: 60))
-                                    .foregroundColor(.white.opacity(0.5))
+                                    .onAppear {
+                                        print("✅ [ChannelDetailView] Successfully loaded poster image")
+                                        print("   URL: \(currentChannel.posterUrl)")
+                                    }
+                            case .failure(let error):
+                                posterPlaceholder
+                                    .onAppear {
+                                        print("❌ [ChannelDetailView] Failed to load poster image")
+                                        print("   Error: \(error.localizedDescription)")
+                                        print("   Error type: \(type(of: error))")
+                                        if let urlError = error as? URLError {
+                                            print("   URL Error code: \(urlError.code.rawValue)")
+                                            print("   URL Error description: \(urlError.localizedDescription)")
+                                        }
+                                        print("   Poster URL: \(currentChannel.posterUrl)")
+                                        print("   Channel: \(currentChannel.channelName)")
+                                        print("   Creator Email: \(currentChannel.creatorEmail)")
+                                    }
+                            case .empty:
+                                posterPlaceholder
+                                    .onAppear {
+                                        print("⏳ [ChannelDetailView] Poster image is loading (empty state)")
+                                        print("   URL: \(currentChannel.posterUrl)")
                                     }
                             @unknown default:
-                            Color.gray.opacity(0.3)
+                                posterPlaceholder
+                                    .onAppear {
+                                        print("⚠️ [ChannelDetailView] Unknown AsyncImage phase")
+                                        print("   URL: \(currentChannel.posterUrl)")
+                                    }
+                            }
+                            }
+                            
+                            // Overlay gradient mesh for depth and atmosphere
+                            LinearGradient(
+                                gradient: Gradient(colors: [
+                                    Color.twillyTeal.opacity(0.2),
+                                    Color.clear,
+                                    Color.twillyCyan.opacity(0.15),
+                                    Color.clear
+                                ]),
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                            
+                            // Diagonal accent line for visual interest
+                            GeometryReader { geometry in
+                                Path { path in
+                                    path.move(to: CGPoint(x: 0, y: geometry.size.height * 0.25))
+                                    path.addLine(to: CGPoint(x: geometry.size.width * 0.35, y: 0))
+                                }
+                                .stroke(
+                                    LinearGradient(
+                                        gradient: Gradient(colors: [
+                                            Color.twillyCyan.opacity(0.7),
+                                            Color.clear
+                                        ]),
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    ),
+                                    lineWidth: 2.5
+                                )
+                            }
                         }
                     }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 200)
-                    .clipped()
-                    .cornerRadius(12)
                 } else {
-                    ZStack {
-                        Color.gray.opacity(0.3)
-                        Image(systemName: "tv.fill")
-                            .font(.system(size: 60))
-                            .foregroundColor(.white.opacity(0.5))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 200)
-                    .clipped()
-                    .cornerRadius(12)
+                    posterPlaceholder
+                        .onAppear {
+                            print("❌ [ChannelDetailView] Invalid poster URL - cannot create URL object")
+                            print("   Raw posterUrl string: '\(currentChannel.posterUrl)'")
+                            print("   Channel: \(currentChannel.channelName)")
+                            print("   Creator Email: \(currentChannel.creatorEmail)")
+                        }
                 }
             } else {
-                ZStack {
-                    Color.gray.opacity(0.3)
-                    Image(systemName: "tv.fill")
-                        .font(.system(size: 60))
-                        .foregroundColor(.white.opacity(0.5))
-                }
+                posterPlaceholder
+                    .onAppear {
+                        print("⚠️ [ChannelDetailView] Poster URL is empty for channel: \(currentChannel.channelName)")
+                        print("   Creator Email: \(currentChannel.creatorEmail)")
+                        print("   Channel ID: \(currentChannel.channelId)")
+                    }
+            }
+        }
+        .background(Color.black) // Solid opaque background to completely hide content behind poster
         .frame(maxWidth: .infinity)
-                .frame(height: 200)
+        .frame(height: currentChannel.channelName.lowercased() == "twilly tv" ? 240 : 200) // Taller for Twilly TV
         .clipped()
-                .cornerRadius(12)
+        .cornerRadius(currentChannel.channelName.lowercased() == "twilly tv" ? 20 : 12) // More rounded for Twilly TV
+        .overlay(
+            RoundedRectangle(cornerRadius: currentChannel.channelName.lowercased() == "twilly tv" ? 20 : 12)
+                .stroke(
+                    LinearGradient(
+                        gradient: Gradient(colors: [
+                            Color.twillyTeal.opacity(0.4),
+                            Color.twillyCyan.opacity(0.3),
+                            Color.twillyTeal.opacity(0.4)
+                        ]),
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1.5
+                )
+        )
+        .shadow(color: Color.twillyCyan.opacity(0.3), radius: 16, x: 0, y: 8)
+        .shadow(color: Color.black.opacity(0.4), radius: 8, x: 0, y: 4)
+        .onAppear {
+            print("🖼️ [ChannelDetailView] ChannelPoster onAppear")
+            print("   Channel: \(currentChannel.channelName)")
+            print("   Channel ID: \(currentChannel.channelId)")
+            print("   Creator Email: \(currentChannel.creatorEmail)")
+            print("   Creator Username: \(currentChannel.creatorUsername)")
+            print("   Poster URL: \(currentChannel.posterUrl.isEmpty ? "EMPTY" : currentChannel.posterUrl)")
+            print("   Poster URL length: \(currentChannel.posterUrl.count) characters")
+            if !currentChannel.posterUrl.isEmpty {
+                if let url = URL(string: currentChannel.posterUrl) {
+                    print("   ✅ URL is valid")
+                    print("   URL scheme: \(url.scheme ?? "nil")")
+                    print("   URL host: \(url.host ?? "nil")")
+                    print("   URL path: \(url.path)")
+                } else {
+                    print("   ❌ URL is INVALID - cannot parse")
+                }
             }
         }
     }
@@ -2363,13 +2480,6 @@ struct ChannelDetailView: View {
     private func loadUnreadAccessInboxCount() {
         guard let userEmail = authService.userEmail else { return }
         
-        // CRITICAL: Prevent multiple simultaneous calls (prevents flickering)
-        guard !isLoadingInboxCount else {
-            print("⚠️ [ChannelDetailView] Already loading inbox count, skipping duplicate call")
-            return
-        }
-        
-        isLoadingInboxCount = true
         Task {
             do {
                 // Get ALL notifications (not just unread) to filter properly
@@ -2387,13 +2497,11 @@ struct ChannelDetailView: View {
                     // Save to cache for instant display on next load
                     saveUnreadAccessInboxCountToCache(count: newCount)
                     print("📬 [ChannelDetailView] Unread access inbox count: \(newCount) (from \(allNotifications.count) total notifications)")
-                    isLoadingInboxCount = false
                 }
             } catch {
                 print("❌ [ChannelDetailView] Error loading unread access inbox count: \(error)")
                 await MainActor.run {
                     unreadAccessInboxCount = 0
-                    isLoadingInboxCount = false
                 }
             }
         }
@@ -6529,11 +6637,25 @@ struct ChannelDetailView: View {
             onFavorite: {
                 toggleFavorite(for: item)
             },
-            showPrivateContent: showPrivateContent // Pass private view state to show lock icon for all private videos
+            showPrivateContent: showPrivateContent,
+            onRemindMe: (item.status == "HELD" && item.scheduledDropDate != nil) ? {
+                Task {
+                    await optInReminderFor(item)
+                }
+            } : nil
         )
         .onAppear {
             handleContentCardAppear(item)
         }
+    }
+    
+    /// Remind Me for scheduled Drop (blueprint). Calls API and tracks analytics.
+    private func optInReminderFor(_ item: ChannelContent) async {
+        guard let email = authService.userEmail else { return }
+        guard let dateString = item.scheduledDropDate,
+              let premiereAt = ISO8601DateFormatter().date(from: dateString) else { return }
+        await ChannelService.shared.optInDropReminder(contentId: item.SK, viewerEmail: email, premiereAt: premiereAt)
+        TwillyAnalyticsService.shared.trackReminderOptIn(dropId: item.SK, premiereAt: premiereAt)
     }
     
     private func formatAirScheduleLabel(day: String, time: String) -> String {
@@ -6592,19 +6714,41 @@ struct ChannelDetailView: View {
             print("✅ [ChannelDetailView] Setting selectedContent and showing player (HLS)")
             selectedContent = item
             showingPlayer = true
+            trackDropViewedIfNeeded(item)
         } else if item.localFileURL != nil {
             print("✅ [ChannelDetailView] Setting selectedContent and showing player (Local)")
             selectedContent = item
             showingPlayer = true
+            trackDropViewedIfNeeded(item)
         } else {
             print("❌ [ChannelDetailView] Cannot show player - missing hlsUrl and localFileURL")
         }
     }
     
+    /// Analytics: track drop view for YC metrics (views in first hour, etc.)
+    private func trackDropViewedIfNeeded(_ item: ChannelContent) {
+        var secondsSincePremiere: TimeInterval? = nil
+        if let dateString = item.scheduledDropDate ?? item.airdate {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let d = formatter.date(from: dateString) {
+                secondsSincePremiere = Date().timeIntervalSince(d)
+            } else {
+                formatter.formatOptions = [.withInternetDateTime]
+                if let d = formatter.date(from: dateString) {
+                    secondsSincePremiere = Date().timeIntervalSince(d)
+                }
+            }
+        }
+        TwillyAnalyticsService.shared.trackDropViewed(dropId: item.SK, secondsSincePremiere: secondsSincePremiere)
+    }
+    
     private func handleContentCardAppear(_ item: ChannelContent) {
         // LIGHTNING FAST: Preload comments when video card appears (before user opens chat)
         // This makes chat feel instant when opened
-        MessagingService.shared.preloadMessages(for: item.SK)
+        Task {
+            try? await MessagingService.shared.loadMessages(for: item.SK)
+        }
         // HYBRID OPTIMIZATION: Prefetch next page when user scrolls near the end (last 5 items)
         // This ensures seamless pagination without loading states
         if let index = content.firstIndex(where: { $0.id == item.id }),
@@ -7762,55 +7906,42 @@ struct ChannelDetailView: View {
                                     hasMoreContent = publicHasMore
                                 }
                                 
-                                // Update cache with all content
+                                // Apply favorites filter if active
+                                if showFavoritesOnly {
+                                    content = content.filter { favoriteContentIds.contains($0.SK) }
+                                }
                                 cachedUnfilteredContent = publicContent + privateContent
-                                
                                 isLoading = false
                                 hasLoadedOnce = true
-                                print("✅ [ChannelDetailView] Both views loaded in single request - public: \(publicContent.count), private: \(privateContent.count), showing: \(showPrivateContent ? "private" : "public")")
-                            }
-                                
-                            // Check and delete short videos after content is loaded (background task)
-                            Task.detached(priority: .utility) {
-                                    await checkAndDeleteShortVideos()
                             }
                         } catch {
-                            print("❌ [ChannelDetailView] Error loading both views: \(error.localizedDescription)")
-                            // CRITICAL: Always set isLoading = false, even if fallback fails
-                            await MainActor.run {
-                                isLoading = false
-                            }
-                            
-                            // Fallback to single load
+                            await MainActor.run { isLoading = false }
                             do {
-                            let result = try await channelService.fetchChannelContent(
-                                channelName: currentChannel.channelName,
-                                creatorEmail: currentChannel.creatorEmail,
-                                viewerEmail: viewerEmail,
-                                limit: 20,
-                                nextToken: nil,
-                                forceRefresh: forceRefresh,
-                                showPrivateContent: showPrivateContent
-                            )
-                            await MainActor.run {
-                                updateContentWith(result.content, replaceLocal: false)
-                                nextToken = result.nextToken
-                                hasMoreContent = result.hasMore
-                                isLoading = false
-                                hasLoadedOnce = true
+                                let result = try await channelService.fetchChannelContent(
+                                    channelName: currentChannel.channelName,
+                                    creatorEmail: currentChannel.creatorEmail,
+                                    viewerEmail: viewerEmail,
+                                    limit: 20,
+                                    nextToken: nil,
+                                    forceRefresh: forceRefresh,
+                                    showPrivateContent: showPrivateContent
+                                )
+                                await MainActor.run {
+                                    updateContentWith(result.content, replaceLocal: false)
+                                    nextToken = result.nextToken
+                                    hasMoreContent = result.hasMore
+                                    isLoading = false
+                                    hasLoadedOnce = true
                                 }
                             } catch {
-                                // Even if fallback fails, ensure isLoading is false
                                 await MainActor.run {
                                     isLoading = false
                                     hasLoadedOnce = true
                                     errorMessage = "Failed to load content: \(error.localizedDescription)"
-                                    print("❌ [ChannelDetailView] Fallback load also failed: \(error.localizedDescription)")
                                 }
                             }
                         }
                     } else {
-                        // Non-Twilly TV channel or already loaded both views - use single load
                         let result = try await channelService.fetchChannelContent(
                             channelName: currentChannel.channelName,
                             creatorEmail: currentChannel.creatorEmail,
@@ -7820,70 +7951,25 @@ struct ChannelDetailView: View {
                             forceRefresh: forceRefresh,
                             showPrivateContent: showPrivateContent
                         )
-                        print("✅ [ChannelDetailView] Fetched \(result.content.count) items from API, hasMore: \(result.hasMore)")
-                        if result.content.isEmpty {
-                            print("⚠️ [ChannelDetailView] WARNING: API returned empty content array!")
-                        } else {
-                            print("✅ [ChannelDetailView] API returned \(result.content.count) items - first item: \(result.content[0].fileName)")
-                        }
                         await MainActor.run {
-                            print("🔄 [ChannelDetailView] About to call updateContentWith with \(result.content.count) items")
                             updateContentWith(result.content, replaceLocal: false)
-                            print("🔄 [ChannelDetailView] After updateContentWith - content.count: \(content.count)")
                             nextToken = result.nextToken
                             hasMoreContent = result.hasMore
                             isLoading = false
                             hasLoadedOnce = true
-                            print("✅ [ChannelDetailView] Final state - content.count: \(content.count), isLoading: \(isLoading), hasLoadedOnce: \(hasLoadedOnce), errorMessage: \(errorMessage ?? "nil")")
-                            
-                            // Check and delete short videos after content is loaded
-                            Task {
-                                await checkAndDeleteShortVideos()
-                            }
                         }
                     }
                 }
             } catch {
-                // Handle cancelled requests silently - these are intentional (user navigated away, etc.)
-                if let urlError = error as? URLError, urlError.code == .cancelled {
-                    print("🔄 [ChannelDetailView] Request was cancelled (likely intentional) - not showing error")
-                    await MainActor.run {
-                        isLoading = false
-                        // Don't set errorMessage for cancelled requests
-                    }
-                    return
-                }
-                
-                // CRITICAL: Only show errors if we have NO cached content
-                // If we have cached content, errors are silent (Instagram/Twitter pattern)
-                let hasCachedContent = await MainActor.run {
-                    let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
-                    return isTwillyTV ? (!publicContent.isEmpty || !privateContent.isEmpty) : !content.isEmpty
-                }
-                
-                print("❌ [ChannelDetailView] Error fetching content: \(error.localizedDescription)")
-                
+                if let urlError = error as? URLError, urlError.code == .cancelled { return }
                 await MainActor.run {
                     isLoading = false
-                    hasLoadedOnce = true
-                    
-                    // Only show error if we have NO cached content
-                    // If we have cached content, errors are completely silent (Instagram/Twitter pattern)
-                    if !hasCachedContent {
-                        // Show user-friendly error message
-                        errorMessage = "Unable to load content. Please check your connection."
-                    } else {
-                        // We have cached content - error is silent (user sees cached content)
-                        print("✅ [ChannelDetailView] Error occurred but we have cached content - error is silent")
-                        errorMessage = nil
-                    }
-                    
-                    print("❌ [ChannelDetailView] Error state set - errorMessage: \(errorMessage ?? "nil"), isLoading: \(isLoading), hasLoadedOnce: \(hasLoadedOnce), hasCachedContent: \(hasCachedContent)")
+                    errorMessage = error.localizedDescription
                 }
             }
         }
     }
-    
+
     private func updateContentWith(_ fetchedContent: [ChannelContent], replaceLocal: Bool = false) {
         // CRITICAL: Optimize for speed - process efficiently, update UI immediately
         let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
@@ -8071,6 +8157,15 @@ struct ChannelDetailView: View {
                     }
                 }
                 }
+            
+            // CRITICAL: Apply favorites filter if active (after content is set)
+            // This ensures favorites filter is always applied when content is updated
+            if showFavoritesOnly {
+                content = content.filter { item in
+                    favoriteContentIds.contains(item.SK)
+                }
+                print("⭐ [ChannelDetailView] Applied favorites filter after content update: \(content.count) items")
+            }
         }
         
         // Populate cache with unfiltered content when content is updated
@@ -10085,6 +10180,14 @@ struct ChannelDetailView: View {
                                 content = privateContent
                             }
                             
+                            // CRITICAL: Apply favorites filter if active
+                            if showFavoritesOnly {
+                                content = content.filter { item in
+                                    favoriteContentIds.contains(item.SK)
+                                }
+                                print("⭐ [ChannelDetailView] Applied favorites filter after loading more private content: \(content.count) items")
+                            }
+                            
                             // Update pagination tokens
                             privateNextToken = result.nextToken
                             privateHasMore = result.hasMore
@@ -10114,6 +10217,14 @@ struct ChannelDetailView: View {
                                 }
                             } else {
                                 content = publicContent
+                            }
+                            
+                            // CRITICAL: Apply favorites filter if active
+                            if showFavoritesOnly {
+                                content = content.filter { item in
+                                    favoriteContentIds.contains(item.SK)
+                                }
+                                print("⭐ [ChannelDetailView] Applied favorites filter after loading more public content: \(content.count) items")
                             }
                             
                             // Update pagination tokens
@@ -10152,6 +10263,15 @@ struct ChannelDetailView: View {
                 await MainActor.run {
                     // Append new content to existing content
                     content.append(contentsOf: filteredContent)
+                    
+                    // CRITICAL: Apply favorites filter if active
+                    if showFavoritesOnly {
+                        content = content.filter { item in
+                            favoriteContentIds.contains(item.SK)
+                        }
+                        print("⭐ [ChannelDetailView] Applied favorites filter after loading more content (non-Twilly TV): \(content.count) items")
+                    }
+                    
                     nextToken = result.nextToken
                     hasMoreContent = result.hasMore
                     isLoadingMore = false
@@ -10242,13 +10362,16 @@ struct ContentCard: View {
     let isFavorite: Bool // Whether this content is favorited
     let onFavorite: (() -> Void)? // Favorite toggle callback
     let showPrivateContent: Bool // Whether we're in private view (to show lock icon for all private videos)
+    let onRemindMe: (() -> Void)? // Remind me for scheduled Drop (blueprint)
     
     @State private var videoDuration: TimeInterval? = nil
     @State private var isLoadingDuration = false
     @State private var shouldHide = false // Hide card if duration < 6 seconds
     @State private var commentCount: Int? = nil // Comment count for this video (loaded once, persists)
     @State private var unreadCommentCount: Int = 0 // Unread comment count (badge) - loaded once, persists like commentCount
-    @ObservedObject private var messagingService = MessagingService.shared // Observe MessagingService to update comment count (same as FloatingCommentView)
+    @ObservedObject private var messagingService = MessagingService.shared
+    // SAFE: Additive state for Premium subscription check (only used for scheduled Premium drops)
+    @State private var isSubscribed: Bool? = nil
     
     // Computed property to track comment count changes (for onChange observation)
     private var currentCommentCount: Int {
@@ -10266,7 +10389,15 @@ struct ContentCard: View {
     }
     
     // Computed property to check if content is scheduled
+    // SAFE: Backward compatible - checks both new HELD status and old airdate format
     private var isScheduled: Bool {
+        // NEW: Check for HELD status with scheduledDropDate (scheduled drops feature)
+        if content.status == "HELD", let scheduledDateString = content.scheduledDropDate {
+            if let scheduledDate = parseDate(scheduledDateString) {
+                return scheduledDate > Date()
+            }
+        }
+        // OLD: Fallback to airdate format (existing functionality - DO NOT BREAK)
         guard let airdateString = content.airdate,
               let airdate = parseDate(airdateString),
               content.isVisible != true else {
@@ -10274,15 +10405,27 @@ struct ContentCard: View {
         }
         return airdate > Date()
     }
-    
-    // Computed property for scheduled date
+
+    // SAFE: Backward compatible - prioritizes new format, falls back to old
     private var scheduledDate: Date? {
+        // NEW: Check scheduledDropDate first (scheduled drops feature)
+        if let scheduledDateString = content.scheduledDropDate {
+            return parseDate(scheduledDateString)
+        }
+        // OLD: Fallback to airdate (existing functionality - DO NOT BREAK)
         guard let airdateString = content.airdate,
               let airdate = parseDate(airdateString) else {
             return nil
         }
         return airdate
     }
+    
+    // Computed property to check if this is a Premium drop (additive - doesn't affect existing)
+    private var isPremiumDrop: Bool {
+        return content.isPremium == true
+    }
+    
+    // State for subscription check (Premium drops only - additive, doesn't affect existing)
     
     // Helper function to parse date from ISO8601 string
     private func parseDate(_ dateString: String) -> Date? {
@@ -10296,7 +10439,7 @@ struct ContentCard: View {
         return formatter.date(from: dateString)
     }
     
-    init(content: ChannelContent, onTap: @escaping () -> Void, onPlay: (() -> Void)? = nil, isLocalVideo: Bool = false, isUploadComplete: Bool = false, isPollingForThumbnail: Bool = false, channelCreatorUsername: String = "", channelCreatorEmail: String = "", isLatestContent: Bool = false, airScheduleLabel: String? = nil, showDeleteButton: Bool = false, onDelete: (() -> Void)? = nil, showEditButton: Bool = false, onEdit: (() -> Void)? = nil, isOwnContent: Bool = false, isFavorite: Bool = false, onFavorite: (() -> Void)? = nil, showPrivateContent: Bool = false) {
+    init(content: ChannelContent, onTap: @escaping () -> Void, onPlay: (() -> Void)? = nil, isLocalVideo: Bool = false, isUploadComplete: Bool = false, isPollingForThumbnail: Bool = false, channelCreatorUsername: String = "", channelCreatorEmail: String = "", isLatestContent: Bool = false, airScheduleLabel: String? = nil, showDeleteButton: Bool = false, onDelete: (() -> Void)? = nil, showEditButton: Bool = false, onEdit: (() -> Void)? = nil, isOwnContent: Bool = false, isFavorite: Bool = false, onFavorite: (() -> Void)? = nil, showPrivateContent: Bool = false, onRemindMe: (() -> Void)? = nil) {
         self.content = content
         self.onTap = onTap
         self.onPlay = onPlay
@@ -10315,6 +10458,7 @@ struct ContentCard: View {
         self.isFavorite = isFavorite
         self.onFavorite = onFavorite
         self.showPrivateContent = showPrivateContent
+        self.onRemindMe = onRemindMe
     }
     
     var body: some View {
@@ -10419,14 +10563,9 @@ struct ContentCard: View {
                                         .resizable()
                                         .aspectRatio(contentMode: .fill)
                                 case .failure(_), .empty:
-                                    ZStack {
-                                        Color.gray.opacity(0.3)
-                                        Image(systemName: "play.circle.fill")
-                                            .font(.system(size: 40))
-                                            .foregroundColor(.white.opacity(0.5))
-                                    }
+                                    thumbnailPlaceholderView
                                 @unknown default:
-                                    Color.gray.opacity(0.3)
+                                    thumbnailPlaceholderView
                                 }
                             }
                             
@@ -10715,20 +10854,20 @@ struct ContentCard: View {
                 .padding(8)
             }
             .overlay(alignment: .topTrailing) {
-                // Scheduled date badge
+                // Scheduled drop badge: "Airs [date]" — visible on Twilly TV until airdate
                 if isScheduled, let date = scheduledDate {
                     HStack(spacing: 4) {
-                        Image(systemName: "clock.fill")
-                            .font(.system(size: 9))
-                        Text(formatScheduledDate(date))
+                        Image(systemName: "calendar.badge.clock")
+                            .font(.system(size: 10))
+                        Text("Airs \(formatScheduledDate(date))")
                             .font(.system(size: 10, weight: .semibold))
                     }
                     .foregroundColor(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
                     .background(
                         Capsule()
-                            .fill(Color.blue.opacity(0.8))
+                            .fill(Color.twillyTeal.opacity(0.9))
                     )
                     .padding(8)
                 }
@@ -10742,6 +10881,25 @@ struct ContentCard: View {
                     Color.clear
                 }
             }
+            .overlay(alignment: .bottom) {
+                // Remind Me for scheduled Drops (blueprint) — above dim so button is tappable
+                if isScheduled, onRemindMe != nil, let date = scheduledDate {
+                    Button(action: { onRemindMe?() }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "bell.badge")
+                                .font(.system(size: 11))
+                            Text("Remind me")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(Color.twillyTeal.opacity(0.95)))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .padding(12)
+                }
+            }
     }
     
     private func formatScheduledDate(_ date: Date) -> String {
@@ -10749,6 +10907,16 @@ struct ContentCard: View {
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter.string(from: date)
+    }
+    
+    /// Offline/no-service-friendly thumbnail placeholder (dark + play icon instead of gray)
+    private var thumbnailPlaceholderView: some View {
+        ZStack {
+            Color(white: 0.12)
+            Image(systemName: "play.circle.fill")
+                .font(.system(size: 40))
+                .foregroundColor(.white.opacity(0.4))
+        }
     }
     
     // Clean title by removing stream key patterns (static helper for use in multiple places)
@@ -10931,6 +11099,7 @@ struct ContentCard: View {
 }
 
 // SVG Image View using WKWebView for SVG support
+
 struct SVGImageView: UIViewRepresentable {
     let url: URL
     
@@ -10986,651 +11155,878 @@ struct SVGImageView: UIViewRepresentable {
     }
 }
 
-// MARK: - Comment Model
-// MARK: - MessagingService (Temporary: Should be in separate file, add MessagingService.swift to Xcode project)
-class MessagingService: ObservableObject {
-    static let shared = MessagingService()
+struct CommentRowView: View {
+    let comment: Comment
+    let onLike: () -> Void
     
-    // MARK: - Published State (Server is Source of Truth)
-    @Published var publicComments: [String: [Comment]] = [:] // videoId -> [Comment]
-    @Published var privateThreads: [String: [String: [Comment]]] = [:] // videoId -> [parentCommentId -> [Comment]]
-    @Published var unreadCounts: [String: Int] = [:] // videoId -> unreadCount
-    @Published var threadUnreadStatus: [String: Bool] = [:] // "videoId_threadId" -> hasUnread
-    @Published var cachedUserThreads: [String: [ThreadInfo]] = [:] // videoId -> [ThreadInfo]
-    
-    // MARK: - Private State
-    private var websocketService = UnifiedWebSocketService.shared
-    private var authService = AuthService.shared
-    private var pollingTimers: [String: Timer] = [:] // videoId -> Timer
-    private var cancellables = Set<AnyCancellable>()
-    
-    private init() {
-        setupWebSocketHandlers()
-    }
-    
-    // MARK: - Public API
-    
-    /// Load messages for a video - SERVER IS SOURCE OF TRUTH
-    /// LIGHTNING FAST: Returns cached data immediately if available, then refreshes in background
-    func loadMessages(for videoId: String, useCache: Bool = true) async throws {
-        guard let userId = authService.userId,
-              let viewerEmail = authService.userEmail else {
-            throw MessagingError.notAuthenticated
-        }
-        
-        // LIGHTNING FAST: Return cached data immediately if available
-        if useCache {
-            await MainActor.run {
-                if let cachedPublic = publicComments[videoId], !cachedPublic.isEmpty {
-                    print("⚡ [MessagingService] Cache hit for \(videoId): \(cachedPublic.count) public, \(privateThreads[videoId]?.count ?? 0) threads")
-                    // Cache hit - data already available, refresh in background
-                    Task.detached { [weak self] in
-                        try? await self?.loadMessages(for: videoId, useCache: false)
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "person.circle.fill")
+                .font(.system(size: 24))
+                .foregroundColor(.twillyCyan)
+            VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(comment.username)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.white)
+                    Text(comment.text)
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: 8) {
+                    Button(action: onLike) {
+                        HStack(spacing: 4) {
+                            Image(systemName: comment.isLiked ? "heart.fill" : "heart")
+                                .font(.system(size: 12))
+                                .foregroundColor(comment.isLiked ? .red : .white.opacity(0.6))
+                            Text("\(comment.likeCount)")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.7))
+                        }
                     }
-                    return
+                    Text(timeAgoString(from: comment.createdAt))
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.5))
                 }
             }
+            Spacer()
         }
-        
-        // Load fresh from server
-        let response = try await ChannelService.shared.getCommentsWithThreads(
-            videoId: videoId,
-            userId: userId,
-            viewerEmail: viewerEmail
-        )
-        
-        await MainActor.run {
-            // Process public comments - reverse once (server returns newest first)
-            // UNIFIED LOGIC: General chat = flat list, private chat = flat list per threadId
-            // Both work the same - just different IDs (general has no ID, private has threadId)
-            let reversedPublic = Array(response.comments.filter { $0.isPrivate != true && $0.parentCommentId == nil }.reversed())
-            publicComments[videoId] = reversedPublic
-            
-            // Process private threads - reverse each thread once
-            // CRITICAL: Preserve existing threads (SAME AS GENERAL CHAT preserves publicComments)
-            // Don't overwrite - merge with existing to ensure persistence when navigating away
-            var threads: [String: [Comment]] = privateThreads[videoId] ?? [:]
-            
-            // Update with server data (server is source of truth)
-            for (parentId, serverMessages) in response.threadsByParent {
-                // Reverse once (newest first -> oldest first) - SAME AS GENERAL CHAT
-                let reversedMessages = Array(serverMessages.reversed())
-                
-                // Merge with existing messages to preserve optimistic updates - SAME AS GENERAL CHAT
-                let existingMessages = threads[parentId] ?? []
-                let serverMessageIds = Set(reversedMessages.map { $0.id })
-                let optimisticMessages = existingMessages.filter { !serverMessageIds.contains($0.id) }
-                
-                // Combine: server messages + optimistic updates - SAME AS GENERAL CHAT
-                var merged = reversedMessages
-                merged.append(contentsOf: optimisticMessages)
-                
-                threads[parentId] = merged
-            }
-            
-            // CRITICAL: Preserve ALL existing threads that aren't in server response
-            // This ensures messages don't disappear when navigating away - SAME AS GENERAL CHAT
-            // General chat always preserves publicComments, private threads should always be preserved
-            privateThreads[videoId] = threads
-            
-            // Update cached user threads immediately
-            updateCachedUserThreads(for: videoId)
-            
-            print("✅ [MessagingService] Loaded \(reversedPublic.count) public comments and \(threads.count) private threads for \(videoId)")
-        }
-        
-        // CRITICAL: Load unread counts after loading messages
-        // This ensures unread indicators are always up-to-date
-        try await loadUnreadCounts(for: videoId)
-        
-        // Update cached user threads AFTER unread counts are loaded
-        // This ensures orange highlights match the red badge
-        await MainActor.run {
-            updateCachedUserThreads(for: videoId)
+        .padding(.vertical, 4)
+    }
+    
+    private func timeAgoString(from date: Date) -> String {
+        let interval = Date().timeIntervalSince(date)
+        if interval < 60 { return "\(Int(interval))s" }
+        if interval < 3600 { return "\(Int(interval / 60))m" }
+        if interval < 86400 { return "\(Int(interval / 3600))h" }
+        return "\(Int(interval / 86400))d"
+    }
+}
+
+struct VideoPlayerView: View {
+    let url: URL
+    let content: ChannelContent
+    let channelCreatorEmail: String? // For comment visibility checks
+    @Environment(\.dismiss) var dismiss
+    
+    @StateObject private var playerController = VideoPlayerController()
+    @State private var dragOffset: CGFloat = 0
+    
+    /// Offline/no-service-friendly thumbnail placeholder (dark + play icon instead of gray)
+    private var thumbnailPlaceholderViewLarge: some View {
+        ZStack {
+            Color(white: 0.12)
+                .frame(width: 200, height: 150)
+                .cornerRadius(12)
+            Image(systemName: "play.circle.fill")
+                .font(.system(size: 44))
+                .foregroundColor(.white.opacity(0.4))
         }
     }
     
-    /// Preload messages for a video (non-blocking, for instant display later)
-    /// LIGHTNING FAST: Preloads comments when video card appears, before user opens chat
-    func preloadMessages(for videoId: String) {
-        // Only preload if not already cached (avoid redundant loads)
-        Task.detached { [weak self] in
-            await MainActor.run {
-                if self?.publicComments[videoId] == nil || (self?.publicComments[videoId]?.isEmpty ?? true) {
-                    // No cache - preload in background
-                    Task.detached {
-                        try? await self?.loadMessages(for: videoId, useCache: false)
+    var body: some View {
+        let _ = print("🖼️ [VideoPlayerView] body computed - isReady: \(playerController.isReady), isLoading: \(playerController.isLoading), hasPlayer: \(playerController.player != nil)")
+        
+        return ZStack {
+            Color.black.ignoresSafeArea()
+            
+            // Show player as soon as it exists (don't wait for isReady flag)
+            if let player = playerController.player {
+                AVPlayerViewControllerRepresentable(player: player, thumbnailUrl: content.thumbnailUrl)
+                    .ignoresSafeArea()
+                    .onAppear {
+                        print("✅ [VideoPlayerView] AVPlayerViewController appeared")
+                        // Force play in case it didn't auto-play
+                        if player.timeControlStatus != .playing {
+                            print("▶️ [VideoPlayerView] Player not playing, forcing play")
+                            player.play()
+                        }
                     }
-                }
-            }
-        }
-    }
-    
-    /// Update cached user threads for a video (for username scroll)
-    /// OPEN MESSAGING: Anyone who has commented (public or private) can be messaged
-    func updateCachedUserThreads(for videoId: String) {
-        guard let userId = authService.userId,
-              let currentUsername = authService.username else { return }
-        
-        var threads: [ThreadInfo] = []
-        var usernameToThreadId: [String: String] = [:] // Track best threadId for each username
-        
-        // Get all public comments to find ALL participants (not just private thread participants)
-        let publicCommentsList = publicComments[videoId] ?? []
-        let threadsDict = privateThreads[videoId] ?? [:]
-        
-        // STEP 1: Collect all unique participants from private threads (existing conversations)
-        // SIMPLIFIED: Track participants naturally - whoever posts is a participant
-        // Allow self-messaging (user can message themselves)
-        var participantSet: Set<String> = []
-        
-        for (parentId, threadMessages) in threadsDict {
-            for message in threadMessages {
-                // Include ALL participants (including self for self-messaging)
-                participantSet.insert(message.username)
-                // Track threadId for this participant (prefer thread with messages)
-                if usernameToThreadId[message.username] == nil {
-                    usernameToThreadId[message.username] = parentId
-                }
-            }
-        }
-        
-        // STEP 2: Add ALL users who have made public comments (OPEN MESSAGING - anyone can message anyone)
-        // Allow self-messaging - user can click on their own comment to start a conversation with themselves
-        for comment in publicCommentsList {
-            // Include ALL users (including self)
-            participantSet.insert(comment.username)
-            
-            // If this user has a private thread, use that threadId
-            // Otherwise, use the comment.id as the threadId (allows starting new conversation)
-            if usernameToThreadId[comment.username] == nil {
-                // Check if this comment has a private thread
-                if threadsDict[comment.id] != nil {
-                    usernameToThreadId[comment.username] = comment.id
-                } else {
-                    // No private thread yet - use comment.id so clicking starts a new conversation
-                    usernameToThreadId[comment.username] = comment.id
-                }
-            }
-        }
-        
-        // STEP 3: Create ThreadInfo for each participant
-        for username in participantSet {
-            // Get the best threadId for this username
-            let threadId = usernameToThreadId[username] ?? username // Fallback to username if no threadId
-            
-            let key = "\(videoId)_\(threadId)"
-            let hasUnread = threadUnreadStatus[key] == true
-            
-            // Check if thread has messages (existing conversation) or is just a public comment (new conversation)
-            let hasMessages = threadsDict[threadId] != nil && !(threadsDict[threadId]?.isEmpty ?? true)
-            
-            threads.append(ThreadInfo(id: threadId, username: username, hasUnread: hasUnread))
-        }
-        
-        // Sort by unread first, then alphabetically
-        threads.sort { first, second in
-            if first.hasUnread != second.hasUnread {
-                return first.hasUnread
-            }
-            return first.username < second.username
-        }
-        
-        cachedUserThreads[videoId] = threads
-        print("✅ [MessagingService] Updated cached user threads: \(threads.count) participants for \(videoId)")
-    }
-    
-    struct ThreadInfo: Identifiable {
-        var id: String // Mutable to allow updating to more recent thread
-        let username: String
-        var hasUnread: Bool // Mutable to allow updating unread status
-    }
-    
-    /// Post a message - OPTIMISTIC UPDATE + SERVER SYNC
-    func postMessage(videoId: String, text: String, threadId: String?, username: String) async throws -> Comment {
-        // CRITICAL: Use userEmail instead of userId (UUID) - backend needs email for notifications
-        guard let userEmail = authService.userEmail else {
-            throw MessagingError.notAuthenticated
-        }
-        
-        // Create optimistic comment for immediate UI feedback
-        let optimisticComment = Comment(
-            id: "temp_\(Date().timeIntervalSince1970)",
-            videoId: videoId,
-            userId: userEmail, // Use email instead of UUID
-            username: username,
-            text: text,
-            createdAt: Date(),
-            likeCount: 0,
-            isLiked: false,
-            isPrivate: threadId != nil,
-            parentCommentId: threadId,
-            visibleTo: nil,
-            mentionedUsername: nil
-        )
-        
-        // OPTIMISTIC UPDATE: Add to UI immediately (no delay, no jitter)
-        await MainActor.run {
-            if let threadId = threadId {
-                // Private thread message
-                if privateThreads[videoId] == nil {
-                    privateThreads[videoId] = [:]
-                }
-                if privateThreads[videoId]?[threadId] == nil {
-                    privateThreads[videoId]?[threadId] = []
-                }
-                privateThreads[videoId]?[threadId]?.append(optimisticComment)
             } else {
-                // Public comment
-                if publicComments[videoId] == nil {
-                    publicComments[videoId] = []
-                }
-                publicComments[videoId]?.append(optimisticComment)
-            }
-            
-            // Update cached user threads immediately (no flash)
-            updateCachedUserThreads(for: videoId)
-        }
-        
-        // Post to server in background
-        // CRITICAL: Send userEmail as userId - backend needs email for notifications and visibility
-        let comment = try await ChannelService.shared.postComment(
-            videoId: videoId,
-            userId: userEmail, // Use email instead of UUID
-            username: username,
-            text: text,
-            parentCommentId: threadId,
-            creatorEmail: nil,
-            commenterEmail: nil
-        )
-        
-        // UNIFIED LOGIC: Private thread = general chat with 2 people
-        // Replace optimistic comment with real one (same logic for both)
-        await MainActor.run {
-            if let threadId = threadId {
-                // Private thread - treat exactly like general chat, just in a thread array
-                if var thread = privateThreads[videoId]?[threadId] {
-                    if let index = thread.firstIndex(where: { $0.id == optimisticComment.id }) {
-                        thread[index] = comment
-                        privateThreads[videoId]?[threadId] = thread
-                    } else {
-                        // Optimistic comment not found - add the real one (same as general chat)
-                        thread.append(comment)
-                        privateThreads[videoId]?[threadId] = thread
+                ZStack {
+                    // Show thumbnail while loading/preparing
+                    VStack(spacing: 16) {
+                        if let thumbnailUrl = content.thumbnailUrl, !thumbnailUrl.isEmpty {
+                            AsyncImage(url: URL(string: thumbnailUrl)) { phase in
+                                switch phase {
+                                case .success(let image):
+                                    image
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(maxHeight: 300)
+                                        .cornerRadius(12)
+                                case .failure(_), .empty:
+                                    thumbnailPlaceholderViewLarge
+                                @unknown default:
+                                    thumbnailPlaceholderViewLarge
+                                }
+                            }
+                        } else {
+                            thumbnailPlaceholderViewLarge
+                        }
+                        
+                        if playerController.errorMessage == nil {
+                            VStack(spacing: 12) {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: Color.twillyTeal))
+                                    .scaleEffect(1.5)
+                                
+                                Text("Playing")
+                                    .foregroundColor(.white)
+                                    .font(.headline)
+                                    .fontWeight(.medium)
+                            }
+                            .padding(.top, 20)
+                        }
                     }
-                } else {
-                    // Thread doesn't exist - create it with the real comment (same as general chat)
-                    if privateThreads[videoId] == nil {
-                        privateThreads[videoId] = [:]
-                    }
-                    privateThreads[videoId]?[threadId] = [comment]
-                }
-            } else {
-                // Public comment (general chat)
-                if var comments = publicComments[videoId] {
-                    if let index = comments.firstIndex(where: { $0.id == optimisticComment.id }) {
-                        comments[index] = comment
-                        publicComments[videoId] = comments
-                    } else {
-                        // Optimistic comment not found - add the real one
-                        comments.append(comment)
-                        publicComments[videoId] = comments
-                    }
-                } else {
-                    // No comments yet - create array with the real comment
-                    publicComments[videoId] = [comment]
-                }
-            }
-            
-            // Update cached user threads after adding message
-            updateCachedUserThreads(for: videoId)
-        }
-        
-        // UNIFIED PERSISTENCE: Private thread = general chat with 2 people
-        // CRITICAL: Always reload from server after posting (useCache: false to force server fetch)
-        // This ensures message is persisted and visible to both participants
-        // Same logic for both general chat and private threads
-        Task.detached { [weak self] in
-            guard let self = self else { return }
-            // Wait for server processing (same delay for both)
-            try? await Task.sleep(nanoseconds: 1000_000_000) // 1.0s delay to ensure server processing
-            // CRITICAL: Force reload from server (useCache: false) to get persisted message
-            // This ensures both participants see the message - same as general chat
-            try? await self.loadMessages(for: videoId, useCache: false)
-            
-            // After reload, update cached user threads
-            await MainActor.run {
-                self.updateCachedUserThreads(for: videoId)
-            }
-        }
-        
-        return comment
-    }
-    
-    /// Like a message
-    func likeMessage(commentId: String, videoId: String) async throws {
-        guard let userId = authService.userId else {
-            throw MessagingError.notAuthenticated
-        }
-        
-        // Optimistic update
-        await MainActor.run {
-            if var comments = publicComments[videoId],
-               let index = comments.firstIndex(where: { $0.id == commentId }) {
-                comments[index].isLiked.toggle()
-                comments[index].likeCount += comments[index].isLiked ? 1 : -1
-                publicComments[videoId] = comments
-            } else {
-                // Check private threads
-                if var threads = privateThreads[videoId] {
-                    for (parentId, var thread) in threads {
-                        if let index = thread.firstIndex(where: { $0.id == commentId }) {
-                            thread[index].isLiked.toggle()
-                            thread[index].likeCount += thread[index].isLiked ? 1 : -1
-                            threads[parentId] = thread
-                            privateThreads[videoId] = threads
-                            break
+                    
+                    if let error = playerController.errorMessage {
+                        VStack(spacing: 20) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 50))
+                                .foregroundStyle(
+                                    LinearGradient(
+                                        gradient: Gradient(colors: [
+                                            Color.twillyTeal,
+                                            Color.twillyCyan
+                                        ]),
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                            
+                            Text("Error Loading Video")
+                                .font(.title2)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                            
+                            Text(error)
+                                .foregroundColor(.white.opacity(0.7))
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 40)
+                                .font(.subheadline)
+                            
+                            Button(action: {
+                                playerController.cleanup()
+                                dismiss()
+                            }) {
+                                HStack {
+                                    Image(systemName: "xmark.circle.fill")
+                                    Text("Close")
+                                }
+                                .font(.headline)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 24)
+                                .padding(.vertical, 12)
+                                .background(Color.blue)
+                                .cornerRadius(10)
+                            }
+                            .padding(.top, 20)
                         }
                     }
                 }
             }
         }
-        
-        // Get current like state after optimistic update
-        let newIsLiked = await MainActor.run {
-            if let comments = publicComments[videoId],
-               let comment = comments.first(where: { $0.id == commentId }) {
-                return comment.isLiked
-            } else if let threads = privateThreads[videoId] {
-                for (_, thread) in threads {
-                    if let comment = thread.first(where: { $0.id == commentId }) {
-                        return comment.isLiked
+        .offset(y: dragOffset)
+        .opacity(1.0 - min(abs(dragOffset) / 300.0, 0.5))
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    // Only allow downward swipes
+                    if value.translation.height > 0 {
+                        dragOffset = value.translation.height
                     }
                 }
+                .onEnded { value in
+                    // If swiped down more than 100 points, dismiss
+                    if value.translation.height > 100 || value.predictedEndTranslation.height > 200 {
+                        playerController.cleanup()
+                        dismiss()
+                    } else {
+                        // Spring back to original position
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            dragOffset = 0
+                        }
+                    }
+                }
+        )
+        .overlay(alignment: .topTrailing) {
+            // Close button overlay for full screen
+            Button(action: {
+                playerController.cleanup()
+                dismiss()
+            }) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 32))
+                    .foregroundColor(.white.opacity(0.8))
+                    .background(Color.black.opacity(0.5))
+                    .clipShape(Circle())
             }
-            return false
+            .padding()
+        }
+        .overlay(alignment: .trailing) {
+            // Floating comment section
+            FloatingCommentView(content: content, channelCreatorEmail: channelCreatorEmail)
+        }
+        .onAppear {
+            print("👁️ [VideoPlayerView] View appeared with URL: \(url.absoluteString)")
+            print("   - URL scheme: \(url.scheme ?? "nil")")
+            print("   - URL host: \(url.host ?? "nil")")
+            print("   - URL path: \(url.path)")
+            playerController.load(url: url)
+        }
+        .onDisappear {
+            playerController.cleanup()
+        }
+    }
+}
+
+class VideoPlayerController: ObservableObject {
+    @Published var player: AVPlayer?
+    @Published var isLoading = true
+    @Published var isReady = false
+    @Published var errorMessage: String?
+    
+    private var playerItem: AVPlayerItem?
+    private var statusObserver: NSKeyValueObservation?
+    private var errorObserver: NSKeyValueObservation?
+    private var timeObserver: Any?
+    
+    func load(url: URL) {
+        print("🎥 [VideoPlayerController] ========== LOADING VIDEO ==========")
+        print("   URL: \(url.absoluteString)")
+        print("   Scheme: \(url.scheme ?? "nil")")
+        print("   Host: \(url.host ?? "nil")")
+        print("   Path: \(url.path)")
+        
+        // Check if playlist was prefetched
+        let hlsUrl = url.absoluteString
+        // TODO: VideoPrefetchService call - ensure VideoPrefetchService.swift is added to Xcode target
+        // Uncomment this line once VideoPrefetchService.swift is added to the target:
+        /*
+        if VideoPrefetchService.shared.isPlaylistPrefetched(hlsUrl: hlsUrl) {
+            print("⚡ [VideoPlayerController] Playlist was prefetched - instant load!")
+        } else {
+            print("📥 [VideoPlayerController] Playlist not prefetched - loading from network")
+        }
+        */
+        print("📥 [VideoPlayerController] Loading playlist from network")
+        
+        isLoading = true
+        isReady = false
+        errorMessage = nil
+        
+        // Configure audio session for playback
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try AVAudioSession.sharedInstance().setActive(true)
+            print("✅ [VideoPlayerController] Audio session configured")
+        } catch {
+            print("❌ [VideoPlayerController] Error configuring audio session: \(error)")
         }
         
-        // Update on server (WebSocket will confirm)
-        _ = try await ChannelService.shared.likeComment(
-            videoId: videoId,
-            commentId: commentId,
-            userId: userId,
-            isLiked: newIsLiked
+        // Create AVPlayerItem
+        let item = AVPlayerItem(url: url)
+        playerItem = item
+        print("✅ [VideoPlayerController] AVPlayerItem created")
+        
+        // Observe status changes
+        statusObserver = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                print("🔄 [VideoPlayerController] Status changed to: \(item.status.rawValue)")
+                self.handleStatusChange(item.status, error: item.error)
+            }
+        }
+        
+        // Observe playback status
+        NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { _ in
+            print("✅ [VideoPlayerController] Video playback ended")
+        }
+        
+        // Observe time control status
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name.AVPlayerItemTimeJumped,
+            object: item,
+            queue: .main
+        ) { _ in
+            print("⏭️ [VideoPlayerController] Time jumped")
+        }
+        
+        // Create player
+        let avPlayer = AVPlayer(playerItem: item)
+        
+        // Configure for mobile playback
+        avPlayer.allowsExternalPlayback = true // Allow AirPlay
+        avPlayer.usesExternalPlaybackWhileExternalScreenIsActive = true
+        
+        // Observe player time control status to detect when playback actually starts
+        timeObserver = avPlayer.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: CMTimeScale(NSEC_PER_SEC)), queue: .main) { [weak self] time in
+            guard let self = self, let player = self.player else { return }
+            let status = player.timeControlStatus
+            if status == .playing && !self.isReady {
+                print("▶️ [VideoPlayerController] Player is playing but not marked ready - fixing state")
+                DispatchQueue.main.async {
+                    self.isReady = true
+                }
+            }
+        }
+        
+        player = avPlayer
+        print("✅ [VideoPlayerController] AVPlayer created and assigned")
+        print("   - Player timeControlStatus: \(avPlayer.timeControlStatus.rawValue)")
+        print("   - Player rate: \(avPlayer.rate)")
+    }
+    
+    private func handleStatusChange(_ status: AVPlayerItem.Status, error: Error?) {
+        print("🔄 [VideoPlayerController] handleStatusChange called")
+        print("   - Status: \(status.rawValue) (\(status == .readyToPlay ? "readyToPlay" : status == .failed ? "failed" : "unknown"))")
+        print("   - Error: \(error?.localizedDescription ?? "nil")")
+        if let playerItemError = playerItem?.error {
+            print("   - PlayerItem error: \(playerItemError.localizedDescription)")
+        }
+        
+        switch status {
+        case .readyToPlay:
+            print("✅ [VideoPlayerController] Player item ready to play")
+            isLoading = false
+            
+            // Check if player item has tracks
+            if let tracks = playerItem?.tracks {
+                print("   - Number of tracks: \(tracks.count)")
+                for (index, track) in tracks.enumerated() {
+                    let mediaType = track.assetTrack?.mediaType.rawValue ?? "unknown"
+                    print("   - Track \(index): \(mediaType)")
+                }
+            }
+            
+            // Wait a moment to ensure player is fully ready before marking as ready
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                guard let self = self, let player = self.player else {
+                    print("❌ [VideoPlayerController] Player is nil when trying to start playback")
+                    return
+                }
+                
+                print("▶️ [VideoPlayerController] Starting playback")
+                print("   - Player rate before play: \(player.rate)")
+                print("   - Player timeControlStatus: \(player.timeControlStatus.rawValue)")
+                
+                player.play()
+                
+                // Mark as ready after a short delay to ensure playback started
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    guard let self = self, let player = self.player else { return }
+                    self.isReady = true
+                    print("✅ [VideoPlayerController] Player marked as ready")
+                    print("   - Player rate after play: \(player.rate)")
+                    print("   - Player timeControlStatus: \(player.timeControlStatus.rawValue)")
+                    print("   - Current time: \(CMTimeGetSeconds(player.currentTime()))")
+                }
+            }
+        case .failed:
+            let errorMsg = error?.localizedDescription ?? playerItem?.error?.localizedDescription ?? "Failed to load video"
+            print("❌ [VideoPlayerController] Player item failed: \(errorMsg)")
+            if let nsError = error as NSError? {
+                print("   - Error domain: \(nsError.domain)")
+                print("   - Error code: \(nsError.code)")
+                print("   - Error userInfo: \(nsError.userInfo)")
+            }
+            isLoading = false
+            isReady = false
+            errorMessage = errorMsg
+        case .unknown:
+            print("⏳ [VideoPlayerController] Player item status unknown")
+        @unknown default:
+            print("❓ [VideoPlayerController] Player item status unknown: \(status.rawValue)")
+        }
+    }
+    
+    func cleanup() {
+        print("🧹 [VideoPlayerController] Cleaning up")
+        player?.pause()
+        
+        // Remove time observer
+        if let observer = timeObserver, let player = player {
+            player.removeTimeObserver(observer)
+            timeObserver = nil
+        }
+        
+        statusObserver?.invalidate()
+        errorObserver?.invalidate()
+        NotificationCenter.default.removeObserver(self)
+        playerItem = nil
+        player = nil
+        isReady = false
+        isLoading = true
+        
+        // Deactivate audio session
+        do {
+            try AVAudioSession.sharedInstance().setActive(false)
+        } catch {
+            print("❌ [VideoPlayerController] Error deactivating audio session: \(error)")
+        }
+    }
+}
+
+// MARK: - AVPlayerViewController Wrapper for Full Screen Support
+struct AVPlayerViewControllerRepresentable: UIViewControllerRepresentable {
+    let player: AVPlayer
+    let thumbnailUrl: String?
+    
+    func makeUIViewController(context: Context) -> OrientationAwarePlayerViewController {
+        print("🔍 [AVPlayerViewControllerRepresentable] ========== makeUIViewController CALLED ==========")
+        print("   - Thumbnail URL: \(thumbnailUrl ?? "none")")
+        print("   - Current item exists: \(player.currentItem != nil)")
+        let controller = OrientationAwarePlayerViewController()
+        controller.player = player
+        controller.thumbnailUrl = thumbnailUrl
+        controller.showsPlaybackControls = true
+        print("   - Controller created, thumbnailUrl set: \(controller.thumbnailUrl ?? "nil")")
+        
+        // CRITICAL: Try to detect orientation IMMEDIATELY if possible
+        // This happens before the view is presented, so we can lock orientation early
+        if let currentItem = player.currentItem {
+            print("🔍 [AVPlayerViewControllerRepresentable] Attempting EARLY detection...")
+            // Try to get video track immediately
+            let videoTracks = currentItem.tracks.filter { $0.assetTrack?.mediaType == .video }
+            if let videoTrack = videoTracks.first?.assetTrack {
+                let videoSize = videoTrack.naturalSize
+                print("   - Early detection: Natural size: \(videoSize.width) x \(videoSize.height)")
+                
+                // Try thumbnail first if available (async to avoid blocking main thread)
+                var isPortrait = false
+                if let thumbnailUrl = thumbnailUrl, let thumbnailURL = URL(string: thumbnailUrl) {
+                    // Load thumbnail asynchronously - explicitly detach to ensure non-blocking
+                    Task.detached(priority: .userInitiated) {
+                        do {
+                            let (imageData, _) = try await URLSession.shared.data(from: thumbnailURL)
+                            if let image = UIImage(data: imageData) {
+                                let thumbnailIsPortrait = image.size.height > image.size.width
+                                await MainActor.run {
+                                    isPortrait = thumbnailIsPortrait
+                                    print("   - Early thumbnail detection (async): \(image.size.width) x \(image.size.height) → Portrait: \(thumbnailIsPortrait)")
+                                }
+                            }
+                        } catch {
+                            print("   - Failed to load thumbnail for early detection: \(error.localizedDescription)")
+                        }
+                    }
+                }
+                
+                // Fallback to video size (immediate)
+                if !isPortrait {
+                    isPortrait = videoSize.height > videoSize.width
+                    print("   - Early video size detection: Portrait: \(isPortrait)")
+                }
+                
+                // Set detection state IMMEDIATELY
+                controller.isPortraitVideo = isPortrait
+                controller.hasDetectedVideoOrientation = true
+                // CRITICAL: Portrait videos MUST use resizeAspectFill for fullscreen
+                let targetGravity: AVLayerVideoGravity = isPortrait ? .resizeAspectFill : .resizeAspect
+                // Force set it multiple times to ensure it sticks (AVPlayerViewController sometimes overrides)
+                controller.videoGravity = targetGravity
+                DispatchQueue.main.async {
+                    controller.videoGravity = targetGravity
+                }
+                print("   - ✅ EARLY DETECTION COMPLETE: isPortrait=\(isPortrait)")
+                print("   - ✅ Set videoGravity to: \(targetGravity.rawValue) (will verify in viewWillAppear)")
+                
+                // CRITICAL: Force portrait orientation immediately if portrait
+                if isPortrait {
+                    print("   - 🔒 EARLY: Forcing portrait orientation lock immediately")
+                    // We can't access windowScene yet, but we'll set it in viewDidAppear
+                }
+            } else {
+                print("   - ⚠️ No video track available for early detection")
+            }
+        } else {
+            print("   - ⚠️ No currentItem available for early detection")
+        }
+        
+        // Start with resizeAspectFill for portrait videos (default to fullscreen)
+        // This ensures portrait videos go fullscreen immediately, even before detection
+        if !controller.hasDetectedVideoOrientation {
+            controller.videoGravity = .resizeAspectFill
+            print("🔍 [AVPlayerViewControllerRepresentable] Initial videoGravity set to: \(controller.videoGravity.rawValue)")
+            print("   - Setting to resizeAspectFill (fullscreen) as default - will be corrected if landscape")
+        }
+        controller.allowsPictureInPicturePlayback = false
+        
+        
+        print("🔍 [AVPlayerViewControllerRepresentable] Player currentItem exists: \(player.currentItem != nil)")
+        if let currentItem = player.currentItem {
+            print("🔍 [AVPlayerViewControllerRepresentable] Checking tracks in makeUIViewController...")
+            print("   - asset.tracks count: \(currentItem.asset.tracks(withMediaType: .video).count)")
+            print("   - currentItem.tracks count: \(currentItem.tracks.count)")
+        }
+        print("🔍 [AVPlayerViewControllerRepresentable] ========== makeUIViewController COMPLETE ==========")
+        
+        return controller
+    }
+    
+    func updateUIViewController(_ uiViewController: OrientationAwarePlayerViewController, context: Context) {
+        // Update player if needed
+        if uiViewController.player != player {
+            uiViewController.player = player
+        }
+    }
+}
+
+// MARK: - Orientation-Aware Player View Controller
+class OrientationAwarePlayerViewController: AVPlayerViewController, UIGestureRecognizerDelegate {
+    var isPortraitVideo = false  // Made internal so it can be set from makeUIViewController
+    var hasDetectedVideoOrientation = false  // Made internal so it can be set from makeUIViewController
+    var thumbnailUrl: String?
+    
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        // LOCKED TO PORTRAIT - App only supports portrait mode
+        return .portrait
+    }
+    
+    override var shouldAutorotate: Bool {
+        // Disable rotation - app is locked to portrait
+        return false
+    }
+    
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        print("🔄 [OrientationAwarePlayerViewController] ========== viewWillTransition CALLED ==========")
+        print("   - New size: \(size.width) x \(size.height)")
+        print("   - 🔒 BLOCKING transition - App is locked to portrait mode")
+        // Always block transitions - app is locked to portrait
+        return
+    }
+    
+    
+    override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation {
+        // CRITICAL: Always return portrait for portrait videos, even before detection
+        // This prevents AVPlayerViewController from auto-rotating
+        if hasDetectedVideoOrientation && isPortraitVideo {
+            print("🔒 [preferredInterfaceOrientationForPresentation] Portrait video detected → returning: .portrait")
+            return .portrait
+        }
+        // Before detection, default to portrait to prevent unwanted rotation
+        print("🔒 [preferredInterfaceOrientationForPresentation] Not detected yet → returning: .portrait (default)")
+        return .portrait
+    }
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        print("🔍 [OrientationAwarePlayerViewController] ========== viewDidLoad CALLED ==========")
+        modalPresentationStyle = .fullScreen
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(orientationChanged),
+            name: UIDevice.orientationDidChangeNotification,
+            object: nil
         )
+        
+        // Pinch gesture removed - no effects on playback, just straight playback
+        
+        print("   - Thumbnail URL: \(thumbnailUrl ?? "none")")
+        print("   - Initial state: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
+        print("🔍 [OrientationAwarePlayerViewController] ========== viewDidLoad COMPLETE ==========")
     }
     
-    /// Mark thread as read
-    func markThreadRead(threadId: String, videoId: String) async throws {
-        guard let viewerEmail = authService.userEmail else {
-            throw MessagingError.notAuthenticated
-        }
-        
-        // Optimistic update - immediate UI feedback
-        await MainActor.run {
-            let key = "\(videoId)_\(threadId)"
-            threadUnreadStatus[key] = false
-            threadUnreadStatus[threadId] = false // Also update without videoId prefix for compatibility
-            updateCachedUserThreads(for: videoId)
-        }
-        
-        // Update on server
-        _ = try await ChannelService.shared.markThreadAsRead(
-            videoId: videoId,
-            viewerEmail: viewerEmail,
-            threadId: threadId
-        )
-        
-        // Reload unread counts (will update badge and clear if no unreads remain)
-        try await loadUnreadCounts(for: videoId)
-        
-        // CRITICAL: After marking as read, check if all threads are read and clear badge
-        await MainActor.run {
-            let remainingUnreadCount = threadUnreadStatus.values.filter { $0 }.count
-            NotificationCenter.default.post(
-                name: NSNotification.Name("CommentsViewed"),
-                object: nil,
-                userInfo: [
-                    "videoId": videoId,
-                    "unreadCount": remainingUnreadCount
-                ]
-            )
-        }
-    }
+    // Pinch gesture and zoom effects removed - straight playback only (no effects)
     
-    // Helper to normalize videoId (matches backend exactly: strips FILE# first, then file-)
-    private func normalizeVideoId(_ videoId: String) -> String {
-        var normalized = videoId
-        if normalized.hasPrefix("FILE#") {
-            normalized = String(normalized.dropFirst(5)) // Remove "FILE#"
-        }
-        if normalized.hasPrefix("file-") {
-            normalized = String(normalized.dropFirst(5)) // Remove "file-"
-        }
-        return normalized
-    }
-    
-    /// Load unread counts for a video
-    func loadUnreadCounts(for videoId: String) async throws {
-        guard let viewerEmail = authService.userEmail else {
+    private func updateVideoGravity() {
+        print("🔍 [OrientationAwarePlayerViewController] ========== updateVideoGravity CALLED ==========")
+        print("   - Current state: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
+        print("   - Thumbnail URL available: \(thumbnailUrl != nil ? "YES (\(thumbnailUrl!))" : "NO")")
+        guard let player = player, let currentItem = player.currentItem else {
+            print("⚠️ [OrientationAwarePlayerViewController] Cannot update video gravity - no player or item")
+            print("   - player exists: \(player != nil)")
+            print("   - currentItem exists: \(player?.currentItem != nil)")
             return
         }
         
-        let counts = try await ChannelService.shared.getUnreadCommentCounts(
-            videoIds: [videoId],
-            viewerEmail: viewerEmail
-        )
+        print("🔍 [OrientationAwarePlayerViewController] Checking tracks...")
+        print("   - asset.tracks count: \(currentItem.asset.tracks(withMediaType: .video).count)")
+        print("   - currentItem.tracks count: \(currentItem.tracks.count)")
         
-        await MainActor.run {
-            // CRITICAL: Always use normalized videoId for unreadCounts keys (consistent with backend)
-            let normalizedVideoId = normalizeVideoId(videoId)
-            
-            // Backend returns response with normalized videoId as key
-            let normalizedLookupKey = normalizedVideoId
-            if let videoResponse = counts[normalizedLookupKey] ?? counts[videoId] {
-                if let intValue = videoResponse as? Int {
-                    unreadCounts[normalizedVideoId] = intValue
-                } else if let dictValue = videoResponse as? [String: Any],
-                          let total = dictValue["total"] as? Int {
-                    unreadCounts[normalizedVideoId] = total
-                    
-                    // Update thread unread status (use normalized videoId for keys)
-                    if let threads = dictValue["threads"] as? [String: Int] {
-                        for (threadId, count) in threads {
-                            let key = "\(normalizedVideoId)_\(threadId)"
-                            threadUnreadStatus[key] = count > 0
+        // Try asset.tracks first (works for regular videos) - this is what the working version used
+        var track: AVAssetTrack?
+        var trackSource = "unknown"
+        
+        if let assetTrack = currentItem.asset.tracks(withMediaType: .video).first {
+            track = assetTrack
+            trackSource = "asset.tracks"
+            print("   ✅ Found track from asset.tracks")
+        } else {
+            // For HLS streams, asset.tracks might be empty, use currentItem.tracks
+            let videoTracks = currentItem.tracks.filter { $0.assetTrack?.mediaType == .video }
+            print("   - currentItem.tracks filtered count: \(videoTracks.count)")
+            if let firstTrack = videoTracks.first {
+                print("   - firstTrack.assetTrack exists: \(firstTrack.assetTrack != nil)")
+            }
+            track = videoTracks.first?.assetTrack
+            trackSource = "currentItem.tracks"
+            if track != nil {
+                print("   ✅ Found track from currentItem.tracks")
+            }
+        }
+        
+        guard let videoTrack = track else {
+            // Tracks not ready yet - retry once after a short delay
+            // Only retry if we haven't detected yet to prevent multiple updates
+            if !hasDetectedVideoOrientation {
+                print("⚠️ [OrientationAwarePlayerViewController] No video tracks yet, retrying once...")
+                print("   - Track source attempted: \(trackSource)")
+                print("   - Player status: \(player.status.rawValue)")
+                print("   - Current item status: \(currentItem.status.rawValue)")
+                
+                // Single retry to prevent multiple updates that cause zoom effects
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    guard let self = self, !self.hasDetectedVideoOrientation else { return }
+                    self.updateVideoGravity()
+                }
+            } else {
+                print("⚠️ [OrientationAwarePlayerViewController] No video tracks but already detected - skipping retry")
+            }
+            return
+        }
+        
+        let videoSize = videoTrack.naturalSize
+        let videoTransform = videoTrack.preferredTransform
+        
+        print("🔍 [OrientationAwarePlayerViewController] Track details:")
+        print("   - Track source: \(trackSource)")
+        print("   - Natural size: \(videoSize.width) x \(videoSize.height)")
+        print("   - Transform matrix:")
+        print("     a=\(videoTransform.a), b=\(videoTransform.b)")
+        print("     c=\(videoTransform.c), d=\(videoTransform.d)")
+        print("     tx=\(videoTransform.tx), ty=\(videoTransform.ty)")
+        
+        // PRIMARY: Use thumbnail if available (most reliable, matches what user sees)
+        // FALLBACK: Use normal video dimensions (height > width = portrait)
+        var videoIsPortrait = false
+        var usedThumbnail = false
+        
+        // Load thumbnail asynchronously (never block main thread)
+        if let thumbnailUrl = thumbnailUrl, let thumbnailURL = URL(string: thumbnailUrl) {
+            // Always use async URLSession to avoid blocking main thread - explicitly detach
+            Task.detached(priority: .userInitiated) { [weak self] in
+                do {
+                    let (imageData, _) = try await URLSession.shared.data(from: thumbnailURL)
+                    if let image = UIImage(data: imageData) {
+                        let thumbnailIsPortrait = image.size.height > image.size.width
+                        await MainActor.run { [weak self] in
+                            guard let self = self else { return }
+                            videoIsPortrait = thumbnailIsPortrait
+                            usedThumbnail = true
+                            print("🔍 [OrientationAwarePlayerViewController] ✅ Using THUMBNAIL detection (async):")
+                            print("   - Thumbnail size: \(image.size.width) x \(image.size.height)")
+                            print("   - Is Portrait: \(thumbnailIsPortrait) (height > width: \(image.size.height > image.size.width))")
+                            
+                            // Update video orientation
+                            self.isPortraitVideo = thumbnailIsPortrait
+                            self.hasDetectedVideoOrientation = true
+                            // Set videoGravity immediately (only if different to prevent zoom effects)
+                            let targetGravity: AVLayerVideoGravity = thumbnailIsPortrait ? .resizeAspectFill : .resizeAspect
+                            if self.videoGravity != targetGravity {
+                                self.videoGravity = targetGravity
+                                print("   - Updated video orientation from thumbnail: \(targetGravity.rawValue)")
+                            } else {
+                                print("   - Video orientation already set: \(targetGravity.rawValue)")
+                            }
+                        }
+                    }
+                } catch {
+                    print("🔍 [OrientationAwarePlayerViewController] ⚠️ Failed to load thumbnail: \(error.localizedDescription)")
+                }
+            }
+        }
+        
+        // CRITICAL: Check for rotation transform FIRST - this determines actual orientation
+        let transform = videoTrack.preferredTransform
+        let rotation = atan2(transform.b, transform.a) * 180 / .pi
+        print("   - 🔍 Video track transform: a=\(transform.a), b=\(transform.b), c=\(transform.c), d=\(transform.d)")
+        print("   - 🔍 Calculated rotation: \(rotation) degrees")
+        
+        // Determine actual video orientation based on transform
+        // If there's a 90° or 270° rotation, the natural size dimensions are swapped
+        let hasRotationTransform = abs(rotation) > 0.1 && abs(rotation) < 359.9
+        let isRotated90or270 = abs(abs(rotation) - 90) < 1 || abs(abs(rotation) - 270) < 1
+        
+        if hasRotationTransform {
+            print("   - ⚠️ VIDEO HAS ROTATION TRANSFORM: \(rotation) degrees")
+            if isRotated90or270 {
+                // Natural size is swapped - height is actually width and vice versa
+                print("   - 🔄 90°/270° rotation detected - swapping dimensions")
+                videoIsPortrait = videoSize.width > videoSize.height
+                print("   - ✅ After swap: Natural size \(videoSize.width)x\(videoSize.height) → Portrait: \(videoIsPortrait)")
+            } else {
+                // 0° or 180° - dimensions are correct
+                videoIsPortrait = videoSize.height > videoSize.width
+                print("   - ✅ No dimension swap needed: Portrait: \(videoIsPortrait)")
+            }
+        } else {
+            // No rotation transform - use natural dimensions
+            videoIsPortrait = videoSize.height > videoSize.width
+            print("   - ✅ No rotation transform - using natural size: Portrait: \(videoIsPortrait)")
+        }
+        
+        // Fallback to video dimensions if thumbnail wasn't used
+        if !usedThumbnail {
+            print("🔍 [OrientationAwarePlayerViewController] Using VIDEO SIZE detection:")
+            print("   - Natural size: \(videoSize.width) x \(videoSize.height)")
+            print("   - Rotation: \(rotation) degrees")
+            print("   - Is Portrait: \(videoIsPortrait)")
+        }
+        
+        print("🎬 [OrientationAwarePlayerViewController] Video orientation detection:")
+        print("   - Natural size: \(videoSize.width) x \(videoSize.height)")
+        print("   - Rotation transform: \(rotation) degrees")
+        print("   - Is Portrait: \(videoIsPortrait)")
+        print("   - Current videoGravity: \(videoGravity.rawValue)")
+        
+        // Store video orientation for orientation lock
+        print("🎯 [OrientationAwarePlayerViewController] ========== SETTING DETECTION RESULT ==========")
+        print("   - videoIsPortrait: \(videoIsPortrait)")
+        print("   - hasRotationTransform: \(hasRotationTransform)")
+        print("   - Setting isPortraitVideo = \(videoIsPortrait)")
+        print("   - Setting hasDetectedVideoOrientation = true")
+        isPortraitVideo = videoIsPortrait
+        hasDetectedVideoOrientation = true
+        print("   - ✅ State updated: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
+        
+        // CRITICAL: If portrait, force portrait orientation IMMEDIATELY
+        if videoIsPortrait {
+            print("   - 🔒 FORCING portrait orientation immediately after detection")
+            if let windowScene = view.window?.windowScene {
+                if #available(iOS 16.0, *) {
+                    windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { (error: Error?) in
+                        if let err = error {
+                            print("   - ❌ Failed to force portrait: \(err.localizedDescription)")
+                        } else {
+                            print("   - ✅ Forced to portrait orientation immediately")
                         }
                     }
                 }
+            } else {
+                print("   - ⚠️ windowScene not available yet, will force in viewDidAppear")
             }
+        }
+        
+        // Portrait videos: set fullscreen and lock orientation (handled by supportedInterfaceOrientations)
+        // Landscape videos: set natural aspect and allow rotation
+        
+        // Portrait videos: Always full screen (resizeAspectFill)
+        // Landscape videos: Always natural aspect ratio (resizeAspect) - no zoom
+        let targetGravity: AVLayerVideoGravity = videoIsPortrait ? .resizeAspectFill : .resizeAspect
+        
+        // CRITICAL: Only update if different to prevent zoom effects
+        if videoGravity != targetGravity {
+            print("   ✅ Setting videoGravity to \(targetGravity.rawValue) (\(videoIsPortrait ? "portrait - full screen" : "landscape - natural aspect, no zoom"))")
+            videoGravity = targetGravity
+        } else {
+            print("   ✅ videoGravity already set to \(targetGravity.rawValue) - no change needed")
+        }
+        print("🔍 [OrientationAwarePlayerViewController] ========== updateVideoGravity COMPLETE ==========")
+        print("   - Final state: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
+        print("   - Current videoGravity: \(videoGravity.rawValue)")
+    }
+    
+    @objc private func orientationChanged() {
+        print("🔄 [OrientationAwarePlayerViewController] ========== orientationChanged CALLED ==========")
+        print("   - Device orientation: \(UIDevice.current.orientation.rawValue)")
+        print("   - 🔒 IGNORING orientation change - App is locked to portrait mode")
+        // Always ignore orientation changes - app is locked to portrait
+        return
+    }
+    
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        print("🔍 [OrientationAwarePlayerViewController] ========== viewWillAppear CALLED ==========")
+        if let windowScene = view.window?.windowScene {
+            print("   - Current interface orientation: \(windowScene.interfaceOrientation.rawValue) (\(windowScene.interfaceOrientation.isPortrait ? "portrait" : "landscape"))")
+            print("   - Is portrait: \(windowScene.interfaceOrientation.isPortrait)")
+        } else {
+            print("   - ⚠️ windowScene is nil!")
+        }
+        print("   - Device orientation: \(UIDevice.current.orientation.rawValue)")
+        print("   - Before detection: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
+        // Detect video orientation and set videoGravity
+        updateVideoGravity()
+        print("   - After detection: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
+        if let windowScene = view.window?.windowScene {
+            print("   - After detection, interface orientation: \(windowScene.interfaceOrientation.rawValue) (\(windowScene.interfaceOrientation.isPortrait ? "portrait" : "landscape"))")
+        }
+        print("🔍 [OrientationAwarePlayerViewController] ========== viewWillAppear COMPLETE ==========")
+    }
+    
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        print("🔍 [OrientationAwarePlayerViewController] ========== viewDidAppear CALLED ==========")
+        if let windowScene = view.window?.windowScene {
+            print("   - Current interface orientation: \(windowScene.interfaceOrientation.rawValue) (\(windowScene.interfaceOrientation.isPortrait ? "portrait" : "landscape"))")
             
-            // Update cached user threads after unread status changes
-            updateCachedUserThreads(for: videoId)
-            
-            // Notify ContentCard of unread count change
-            NotificationCenter.default.post(
-                name: NSNotification.Name("CommentsViewed"),
-                object: nil,
-                userInfo: [
-                    "videoId": normalizedVideoId,
-                    "unreadCount": unreadCounts[normalizedVideoId] ?? 0
-                ]
-            )
-        }
-    }
-    
-    /// Clear all cache - SERVER IS SOURCE OF TRUTH
-    func clearCache() {
-        publicComments.removeAll()
-        privateThreads.removeAll()
-        unreadCounts.removeAll()
-        threadUnreadStatus.removeAll()
-        
-        // Clear UserDefaults
-        let defaults = UserDefaults.standard
-        let keys = defaults.dictionaryRepresentation().keys
-        for key in keys {
-            if key.hasPrefix("comments_") || key.hasPrefix("commentLikes_") || key.hasPrefix("threadUnreadStatus_") {
-                defaults.removeObject(forKey: key)
-            }
-        }
-        defaults.synchronize()
-        
-        print("🗑️ [MessagingService] Cleared all cache - server is source of truth")
-    }
-    
-    /// Get public comments for a video
-    func getPublicComments(for videoId: String) -> [Comment] {
-        return publicComments[videoId] ?? []
-    }
-    
-    /// Get private thread for a video and threadId
-    func getPrivateThread(for videoId: String, threadId: String) -> [Comment] {
-        return privateThreads[videoId]?[threadId] ?? []
-    }
-    
-    /// Get unread count for a video
-    func getUnreadCount(for videoId: String) -> Int {
-        return unreadCounts[videoId] ?? 0
-    }
-    
-    /// Check if thread has unread messages
-    func hasUnreadThread(videoId: String, threadId: String) -> Bool {
-        let key = "\(videoId)_\(threadId)"
-        return threadUnreadStatus[key] == true
-    }
-    
-    /// Get cached user threads for a video
-    func getCachedUserThreads(for videoId: String) -> [ThreadInfo] {
-        return cachedUserThreads[videoId] ?? []
-    }
-    
-    /// Connect WebSocket for a video
-    func connectWebSocket(for videoId: String) {
-        guard let userEmail = authService.userEmail else { return }
-        let websocketEndpoint = ChannelService.shared.websocketEndpoint
-        websocketService.connect(userEmail: userEmail, websocketEndpoint: websocketEndpoint)
-        
-        // Start polling fallback if WebSocket not connected after 2 seconds
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            if !self.websocketService.isConnected {
-                print("⚠️ [MessagingService] WebSocket not connected, starting polling fallback for \(videoId)")
-                self.startPolling(for: videoId)
-            }
-        }
-    }
-    
-    /// Disconnect and cleanup for a video
-    func disconnect(for videoId: String) {
-        stopPolling(for: videoId)
-    }
-    
-    // MARK: - WebSocket Setup
-    
-    private func setupWebSocketHandlers() {
-        // Handle new comment notifications
-        websocketService.$commentNotification
-            .compactMap { $0 }
-            .sink { [weak self] notification in
-                Task {
-                    try? await self?.loadMessages(for: notification.videoId)
-                }
-            }
-            .store(in: &cancellables)
-        
-        // Handle unread count updates
-        websocketService.$unreadCountUpdateNotification
-            .compactMap { $0 }
-            .sink { [weak self] notification in
-                Task {
-                    try? await self?.loadUnreadCounts(for: notification.videoId)
-                }
-            }
-            .store(in: &cancellables)
-        
-        // Handle like notifications
-        websocketService.$likeNotification
-            .compactMap { $0 }
-            .sink { [weak self] notification in
-                Task { @MainActor in
-                    guard let self = self else { return }
-                    if var comments = self.publicComments[notification.videoId],
-                       let index = comments.firstIndex(where: { $0.id == notification.commentId }) {
-                        comments[index].likeCount = notification.likeCount
-                        comments[index].isLiked = notification.likedBy != nil
-                        self.publicComments[notification.videoId] = comments
-                    } else if var threads = self.privateThreads[notification.videoId] {
-                        for (parentId, var thread) in threads {
-                            if let index = thread.firstIndex(where: { $0.id == notification.commentId }) {
-                                thread[index].likeCount = notification.likeCount
-                                thread[index].isLiked = notification.likedBy != nil
-                                threads[parentId] = thread
-                                self.privateThreads[notification.videoId] = threads
-                                break
+            // CRITICAL: If portrait video detected, FORCE portrait orientation NOW
+            if hasDetectedVideoOrientation && isPortraitVideo {
+                if !windowScene.interfaceOrientation.isPortrait {
+                    print("   - ⚠️ Interface is NOT portrait but video is portrait - FORCING portrait NOW")
+                    if #available(iOS 16.0, *) {
+                        windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { (error: Error?) in
+                            if let err = error {
+                                print("   - ❌ Failed to force portrait: \(err.localizedDescription)")
+                            } else {
+                                print("   - ✅ Forced to portrait orientation")
+                            }
+                        }
+                    }
+                } else {
+                    print("   - ✅ Interface is already portrait - locking it")
+                    // Lock it again to be sure
+                    if #available(iOS 16.0, *) {
+                        windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { (error: Error?) in
+                            if let err = error {
+                                print("   - ❌ Failed to lock portrait: \(err.localizedDescription)")
+                            } else {
+                                print("   - ✅ Locked to portrait orientation")
                             }
                         }
                     }
                 }
+                
+                // CRITICAL: Also monitor for orientation changes after viewDidAppear
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    guard let self = self, let windowScene = self.view.window?.windowScene else { return }
+                    if !windowScene.interfaceOrientation.isPortrait && self.hasDetectedVideoOrientation && self.isPortraitVideo {
+                        print("   - ⚠️⚠️⚠️ ORIENTATION FLIPPED AFTER viewDidAppear! Forcing back to portrait...")
+                        if #available(iOS 16.0, *) {
+                            windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { (error: Error?) in
+                                if let err = error {
+                                    print("   - ❌ Failed to re-force portrait: \(err.localizedDescription)")
+                                } else {
+                                    print("   - ✅ Re-forced to portrait orientation")
+                                }
+                            }
+                        }
+                    } else {
+                        print("   - ✅ Orientation check after 0.5s: still portrait")
+                    }
+                }
             }
-            .store(in: &cancellables)
-    }
-    
-    // MARK: - Polling Fallback
-    
-    func startPolling(for videoId: String) {
-        stopPolling(for: videoId)
-        
-        pollingTimers[videoId] = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            guard let self = self, !self.websocketService.isConnected else {
-                self?.stopPolling(for: videoId)
-                return
-            }
-            Task {
-                try? await self.loadMessages(for: videoId)
-            }
+        } else {
+            print("   - ⚠️ windowScene is still nil!")
         }
+        print("   - Detection state: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
+        print("   - supportedInterfaceOrientations will return: \(hasDetectedVideoOrientation ? (isPortraitVideo ? "portrait" : "all") : "portrait")")
+        print("   - shouldAutorotate will return: \(hasDetectedVideoOrientation && !isPortraitVideo)")
+        print("🔍 [OrientationAwarePlayerViewController] ========== viewDidAppear COMPLETE ==========")
     }
     
-    func stopPolling(for videoId: String) {
-        pollingTimers[videoId]?.invalidate()
-        pollingTimers[videoId] = nil
-    }
-}
-
-enum MessagingError: Error {
-    case notAuthenticated
-    case invalidVideoId
-    case networkError(String)
-}
-// END MessagingService
-
-struct Comment: Identifiable, Codable, Equatable {
-    let id: String
-    let videoId: String
-    let userId: String
-    let username: String
-    let text: String
-    let createdAt: Date
-    var likeCount: Int
-    var isLiked: Bool
-    var isPrivate: Bool?
-    var parentCommentId: String?
-    var visibleTo: [String]?
-    var mentionedUsername: String?
-    
-    static func == (lhs: Comment, rhs: Comment) -> Bool {
-        return lhs.id == rhs.id &&
-               lhs.videoId == rhs.videoId &&
-               lhs.userId == rhs.userId &&
-               lhs.username == rhs.username &&
-               lhs.text == rhs.text &&
-               lhs.createdAt == rhs.createdAt &&
-               lhs.likeCount == rhs.likeCount &&
-               lhs.isLiked == rhs.isLiked &&
-               lhs.isPrivate == rhs.isPrivate &&
-               lhs.parentCommentId == rhs.parentCommentId &&
-               lhs.visibleTo == rhs.visibleTo &&
-               lhs.mentionedUsername == rhs.mentionedUsername
+    deinit {
+        UIDevice.current.endGeneratingDeviceOrientationNotifications()
+        NotificationCenter.default.removeObserver(self)
     }
 }
 
@@ -12540,7 +12936,7 @@ struct FloatingCommentView: View {
             Task {
                 print("📥 [FloatingCommentView] Loading full thread history from server for thread: \(threadIdToUse)")
                 do {
-                    try await messagingService.loadMessages(for: content.SK, useCache: false)
+                    try await messagingService.loadMessages(for: content.SK)
                     await MainActor.run {
                         // Clear loading state
                         isLoading = false
@@ -13049,7 +13445,7 @@ struct FloatingCommentView: View {
                 Task {
                     do {
                         // Force server fetch to get ALL threads (same as general chat loads all comments)
-                        try await messagingService.loadMessages(for: content.SK, useCache: false)
+                        try await messagingService.loadMessages(for: content.SK)
                         
                         // CRITICAL: Always check unread counts when view appears (PRIMARY way indicators are shown)
                         // This works even if the other user wasn't online when the message was posted
@@ -13843,7 +14239,7 @@ struct FloatingCommentView: View {
         Task {
             do {
                 // Force server fetch to ensure we have latest messages (including newly posted ones)
-                try await messagingService.loadMessages(for: content.SK, useCache: false)
+                try await messagingService.loadMessages(for: content.SK)
                 await MainActor.run {
                     // Sync local state with MessagingService after server reload
                     // UNIFIED LOGIC: Private thread = general chat with 2 people
@@ -13874,7 +14270,7 @@ struct FloatingCommentView: View {
                             // Thread messages not loaded - trigger reload
                             print("⚠️ [FloatingCommentView] Selected thread \(threadId) has no messages, reloading...")
                             Task {
-                                try? await messagingService.loadMessages(for: content.SK, useCache: false)
+                                try? await messagingService.loadMessages(for: content.SK)
                                 await MainActor.run {
                                     // MERGE (don't overwrite) - preserve existing threads
                                     let messagingThreads = messagingService.privateThreads[content.SK] ?? [:]
@@ -14136,6 +14532,8 @@ struct FloatingCommentView: View {
                     }
                     
                     cachedUserThreads = messagingService.getCachedUserThreads(for: content.SK)
+                    
+                    TwillyAnalyticsService.shared.trackCommentPosted(dropId: content.SK, isPrivate: selectedThreadId != nil)
                     
                     // PATTERN: FLOATINGCOMMENTVIEW PATTERN - Optimistic updates for indicator and highlight
                     // IMMEDIATE: Update indicator and highlight right away (same as comment appears immediately)
@@ -14443,904 +14841,5 @@ struct FloatingCommentView: View {
     }
 }
 
-struct CommentRowView: View {
-    let comment: Comment
-    let onLike: () -> Void
-    
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            // User avatar
-            Image(systemName: "person.circle.fill")
-                .font(.system(size: 24))
-                .foregroundColor(.twillyCyan)
-            
-            VStack(alignment: .leading, spacing: 4) {
-                // Username and text
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(comment.username)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
-                    
-                    Text(comment.text)
-                        .font(.subheadline)
-                        .foregroundColor(.white.opacity(0.9))
-                        .fixedSize(horizontal: false, vertical: true) // Allow text to wrap normally
-                }
-                
-                // Like button and count
-                HStack(spacing: 8) {
-                    Button(action: onLike) {
-                        HStack(spacing: 4) {
-                            Image(systemName: comment.isLiked ? "heart.fill" : "heart")
-                                .font(.system(size: 12))
-                                .foregroundColor(comment.isLiked ? .red : .white.opacity(0.6))
-                            
-                            Text("\(comment.likeCount)")
-                                .font(.caption)
-                                .foregroundColor(.white.opacity(0.7))
-                        }
-                    }
-                    
-                    Text(timeAgoString(from: comment.createdAt))
-                        .font(.caption)
-                        .foregroundColor(.white.opacity(0.5))
-                }
-            }
-            
-            Spacer()
-        }
-        .padding(.vertical, 4)
-    }
-    
-    private func timeAgoString(from date: Date) -> String {
-        let interval = Date().timeIntervalSince(date)
-        if interval < 60 {
-            return "\(Int(interval))s"
-        } else if interval < 3600 {
-            return "\(Int(interval / 60))m"
-        } else if interval < 86400 {
-            return "\(Int(interval / 3600))h"
-        } else {
-            return "\(Int(interval / 86400))d"
-        }
-    }
-}
-
-struct VideoPlayerView: View {
-    let url: URL
-    let content: ChannelContent
-    let channelCreatorEmail: String? // For comment visibility checks
-    @Environment(\.dismiss) var dismiss
-    
-    @StateObject private var playerController = VideoPlayerController()
-    @State private var dragOffset: CGFloat = 0
-    
-    var body: some View {
-        let _ = print("🖼️ [VideoPlayerView] body computed - isReady: \(playerController.isReady), isLoading: \(playerController.isLoading), hasPlayer: \(playerController.player != nil)")
-        
-        return ZStack {
-            Color.black.ignoresSafeArea()
-            
-            // Show player as soon as it exists (don't wait for isReady flag)
-            if let player = playerController.player {
-                AVPlayerViewControllerRepresentable(player: player, thumbnailUrl: content.thumbnailUrl)
-                    .ignoresSafeArea()
-                    .onAppear {
-                        print("✅ [VideoPlayerView] AVPlayerViewController appeared")
-                        // Force play in case it didn't auto-play
-                        if player.timeControlStatus != .playing {
-                            print("▶️ [VideoPlayerView] Player not playing, forcing play")
-                            player.play()
-                        }
-                    }
-            } else {
-                ZStack {
-                    // Show thumbnail while loading/preparing
-                    VStack(spacing: 16) {
-                        if let thumbnailUrl = content.thumbnailUrl, !thumbnailUrl.isEmpty {
-                            AsyncImage(url: URL(string: thumbnailUrl)) { phase in
-                                switch phase {
-                                case .success(let image):
-                                    image
-                                        .resizable()
-                                        .scaledToFit()
-                                        .frame(maxHeight: 300)
-                                        .cornerRadius(12)
-                                case .failure(_), .empty:
-                                    ZStack {
-                                        Color.gray.opacity(0.3)
-                                            .frame(width: 200, height: 150)
-                                            .cornerRadius(12)
-                                        ProgressView()
-                                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                    }
-                                @unknown default:
-                                    Color.gray.opacity(0.3)
-                                        .frame(width: 200, height: 150)
-                                        .cornerRadius(12)
-                                }
-                            }
-                        } else {
-                            ZStack {
-                                Color.gray.opacity(0.3)
-                                    .frame(width: 200, height: 150)
-                                    .cornerRadius(12)
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                            }
-                        }
-                        
-                        if playerController.errorMessage == nil {
-                            VStack(spacing: 12) {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle(tint: Color.twillyTeal))
-                                    .scaleEffect(1.5)
-                                
-                                Text("Playing")
-                                    .foregroundColor(.white)
-                                    .font(.headline)
-                                    .fontWeight(.medium)
-                            }
-                            .padding(.top, 20)
-                        }
-                    }
-                    
-                    if let error = playerController.errorMessage {
-                        VStack(spacing: 20) {
-                            Image(systemName: "exclamationmark.triangle")
-                                .font(.system(size: 50))
-                                .foregroundStyle(
-                                    LinearGradient(
-                                        gradient: Gradient(colors: [
-                                            Color.twillyTeal,
-                                            Color.twillyCyan
-                                        ]),
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    )
-                                )
-                            
-                            Text("Error Loading Video")
-                                .font(.title2)
-                                .fontWeight(.bold)
-                                .foregroundColor(.white)
-                            
-                            Text(error)
-                                .foregroundColor(.white.opacity(0.7))
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, 40)
-                                .font(.subheadline)
-                            
-                            Button(action: {
-                                playerController.cleanup()
-                                dismiss()
-                            }) {
-                                HStack {
-                                    Image(systemName: "xmark.circle.fill")
-                                    Text("Close")
-                                }
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 24)
-                                .padding(.vertical, 12)
-                                .background(Color.blue)
-                                .cornerRadius(10)
-                            }
-                            .padding(.top, 20)
-                        }
-                    }
-                }
-            }
-        }
-        .offset(y: dragOffset)
-        .opacity(1.0 - min(abs(dragOffset) / 300.0, 0.5))
-        .gesture(
-            DragGesture()
-                .onChanged { value in
-                    // Only allow downward swipes
-                    if value.translation.height > 0 {
-                        dragOffset = value.translation.height
-                    }
-                }
-                .onEnded { value in
-                    // If swiped down more than 100 points, dismiss
-                    if value.translation.height > 100 || value.predictedEndTranslation.height > 200 {
-                        playerController.cleanup()
-                        dismiss()
-                    } else {
-                        // Spring back to original position
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                            dragOffset = 0
-                        }
-                    }
-                }
-        )
-        .overlay(alignment: .topTrailing) {
-            // Close button overlay for full screen
-            Button(action: {
-                playerController.cleanup()
-                dismiss()
-            }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 32))
-                    .foregroundColor(.white.opacity(0.8))
-                    .background(Color.black.opacity(0.5))
-                    .clipShape(Circle())
-            }
-            .padding()
-        }
-        .overlay(alignment: .trailing) {
-            // Floating comment section
-            FloatingCommentView(content: content, channelCreatorEmail: channelCreatorEmail)
-        }
-        .onAppear {
-            print("👁️ [VideoPlayerView] View appeared with URL: \(url.absoluteString)")
-            print("   - URL scheme: \(url.scheme ?? "nil")")
-            print("   - URL host: \(url.host ?? "nil")")
-            print("   - URL path: \(url.path)")
-            playerController.load(url: url)
-        }
-        .onDisappear {
-            playerController.cleanup()
-        }
-    }
-}
-
-class VideoPlayerController: ObservableObject {
-    @Published var player: AVPlayer?
-    @Published var isLoading = true
-    @Published var isReady = false
-    @Published var errorMessage: String?
-    
-    private var playerItem: AVPlayerItem?
-    private var statusObserver: NSKeyValueObservation?
-    private var errorObserver: NSKeyValueObservation?
-    private var timeObserver: Any?
-    
-    func load(url: URL) {
-        print("🎥 [VideoPlayerController] ========== LOADING VIDEO ==========")
-        print("   URL: \(url.absoluteString)")
-        print("   Scheme: \(url.scheme ?? "nil")")
-        print("   Host: \(url.host ?? "nil")")
-        print("   Path: \(url.path)")
-        
-        // Check if playlist was prefetched
-        let hlsUrl = url.absoluteString
-        // TODO: VideoPrefetchService call - ensure VideoPrefetchService.swift is added to Xcode target
-        // Uncomment this line once VideoPrefetchService.swift is added to the target:
-        /*
-        if VideoPrefetchService.shared.isPlaylistPrefetched(hlsUrl: hlsUrl) {
-            print("⚡ [VideoPlayerController] Playlist was prefetched - instant load!")
-        } else {
-            print("📥 [VideoPlayerController] Playlist not prefetched - loading from network")
-        }
-        */
-        print("📥 [VideoPlayerController] Loading playlist from network")
-        
-        isLoading = true
-        isReady = false
-        errorMessage = nil
-        
-        // Configure audio session for playback
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-            try AVAudioSession.sharedInstance().setActive(true)
-            print("✅ [VideoPlayerController] Audio session configured")
-        } catch {
-            print("❌ [VideoPlayerController] Error configuring audio session: \(error)")
-        }
-        
-        // Create AVPlayerItem
-        let item = AVPlayerItem(url: url)
-        playerItem = item
-        print("✅ [VideoPlayerController] AVPlayerItem created")
-        
-        // Observe status changes
-        statusObserver = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                print("🔄 [VideoPlayerController] Status changed to: \(item.status.rawValue)")
-                self.handleStatusChange(item.status, error: item.error)
-            }
-        }
-        
-        // Observe playback status
-        NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: item,
-            queue: .main
-        ) { _ in
-            print("✅ [VideoPlayerController] Video playback ended")
-        }
-        
-        // Observe time control status
-        NotificationCenter.default.addObserver(
-            forName: NSNotification.Name.AVPlayerItemTimeJumped,
-            object: item,
-            queue: .main
-        ) { _ in
-            print("⏭️ [VideoPlayerController] Time jumped")
-        }
-        
-        // Create player
-        let avPlayer = AVPlayer(playerItem: item)
-        
-        // Configure for mobile playback
-        avPlayer.allowsExternalPlayback = true // Allow AirPlay
-        avPlayer.usesExternalPlaybackWhileExternalScreenIsActive = true
-        
-        // Observe player time control status to detect when playback actually starts
-        timeObserver = avPlayer.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: CMTimeScale(NSEC_PER_SEC)), queue: .main) { [weak self] time in
-            guard let self = self, let player = self.player else { return }
-            let status = player.timeControlStatus
-            if status == .playing && !self.isReady {
-                print("▶️ [VideoPlayerController] Player is playing but not marked ready - fixing state")
-                DispatchQueue.main.async {
-                    self.isReady = true
-                }
-            }
-        }
-        
-        player = avPlayer
-        print("✅ [VideoPlayerController] AVPlayer created and assigned")
-        print("   - Player timeControlStatus: \(avPlayer.timeControlStatus.rawValue)")
-        print("   - Player rate: \(avPlayer.rate)")
-    }
-    
-    private func handleStatusChange(_ status: AVPlayerItem.Status, error: Error?) {
-        print("🔄 [VideoPlayerController] handleStatusChange called")
-        print("   - Status: \(status.rawValue) (\(status == .readyToPlay ? "readyToPlay" : status == .failed ? "failed" : "unknown"))")
-        print("   - Error: \(error?.localizedDescription ?? "nil")")
-        if let playerItemError = playerItem?.error {
-            print("   - PlayerItem error: \(playerItemError.localizedDescription)")
-        }
-        
-        switch status {
-        case .readyToPlay:
-            print("✅ [VideoPlayerController] Player item ready to play")
-            isLoading = false
-            
-            // Check if player item has tracks
-            if let tracks = playerItem?.tracks {
-                print("   - Number of tracks: \(tracks.count)")
-                for (index, track) in tracks.enumerated() {
-                    let mediaType = track.assetTrack?.mediaType.rawValue ?? "unknown"
-                    print("   - Track \(index): \(mediaType)")
-                }
-            }
-            
-            // Wait a moment to ensure player is fully ready before marking as ready
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                guard let self = self, let player = self.player else {
-                    print("❌ [VideoPlayerController] Player is nil when trying to start playback")
-                    return
-                }
-                
-                print("▶️ [VideoPlayerController] Starting playback")
-                print("   - Player rate before play: \(player.rate)")
-                print("   - Player timeControlStatus: \(player.timeControlStatus.rawValue)")
-                
-                player.play()
-                
-                // Mark as ready after a short delay to ensure playback started
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                    guard let self = self, let player = self.player else { return }
-                    self.isReady = true
-                    print("✅ [VideoPlayerController] Player marked as ready")
-                    print("   - Player rate after play: \(player.rate)")
-                    print("   - Player timeControlStatus: \(player.timeControlStatus.rawValue)")
-                    print("   - Current time: \(CMTimeGetSeconds(player.currentTime()))")
-                }
-            }
-        case .failed:
-            let errorMsg = error?.localizedDescription ?? playerItem?.error?.localizedDescription ?? "Failed to load video"
-            print("❌ [VideoPlayerController] Player item failed: \(errorMsg)")
-            if let nsError = error as NSError? {
-                print("   - Error domain: \(nsError.domain)")
-                print("   - Error code: \(nsError.code)")
-                print("   - Error userInfo: \(nsError.userInfo)")
-            }
-            isLoading = false
-            isReady = false
-            errorMessage = errorMsg
-        case .unknown:
-            print("⏳ [VideoPlayerController] Player item status unknown")
-        @unknown default:
-            print("❓ [VideoPlayerController] Player item status unknown: \(status.rawValue)")
-        }
-    }
-    
-    func cleanup() {
-        print("🧹 [VideoPlayerController] Cleaning up")
-        player?.pause()
-        
-        // Remove time observer
-        if let observer = timeObserver, let player = player {
-            player.removeTimeObserver(observer)
-            timeObserver = nil
-        }
-        
-        statusObserver?.invalidate()
-        errorObserver?.invalidate()
-        NotificationCenter.default.removeObserver(self)
-        playerItem = nil
-        player = nil
-        isReady = false
-        isLoading = true
-        
-        // Deactivate audio session
-        do {
-            try AVAudioSession.sharedInstance().setActive(false)
-        } catch {
-            print("❌ [VideoPlayerController] Error deactivating audio session: \(error)")
-        }
-    }
-}
-
-// MARK: - AVPlayerViewController Wrapper for Full Screen Support
-struct AVPlayerViewControllerRepresentable: UIViewControllerRepresentable {
-    let player: AVPlayer
-    let thumbnailUrl: String?
-    
-    func makeUIViewController(context: Context) -> OrientationAwarePlayerViewController {
-        print("🔍 [AVPlayerViewControllerRepresentable] ========== makeUIViewController CALLED ==========")
-        print("   - Thumbnail URL: \(thumbnailUrl ?? "none")")
-        print("   - Current item exists: \(player.currentItem != nil)")
-        let controller = OrientationAwarePlayerViewController()
-        controller.player = player
-        controller.thumbnailUrl = thumbnailUrl
-        controller.showsPlaybackControls = true
-        print("   - Controller created, thumbnailUrl set: \(controller.thumbnailUrl ?? "nil")")
-        
-        // CRITICAL: Try to detect orientation IMMEDIATELY if possible
-        // This happens before the view is presented, so we can lock orientation early
-        if let currentItem = player.currentItem {
-            print("🔍 [AVPlayerViewControllerRepresentable] Attempting EARLY detection...")
-            // Try to get video track immediately
-            let videoTracks = currentItem.tracks.filter { $0.assetTrack?.mediaType == .video }
-            if let videoTrack = videoTracks.first?.assetTrack {
-                let videoSize = videoTrack.naturalSize
-                print("   - Early detection: Natural size: \(videoSize.width) x \(videoSize.height)")
-                
-                // Try thumbnail first if available (async to avoid blocking main thread)
-                var isPortrait = false
-                if let thumbnailUrl = thumbnailUrl, let thumbnailURL = URL(string: thumbnailUrl) {
-                    // Load thumbnail asynchronously - explicitly detach to ensure non-blocking
-                    Task.detached(priority: .userInitiated) {
-                        do {
-                            let (imageData, _) = try await URLSession.shared.data(from: thumbnailURL)
-                            if let image = UIImage(data: imageData) {
-                                let thumbnailIsPortrait = image.size.height > image.size.width
-                                await MainActor.run {
-                                    isPortrait = thumbnailIsPortrait
-                                    print("   - Early thumbnail detection (async): \(image.size.width) x \(image.size.height) → Portrait: \(thumbnailIsPortrait)")
-                                }
-                            }
-                        } catch {
-                            print("   - Failed to load thumbnail for early detection: \(error.localizedDescription)")
-                        }
-                    }
-                }
-                
-                // Fallback to video size (immediate)
-                if !isPortrait {
-                    isPortrait = videoSize.height > videoSize.width
-                    print("   - Early video size detection: Portrait: \(isPortrait)")
-                }
-                
-                // Set detection state IMMEDIATELY
-                controller.isPortraitVideo = isPortrait
-                controller.hasDetectedVideoOrientation = true
-                // CRITICAL: Portrait videos MUST use resizeAspectFill for fullscreen
-                let targetGravity: AVLayerVideoGravity = isPortrait ? .resizeAspectFill : .resizeAspect
-                // Force set it multiple times to ensure it sticks (AVPlayerViewController sometimes overrides)
-                controller.videoGravity = targetGravity
-                DispatchQueue.main.async {
-                    controller.videoGravity = targetGravity
-                }
-                print("   - ✅ EARLY DETECTION COMPLETE: isPortrait=\(isPortrait)")
-                print("   - ✅ Set videoGravity to: \(targetGravity.rawValue) (will verify in viewWillAppear)")
-                
-                // CRITICAL: Force portrait orientation immediately if portrait
-                if isPortrait {
-                    print("   - 🔒 EARLY: Forcing portrait orientation lock immediately")
-                    // We can't access windowScene yet, but we'll set it in viewDidAppear
-                }
-            } else {
-                print("   - ⚠️ No video track available for early detection")
-            }
-        } else {
-            print("   - ⚠️ No currentItem available for early detection")
-        }
-        
-        // Start with resizeAspectFill for portrait videos (default to fullscreen)
-        // This ensures portrait videos go fullscreen immediately, even before detection
-        if !controller.hasDetectedVideoOrientation {
-            controller.videoGravity = .resizeAspectFill
-            print("🔍 [AVPlayerViewControllerRepresentable] Initial videoGravity set to: \(controller.videoGravity.rawValue)")
-            print("   - Setting to resizeAspectFill (fullscreen) as default - will be corrected if landscape")
-        }
-        controller.allowsPictureInPicturePlayback = false
-        
-        
-        print("🔍 [AVPlayerViewControllerRepresentable] Player currentItem exists: \(player.currentItem != nil)")
-        if let currentItem = player.currentItem {
-            print("🔍 [AVPlayerViewControllerRepresentable] Checking tracks in makeUIViewController...")
-            print("   - asset.tracks count: \(currentItem.asset.tracks(withMediaType: .video).count)")
-            print("   - currentItem.tracks count: \(currentItem.tracks.count)")
-        }
-        print("🔍 [AVPlayerViewControllerRepresentable] ========== makeUIViewController COMPLETE ==========")
-        
-        return controller
-    }
-    
-    func updateUIViewController(_ uiViewController: OrientationAwarePlayerViewController, context: Context) {
-        // Update player if needed
-        if uiViewController.player != player {
-            uiViewController.player = player
-        }
-    }
-}
-
-// MARK: - Orientation-Aware Player View Controller
-class OrientationAwarePlayerViewController: AVPlayerViewController, UIGestureRecognizerDelegate {
-    var isPortraitVideo = false  // Made internal so it can be set from makeUIViewController
-    var hasDetectedVideoOrientation = false  // Made internal so it can be set from makeUIViewController
-    var thumbnailUrl: String?
-    
-    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
-        // LOCKED TO PORTRAIT - App only supports portrait mode
-        return .portrait
-    }
-    
-    override var shouldAutorotate: Bool {
-        // Disable rotation - app is locked to portrait
-        return false
-    }
-    
-    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
-        print("🔄 [OrientationAwarePlayerViewController] ========== viewWillTransition CALLED ==========")
-        print("   - New size: \(size.width) x \(size.height)")
-        print("   - 🔒 BLOCKING transition - App is locked to portrait mode")
-        // Always block transitions - app is locked to portrait
-        return
-    }
-    
-    
-    override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation {
-        // CRITICAL: Always return portrait for portrait videos, even before detection
-        // This prevents AVPlayerViewController from auto-rotating
-        if hasDetectedVideoOrientation && isPortraitVideo {
-            print("🔒 [preferredInterfaceOrientationForPresentation] Portrait video detected → returning: .portrait")
-            return .portrait
-        }
-        // Before detection, default to portrait to prevent unwanted rotation
-        print("🔒 [preferredInterfaceOrientationForPresentation] Not detected yet → returning: .portrait (default)")
-        return .portrait
-    }
-    
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        print("🔍 [OrientationAwarePlayerViewController] ========== viewDidLoad CALLED ==========")
-        modalPresentationStyle = .fullScreen
-        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(orientationChanged),
-            name: UIDevice.orientationDidChangeNotification,
-            object: nil
-        )
-        
-        // Pinch gesture removed - no effects on playback, just straight playback
-        
-        print("   - Thumbnail URL: \(thumbnailUrl ?? "none")")
-        print("   - Initial state: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
-        print("🔍 [OrientationAwarePlayerViewController] ========== viewDidLoad COMPLETE ==========")
-    }
-    
-    // Pinch gesture and zoom effects removed - straight playback only (no effects)
-    
-    private func updateVideoGravity() {
-        print("🔍 [OrientationAwarePlayerViewController] ========== updateVideoGravity CALLED ==========")
-        print("   - Current state: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
-        print("   - Thumbnail URL available: \(thumbnailUrl != nil ? "YES (\(thumbnailUrl!))" : "NO")")
-        guard let player = player, let currentItem = player.currentItem else {
-            print("⚠️ [OrientationAwarePlayerViewController] Cannot update video gravity - no player or item")
-            print("   - player exists: \(player != nil)")
-            print("   - currentItem exists: \(player?.currentItem != nil)")
-            return
-        }
-        
-        print("🔍 [OrientationAwarePlayerViewController] Checking tracks...")
-        print("   - asset.tracks count: \(currentItem.asset.tracks(withMediaType: .video).count)")
-        print("   - currentItem.tracks count: \(currentItem.tracks.count)")
-        
-        // Try asset.tracks first (works for regular videos) - this is what the working version used
-        var track: AVAssetTrack?
-        var trackSource = "unknown"
-        
-        if let assetTrack = currentItem.asset.tracks(withMediaType: .video).first {
-            track = assetTrack
-            trackSource = "asset.tracks"
-            print("   ✅ Found track from asset.tracks")
-        } else {
-            // For HLS streams, asset.tracks might be empty, use currentItem.tracks
-            let videoTracks = currentItem.tracks.filter { $0.assetTrack?.mediaType == .video }
-            print("   - currentItem.tracks filtered count: \(videoTracks.count)")
-            if let firstTrack = videoTracks.first {
-                print("   - firstTrack.assetTrack exists: \(firstTrack.assetTrack != nil)")
-            }
-            track = videoTracks.first?.assetTrack
-            trackSource = "currentItem.tracks"
-            if track != nil {
-                print("   ✅ Found track from currentItem.tracks")
-            }
-        }
-        
-        guard let videoTrack = track else {
-            // Tracks not ready yet - retry once after a short delay
-            // Only retry if we haven't detected yet to prevent multiple updates
-            if !hasDetectedVideoOrientation {
-                print("⚠️ [OrientationAwarePlayerViewController] No video tracks yet, retrying once...")
-                print("   - Track source attempted: \(trackSource)")
-                print("   - Player status: \(player.status.rawValue)")
-                print("   - Current item status: \(currentItem.status.rawValue)")
-                
-                // Single retry to prevent multiple updates that cause zoom effects
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                    guard let self = self, !self.hasDetectedVideoOrientation else { return }
-                    self.updateVideoGravity()
-                }
-            } else {
-                print("⚠️ [OrientationAwarePlayerViewController] No video tracks but already detected - skipping retry")
-            }
-            return
-        }
-        
-        let videoSize = videoTrack.naturalSize
-        let videoTransform = videoTrack.preferredTransform
-        
-        print("🔍 [OrientationAwarePlayerViewController] Track details:")
-        print("   - Track source: \(trackSource)")
-        print("   - Natural size: \(videoSize.width) x \(videoSize.height)")
-        print("   - Transform matrix:")
-        print("     a=\(videoTransform.a), b=\(videoTransform.b)")
-        print("     c=\(videoTransform.c), d=\(videoTransform.d)")
-        print("     tx=\(videoTransform.tx), ty=\(videoTransform.ty)")
-        
-        // PRIMARY: Use thumbnail if available (most reliable, matches what user sees)
-        // FALLBACK: Use normal video dimensions (height > width = portrait)
-        var videoIsPortrait = false
-        var usedThumbnail = false
-        
-        // Load thumbnail asynchronously (never block main thread)
-        if let thumbnailUrl = thumbnailUrl, let thumbnailURL = URL(string: thumbnailUrl) {
-            // Always use async URLSession to avoid blocking main thread - explicitly detach
-            Task.detached(priority: .userInitiated) { [weak self] in
-                do {
-                    let (imageData, _) = try await URLSession.shared.data(from: thumbnailURL)
-                    if let image = UIImage(data: imageData) {
-                        let thumbnailIsPortrait = image.size.height > image.size.width
-                        await MainActor.run { [weak self] in
-                            guard let self = self else { return }
-                            videoIsPortrait = thumbnailIsPortrait
-                            usedThumbnail = true
-                            print("🔍 [OrientationAwarePlayerViewController] ✅ Using THUMBNAIL detection (async):")
-                            print("   - Thumbnail size: \(image.size.width) x \(image.size.height)")
-                            print("   - Is Portrait: \(thumbnailIsPortrait) (height > width: \(image.size.height > image.size.width))")
-                            
-                            // Update video orientation
-                            self.isPortraitVideo = thumbnailIsPortrait
-                            self.hasDetectedVideoOrientation = true
-                            // Set videoGravity immediately (only if different to prevent zoom effects)
-                            let targetGravity: AVLayerVideoGravity = thumbnailIsPortrait ? .resizeAspectFill : .resizeAspect
-                            if self.videoGravity != targetGravity {
-                                self.videoGravity = targetGravity
-                                print("   - Updated video orientation from thumbnail: \(targetGravity.rawValue)")
-                            } else {
-                                print("   - Video orientation already set: \(targetGravity.rawValue)")
-                            }
-                        }
-                    }
-                } catch {
-                    print("🔍 [OrientationAwarePlayerViewController] ⚠️ Failed to load thumbnail: \(error.localizedDescription)")
-                }
-            }
-        }
-        
-        // CRITICAL: Check for rotation transform FIRST - this determines actual orientation
-        let transform = videoTrack.preferredTransform
-        let rotation = atan2(transform.b, transform.a) * 180 / .pi
-        print("   - 🔍 Video track transform: a=\(transform.a), b=\(transform.b), c=\(transform.c), d=\(transform.d)")
-        print("   - 🔍 Calculated rotation: \(rotation) degrees")
-        
-        // Determine actual video orientation based on transform
-        // If there's a 90° or 270° rotation, the natural size dimensions are swapped
-        let hasRotationTransform = abs(rotation) > 0.1 && abs(rotation) < 359.9
-        let isRotated90or270 = abs(abs(rotation) - 90) < 1 || abs(abs(rotation) - 270) < 1
-        
-        if hasRotationTransform {
-            print("   - ⚠️ VIDEO HAS ROTATION TRANSFORM: \(rotation) degrees")
-            if isRotated90or270 {
-                // Natural size is swapped - height is actually width and vice versa
-                print("   - 🔄 90°/270° rotation detected - swapping dimensions")
-                videoIsPortrait = videoSize.width > videoSize.height
-                print("   - ✅ After swap: Natural size \(videoSize.width)x\(videoSize.height) → Portrait: \(videoIsPortrait)")
-            } else {
-                // 0° or 180° - dimensions are correct
-                videoIsPortrait = videoSize.height > videoSize.width
-                print("   - ✅ No dimension swap needed: Portrait: \(videoIsPortrait)")
-            }
-        } else {
-            // No rotation transform - use natural dimensions
-            videoIsPortrait = videoSize.height > videoSize.width
-            print("   - ✅ No rotation transform - using natural size: Portrait: \(videoIsPortrait)")
-        }
-        
-        // Fallback to video dimensions if thumbnail wasn't used
-        if !usedThumbnail {
-            print("🔍 [OrientationAwarePlayerViewController] Using VIDEO SIZE detection:")
-            print("   - Natural size: \(videoSize.width) x \(videoSize.height)")
-            print("   - Rotation: \(rotation) degrees")
-            print("   - Is Portrait: \(videoIsPortrait)")
-        }
-        
-        print("🎬 [OrientationAwarePlayerViewController] Video orientation detection:")
-        print("   - Natural size: \(videoSize.width) x \(videoSize.height)")
-        print("   - Rotation transform: \(rotation) degrees")
-        print("   - Is Portrait: \(videoIsPortrait)")
-        print("   - Current videoGravity: \(videoGravity.rawValue)")
-        
-        // Store video orientation for orientation lock
-        print("🎯 [OrientationAwarePlayerViewController] ========== SETTING DETECTION RESULT ==========")
-        print("   - videoIsPortrait: \(videoIsPortrait)")
-        print("   - hasRotationTransform: \(hasRotationTransform)")
-        print("   - Setting isPortraitVideo = \(videoIsPortrait)")
-        print("   - Setting hasDetectedVideoOrientation = true")
-        isPortraitVideo = videoIsPortrait
-        hasDetectedVideoOrientation = true
-        print("   - ✅ State updated: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
-        
-        // CRITICAL: If portrait, force portrait orientation IMMEDIATELY
-        if videoIsPortrait {
-            print("   - 🔒 FORCING portrait orientation immediately after detection")
-            if let windowScene = view.window?.windowScene {
-                if #available(iOS 16.0, *) {
-                    windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { (error: Error?) in
-                        if let err = error {
-                            print("   - ❌ Failed to force portrait: \(err.localizedDescription)")
-                        } else {
-                            print("   - ✅ Forced to portrait orientation immediately")
-                        }
-                    }
-                }
-            } else {
-                print("   - ⚠️ windowScene not available yet, will force in viewDidAppear")
-            }
-        }
-        
-        // Portrait videos: set fullscreen and lock orientation (handled by supportedInterfaceOrientations)
-        // Landscape videos: set natural aspect and allow rotation
-        
-        // Portrait videos: Always full screen (resizeAspectFill)
-        // Landscape videos: Always natural aspect ratio (resizeAspect) - no zoom
-        let targetGravity: AVLayerVideoGravity = videoIsPortrait ? .resizeAspectFill : .resizeAspect
-        
-        // CRITICAL: Only update if different to prevent zoom effects
-        if videoGravity != targetGravity {
-            print("   ✅ Setting videoGravity to \(targetGravity.rawValue) (\(videoIsPortrait ? "portrait - full screen" : "landscape - natural aspect, no zoom"))")
-            videoGravity = targetGravity
-        } else {
-            print("   ✅ videoGravity already set to \(targetGravity.rawValue) - no change needed")
-        }
-        print("🔍 [OrientationAwarePlayerViewController] ========== updateVideoGravity COMPLETE ==========")
-        print("   - Final state: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
-        print("   - Current videoGravity: \(videoGravity.rawValue)")
-    }
-    
-    @objc private func orientationChanged() {
-        print("🔄 [OrientationAwarePlayerViewController] ========== orientationChanged CALLED ==========")
-        print("   - Device orientation: \(UIDevice.current.orientation.rawValue)")
-        print("   - 🔒 IGNORING orientation change - App is locked to portrait mode")
-        // Always ignore orientation changes - app is locked to portrait
-        return
-    }
-    
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        print("🔍 [OrientationAwarePlayerViewController] ========== viewWillAppear CALLED ==========")
-        if let windowScene = view.window?.windowScene {
-            print("   - Current interface orientation: \(windowScene.interfaceOrientation.rawValue) (\(windowScene.interfaceOrientation.isPortrait ? "portrait" : "landscape"))")
-            print("   - Is portrait: \(windowScene.interfaceOrientation.isPortrait)")
-        } else {
-            print("   - ⚠️ windowScene is nil!")
-        }
-        print("   - Device orientation: \(UIDevice.current.orientation.rawValue)")
-        print("   - Before detection: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
-        // Detect video orientation and set videoGravity
-        updateVideoGravity()
-        print("   - After detection: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
-        if let windowScene = view.window?.windowScene {
-            print("   - After detection, interface orientation: \(windowScene.interfaceOrientation.rawValue) (\(windowScene.interfaceOrientation.isPortrait ? "portrait" : "landscape"))")
-        }
-        print("🔍 [OrientationAwarePlayerViewController] ========== viewWillAppear COMPLETE ==========")
-    }
-    
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        print("🔍 [OrientationAwarePlayerViewController] ========== viewDidAppear CALLED ==========")
-        if let windowScene = view.window?.windowScene {
-            print("   - Current interface orientation: \(windowScene.interfaceOrientation.rawValue) (\(windowScene.interfaceOrientation.isPortrait ? "portrait" : "landscape"))")
-            
-            // CRITICAL: If portrait video detected, FORCE portrait orientation NOW
-            if hasDetectedVideoOrientation && isPortraitVideo {
-                if !windowScene.interfaceOrientation.isPortrait {
-                    print("   - ⚠️ Interface is NOT portrait but video is portrait - FORCING portrait NOW")
-                    if #available(iOS 16.0, *) {
-                        windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { (error: Error?) in
-                            if let err = error {
-                                print("   - ❌ Failed to force portrait: \(err.localizedDescription)")
-                            } else {
-                                print("   - ✅ Forced to portrait orientation")
-                            }
-                        }
-                    }
-                } else {
-                    print("   - ✅ Interface is already portrait - locking it")
-                    // Lock it again to be sure
-                    if #available(iOS 16.0, *) {
-                        windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { (error: Error?) in
-                            if let err = error {
-                                print("   - ❌ Failed to lock portrait: \(err.localizedDescription)")
-                            } else {
-                                print("   - ✅ Locked to portrait orientation")
-                            }
-                        }
-                    }
-                }
-                
-                // CRITICAL: Also monitor for orientation changes after viewDidAppear
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    guard let self = self, let windowScene = self.view.window?.windowScene else { return }
-                    if !windowScene.interfaceOrientation.isPortrait && self.hasDetectedVideoOrientation && self.isPortraitVideo {
-                        print("   - ⚠️⚠️⚠️ ORIENTATION FLIPPED AFTER viewDidAppear! Forcing back to portrait...")
-                        if #available(iOS 16.0, *) {
-                            windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { (error: Error?) in
-                                if let err = error {
-                                    print("   - ❌ Failed to re-force portrait: \(err.localizedDescription)")
-                                } else {
-                                    print("   - ✅ Re-forced to portrait orientation")
-                                }
-                            }
-                        }
-                    } else {
-                        print("   - ✅ Orientation check after 0.5s: still portrait")
-                    }
-                }
-            }
-        } else {
-            print("   - ⚠️ windowScene is still nil!")
-        }
-        print("   - Detection state: hasDetected=\(hasDetectedVideoOrientation), isPortrait=\(isPortraitVideo)")
-        print("   - supportedInterfaceOrientations will return: \(hasDetectedVideoOrientation ? (isPortraitVideo ? "portrait" : "all") : "portrait")")
-        print("   - shouldAutorotate will return: \(hasDetectedVideoOrientation && !isPortraitVideo)")
-        print("🔍 [OrientationAwarePlayerViewController] ========== viewDidAppear COMPLETE ==========")
-    }
-    
-    deinit {
-        UIDevice.current.endGeneratingDeviceOrientationNotifications()
-        NotificationCenter.default.removeObserver(self)
-    }
-}
 
 // ViewModifier to conditionally show scroll indicators based on iOS version
-struct ScrollIndicatorsModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 16.0, *) {
-            content.scrollIndicators(.visible)
-        } else {
-            content
-        }
-    }
-}

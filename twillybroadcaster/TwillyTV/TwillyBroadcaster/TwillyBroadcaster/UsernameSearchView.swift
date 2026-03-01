@@ -123,7 +123,10 @@ struct UsernameSearchView: View {
                                     Image(systemName: "person.circle.fill")
                                         .foregroundColor(.twillyTeal)
                                     Text(added.streamerUsername)
+                                        .font(.body) // Fixed font size for all usernames
                                         .foregroundColor(.white)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail) // Truncate with ellipsis if too long
                                     Spacer()
                                     Button(action: {
                                         removeUsername(added.streamerUsername)

@@ -40,6 +40,9 @@ struct StreamerSettingsView: View {
     @State private var premiumStatus: PremiumStatusResponse? = nil
     @State private var showingPremiumSetup = false
     
+    // UserDefaults key for premium enabled (testing mode)
+    private let premiumEnabledKey = "PremiumEnabled"
+    
     private var userEmail: String {
         authService.userEmail ?? ""
     }
@@ -63,6 +66,10 @@ struct StreamerSettingsView: View {
                     VStack(spacing: 24) {
                         // Account Info Section
                         accountInfoSection
+                            .padding(.horizontal, 16)
+                        
+                        // Premium Testing Section
+                        premiumTestingSection
                             .padding(.horizontal, 16)
                         
                         // Premium Section - HIDDEN for v1
@@ -100,7 +107,11 @@ struct StreamerSettingsView: View {
             // Load account visibility
             loadAccountVisibility()
             
-            // Load premium status
+            // Load premium enabled from UserDefaults FIRST (testing mode)
+            // This must be loaded before loadPremiumStatus() so it doesn't get overwritten
+            loadPremiumEnabled()
+            
+            // Load premium status (API - for real premium, doesn't affect testing toggle)
             loadPremiumStatus()
         }
         .sheet(isPresented: $showingPremiumSetup) {
@@ -1165,8 +1176,10 @@ struct StreamerSettingsView: View {
                 await MainActor.run {
                     isLoadingPremiumStatus = false
                     premiumStatus = response
-                    isPremiumEnabled = response.isPremiumEnabled ?? false
-                    print("✅ [StreamerSettingsView] Loaded Premium status: enabled=\(isPremiumEnabled), active=\(response.isPremium ?? false)")
+                    // DON'T overwrite isPremiumEnabled from API - it's for testing mode (UserDefaults only)
+                    // Only update if we haven't loaded from UserDefaults yet
+                    // isPremiumEnabled is managed separately via UserDefaults for testing
+                    print("✅ [StreamerSettingsView] Loaded Premium status: API enabled=\(response.isPremiumEnabled ?? false), active=\(response.isPremium ?? false), UserDefaults enabled=\(isPremiumEnabled)")
                 }
             } catch {
                 await MainActor.run {
@@ -1199,6 +1212,67 @@ struct StreamerSettingsView: View {
                 }
             }
         }
+    }
+    
+    // MARK: - Premium Testing (UserDefaults)
+    
+    private var premiumTestingSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Section Header
+            HStack {
+                Text("Premium Testing")
+                    .font(.headline)
+                    .foregroundColor(.white)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color.black.opacity(0.3))
+            
+            // Premium Toggle
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Enable Premium")
+                        .font(.body)
+                        .foregroundColor(.white)
+                    Text("Enable premium toggle in stream screen (testing mode)")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                }
+                Spacer()
+                
+                Toggle("", isOn: Binding(
+                    get: { isPremiumEnabled },
+                    set: { newValue in
+                        savePremiumEnabled(newValue)
+                    }
+                ))
+                .tint(.orange)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color.black.opacity(0.2))
+        }
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
+        )
+    }
+    
+    private func loadPremiumEnabled() {
+        isPremiumEnabled = UserDefaults.standard.bool(forKey: premiumEnabledKey)
+        print("✅ [StreamerSettingsView] Loaded premium enabled: \(isPremiumEnabled)")
+    }
+    
+    private func savePremiumEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: premiumEnabledKey)
+        UserDefaults.standard.synchronize() // Force immediate save
+        isPremiumEnabled = enabled
+        print("✅ [StreamerSettingsView] Saved premium enabled: \(enabled)")
+        
+        // Post notification so ContentView can update
+        NotificationCenter.default.post(name: NSNotification.Name("PremiumEnabledChanged"), object: nil, userInfo: ["enabled": enabled])
     }
     
     private func updateAccountVisibility(_ isPrivate: Bool) {

@@ -182,9 +182,9 @@ struct ChannelDiscoveryView: View {
                                     .font(.title3)
                                     .foregroundColor(.white)
                                 
-                                // Unread badge
+                                // Unread badge - binary indicator: "1" if ANY unread, "0" if all read
                                 if notificationService.unreadCount > 0 {
-                                    Text("\(notificationService.unreadCount)")
+                                    Text("1")
                                         .font(.caption2)
                                         .fontWeight(.bold)
                                         .foregroundColor(.white)

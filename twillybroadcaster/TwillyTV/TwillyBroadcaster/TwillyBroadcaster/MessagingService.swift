@@ -107,7 +107,7 @@ class MessagingService: ObservableObject {
     
     /// Update cached user threads for a video (for username scroll)
     /// CRITICAL: Always show the OTHER participant's username, never the current user's username
-    private func updateCachedUserThreads(for videoId: String) {
+    func updateCachedUserThreads(for videoId: String) {
         guard let userId = authService.userId,
               let currentUsername = authService.username else { return }
         
@@ -193,15 +193,15 @@ class MessagingService: ObservableObject {
             }
             
             // Skip if we already have a thread for this comment
-            if let commentId = comment.id, threadToOtherParticipant[commentId] != nil {
+            if threadToOtherParticipant[comment.id] != nil {
                 continue
             }
             
             // If this comment has a private thread, we already processed it above
             // If not, we can still show it as a potential conversation starter
             // But only if there are no private threads yet (to avoid duplicates)
-            if let commentId = comment.id, threadsDict[commentId] == nil {
-                threadToOtherParticipant[commentId] = comment.username
+            if threadsDict[comment.id] == nil {
+                threadToOtherParticipant[comment.id] = comment.username
             }
         }
         
@@ -270,9 +270,9 @@ class MessagingService: ObservableObject {
     }
     
     struct ThreadInfo: Identifiable {
-        let id: String
+        var id: String
         let username: String
-        let hasUnread: Bool
+        var hasUnread: Bool
     }
     
     /// Post a message - OPTIMISTIC UPDATE + SERVER SYNC (feels immediate like general chat)
@@ -446,7 +446,7 @@ class MessagingService: ObservableObject {
             // Wait for server to process
             try? await Task.sleep(nanoseconds: 1500_000_000) // 1.5s delay
             // Reload to get persisted message (silent update)
-            try? await self.loadMessages(for: videoId, useCache: false)
+            try? await self.loadMessages(for: videoId)
             await MainActor.run {
                 self.updateCachedUserThreads(for: videoId)
                 self.saveToCache(for: videoId)
@@ -519,8 +519,8 @@ class MessagingService: ObservableObject {
         // Update on server
         _ = try await ChannelService.shared.markThreadAsRead(
             videoId: videoId,
-            threadId: threadId,
-            viewerEmail: viewerEmail
+            viewerEmail: viewerEmail,
+            threadId: threadId
         )
         
         // Reload unread counts (will update badge)
@@ -828,10 +828,11 @@ class MessagingService: ObservableObject {
                 // PATTERN: FLOATINGCOMMENTVIEW PATTERN - Optimistic update for indicator
                 // IMMEDIATE: Update indicator and highlight right away when receiving private message
                 // This ensures bidirectional indicators - recipient sees it instantly
-                if let isPrivate = notification.isPrivate, isPrivate,
-                   let threadId = notification.threadId {
+                // CommentNotification uses parentCommentId for thread (or commentId for top-level)
+                if notification.isPrivate {
+                    let threadId = notification.parentCommentId ?? notification.commentId
                     let videoId = notification.videoId
-                    let normalizedVideoId = normalizeVideoId(videoId)
+                    let normalizedVideoId = self.normalizeVideoId(videoId)
                     let key = "\(normalizedVideoId)_\(threadId)"
                     
                     // STEP 1: OPTIMISTIC UPDATE - Set indicator and highlight IMMEDIATELY (synchronous)
@@ -869,7 +870,7 @@ class MessagingService: ObservableObject {
                     try? await self.loadUnreadCounts(for: notification.videoId)
                     
                     await MainActor.run {
-                        let normalizedVideoId = normalizeVideoId(notification.videoId)
+                        let normalizedVideoId = self.normalizeVideoId(notification.videoId)
                         let apiUnreadCount = self.getUnreadCount(for: notification.videoId)
                         let unreadCount = apiUnreadCount > 0 ? 1 : 0
                         

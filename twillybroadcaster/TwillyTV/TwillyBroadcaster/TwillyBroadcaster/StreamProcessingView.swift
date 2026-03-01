@@ -41,17 +41,17 @@ struct StreamProcessingView: View {
                             .progressViewStyle(CircularProgressViewStyle(tint: .twillyTeal))
                             .scaleEffect(1.5)
                         
-                        Text("Stream Processing...")
+                        Text("Drop Processing...")
                             .font(.title2)
                             .fontWeight(.bold)
                             .foregroundColor(.white)
                         
                         if let channelName = channelName {
-                            Text("Processing your stream for \(channelName)")
+                            Text("Processing your Drop for \(channelName)")
                                 .font(.subheadline)
                                 .foregroundColor(.gray)
                         } else {
-                            Text("Processing your stream")
+                            Text("Processing your Drop")
                                 .font(.subheadline)
                                 .foregroundColor(.gray)
                         }

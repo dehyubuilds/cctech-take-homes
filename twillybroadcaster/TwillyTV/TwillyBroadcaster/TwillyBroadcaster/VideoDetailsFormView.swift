@@ -73,6 +73,12 @@ struct VideoDetailsFormView: View {
                                     // Only move to next field, never auto-submit
                                     focusedField = .description
                                 }
+                                .onChange(of: title) { newValue in
+                                    // Limit to 50 characters to fit on one line
+                                    if newValue.count > 50 {
+                                        title = String(newValue.prefix(50))
+                                    }
+                                }
                         }
                         
                         // Description field

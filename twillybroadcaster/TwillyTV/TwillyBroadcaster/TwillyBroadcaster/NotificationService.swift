@@ -20,6 +20,7 @@ struct StreamNotification: Identifiable, Codable {
     let createdAt: Date
     var isRead: Bool
     var actionUrl: String? // URL to navigate when notification is clicked
+    var metadata: [String: String]? // Additional metadata for notifications
     
     enum NotificationType: String, Codable {
         case videoReady = "video_ready"
@@ -28,6 +29,10 @@ struct StreamNotification: Identifiable, Codable {
         case followRequest = "follow_request"
         case followAccepted = "follow_accepted"
         case followDeclined = "follow_declined"
+        case commentReply = "comment_reply"
+        case privateAccessGranted = "private_access_granted"
+        case publicAccessGranted = "public_access_granted"
+        case directStreamRequest = "direct_stream_request"
     }
 }
 
@@ -127,7 +132,8 @@ class NotificationService: ObservableObject {
             videoId: videoId,
             createdAt: Date(),
             isRead: false,
-            actionUrl: nil
+            actionUrl: nil,
+            metadata: nil
         )
         addNotification(processingNotification)
         
@@ -464,7 +470,8 @@ class NotificationService: ObservableObject {
             videoId: videoId,
             createdAt: Date(),
             isRead: false,
-            actionUrl: "channel://\(channelName)"
+            actionUrl: "channel://\(channelName)",
+            metadata: nil
         )
         
         await MainActor.run {
@@ -748,7 +755,8 @@ class NotificationService: ObservableObject {
                     videoId: videoId,
                     createdAt: Date(),
                     isRead: false,
-                    actionUrl: nil
+                    actionUrl: nil,
+                    metadata: nil
                 )
                 addNotification(errorNotification)
                 stopMonitoringVideo(streamKey: streamKey)
@@ -806,7 +814,10 @@ class NotificationService: ObservableObject {
     }
     
     private func updateUnreadCount() {
-        unreadCount = notifications.filter { !$0.isRead }.count
+        // Binary indicator: 1 if ANY notification is unread, 0 if ALL are read
+        // This ensures the inbox shows "1" until all usernames/conversations are cleared
+        let hasAnyUnread = notifications.contains { !$0.isRead }
+        unreadCount = hasAnyUnread ? 1 : 0
     }
     
     // MARK: - API Notification Fetching
@@ -835,23 +846,62 @@ class NotificationService: ObservableObject {
                         notificationType = .processing
                     } else if apiNotif.type == "error" {
                         notificationType = .error
+                    } else if apiNotif.type == "comment_reply" {
+                        notificationType = .commentReply
+                    } else if apiNotif.type == "private_access_granted" {
+                        notificationType = .privateAccessGranted
+                    } else if apiNotif.type == "public_access_granted" {
+                        notificationType = .publicAccessGranted
+                    } else if apiNotif.type == "direct_stream_request" {
+                        notificationType = .directStreamRequest
                     }
                     
                     // Parse createdAt date
                     let dateFormatter = ISO8601DateFormatter()
                     let createdAt = dateFormatter.date(from: apiNotif.createdAt) ?? Date()
                     
+                    // Extract videoId and channelName from metadata for navigation
+                    let videoId = apiNotif.metadata?["videoId"] ?? apiNotif.metadata?["fileId"]
+                    let channelName = apiNotif.metadata?["channelName"] ?? "Twilly TV"
+                    
+                    // Build actionUrl for comment reply notifications to navigate to video
+                    var actionUrl: String? = nil
+                    if notificationType == .commentReply, let vidId = videoId {
+                        // Format: video://videoId to navigate to the video
+                        actionUrl = "video://\(vidId)"
+                    } else if notificationType == .privateAccessGranted {
+                        // For private access, navigate to the creator's channel
+                        if let ownerUsername = apiNotif.metadata?["ownerUsername"] {
+                            actionUrl = "channel://\(ownerUsername)"
+                        }
+                    } else if notificationType == .publicAccessGranted {
+                        // For public access, navigate to the requester's channel (person who added them)
+                        if let requesterUsername = apiNotif.metadata?["requesterUsername"] {
+                            actionUrl = "channel://\(requesterUsername)"
+                        }
+                    }
+                    
+                    // Convert metadata to [String: String] format
+                    var metadataDict: [String: String]? = nil
+                    if let apiMetadata = apiNotif.metadata {
+                        metadataDict = [:]
+                        for (key, value) in apiMetadata {
+                            metadataDict?[key] = String(describing: value)
+                        }
+                    }
+                    
                     let streamNotif = StreamNotification(
                         id: apiNotif.id,
                         type: notificationType,
                         title: apiNotif.title ?? "Notification", // Provide default if title is missing
                         message: apiNotif.message,
-                        channelName: "Twilly TV", // Default channel for follow requests
+                        channelName: channelName,
                         streamKey: nil,
-                        videoId: nil,
+                        videoId: videoId,
                         createdAt: createdAt,
                         isRead: apiNotif.isRead,
-                        actionUrl: nil
+                        actionUrl: actionUrl,
+                        metadata: metadataDict
                     )
                     
                     newNotifications.append(streamNotif)

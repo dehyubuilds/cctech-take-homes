@@ -468,13 +468,21 @@ struct PrivateUsernameManagementView: View {
                     addingUsernames.remove(addingKey)
                     isLoading = false
                     
-                    // Wait for backend to process, then reload (same as public usernames)
+                    // CRITICAL: Ensure optimistic update is saved immediately
+                    saveAddedPrivateUsernamesToUserDefaults()
+                    print("✅ [PrivateUsernameManagementView] Saved optimistic update to UserDefaults")
+                    
+                    // Wait for backend to process, then reload from server (same as public usernames)
                     Task {
                         do {
                             // Wait 1 second for backend to process
                             try await Task.sleep(nanoseconds: 1_000_000_000)
                             await MainActor.run {
+                                print("🔄 [PrivateUsernameManagementView] Reloading from server after add...")
                                 loadAddedPrivateUsernames(mergeWithExisting: true)
+                                // CRITICAL: Save again after server reload to ensure persistence
+                                saveAddedPrivateUsernamesToUserDefaults()
+                                print("✅ [PrivateUsernameManagementView] Saved after server reload to ensure persistence")
                             }
                         } catch {
                             print("⚠️ [PrivateUsernameManagementView] Could not refresh from server: \(error.localizedDescription)")
@@ -538,11 +546,13 @@ struct PrivateUsernameManagementView: View {
                 }
                 
                 // Use the updated removePrivateViewer that accepts usernames
+                // CRITICAL SECURITY: Pass authenticated user email for backend verification
                 _ = try await ChannelService.shared.removePrivateViewer(
                     ownerEmail: ownerEmail,
                     viewerEmail: viewerEmail,
                     ownerUsername: ownerUsername,
-                    viewerUsername: viewerUsername
+                    viewerUsername: viewerUsername,
+                    authenticatedUserEmail: ownerEmail // Owner is the authenticated user
                 )
                 
                 print("✅ [PrivateUsernameManagementView] Successfully removed private viewer: \(viewerUsername)")
@@ -594,11 +604,13 @@ struct PrivateUsernameManagementView: View {
                         throw ChannelServiceError.serverError("Could not find email for username: \(cleanUsername)")
                     }
                     
+                    // CRITICAL SECURITY: Pass authenticated user email for backend verification
                     _ = try await ChannelService.shared.removePrivateViewer(
                         ownerEmail: ownerEmail,
                         viewerEmail: foundEmail,
                         ownerUsername: ownerUsername,
-                        viewerUsername: cleanUsername
+                        viewerUsername: cleanUsername,
+                        authenticatedUserEmail: ownerEmail // Owner is the authenticated user
                     )
                     
                     print("✅ [PrivateUsernameManagementView] Successfully removed private viewer: \(cleanUsername)")

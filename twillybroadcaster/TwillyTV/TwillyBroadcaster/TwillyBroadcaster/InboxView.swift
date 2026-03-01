@@ -10,6 +10,7 @@ import SwiftUI
 struct InboxView: View {
     @ObservedObject private var notificationService = NotificationService.shared
     @ObservedObject private var authService = AuthService.shared
+    @ObservedObject private var websocketService = UnifiedWebSocketService.shared
     @Environment(\.dismiss) var dismiss
     @State private var selectedChannel: DiscoverableChannel?
     @State private var showingChannelDetail = false
@@ -74,11 +75,21 @@ struct InboxView: View {
                             
                             // Notifications list - sorted with latest unread at top (Gmail style)
                             ForEach(sortedNotifications) { notification in
-                                NotificationCard(notification: notification) {
-                                    handleNotificationTap(notification)
-                                } onDelete: {
-                                    notificationService.deleteNotification(notification.id)
-                                }
+                                NotificationCard(
+                                    notification: notification,
+                                    onTap: {
+                                        handleNotificationTap(notification)
+                                    },
+                                    onDelete: {
+                                        notificationService.deleteNotification(notification.id)
+                                    },
+                                    onAccept: notification.type == .directStreamRequest ? {
+                                        handleAcceptDirectStream(notification)
+                                    } : nil,
+                                    onReject: notification.type == .directStreamRequest ? {
+                                        handleRejectDirectStream(notification)
+                                    } : nil
+                                )
                             }
                             .padding(.horizontal)
                         }
@@ -97,9 +108,9 @@ struct InboxView: View {
                 }
                 
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    // Unread count badge only (no refresh button - keep it clean like Gmail)
+                    // Unread count badge - binary indicator: "1" if ANY unread, "0" if all read
                     if notificationService.unreadCount > 0 {
-                        Text("\(notificationService.unreadCount)")
+                        Text("1")
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(.white)
@@ -132,6 +143,30 @@ struct InboxView: View {
             if let userEmail = authService.userEmail {
                 await notificationService.fetchNotificationsFromAPI(userEmail: userEmail)
                 await loadFollowRequests()
+            }
+        }
+        .onReceive(websocketService.$inboxNotification) { notification in
+            // Handle real-time inbox notifications via WebSocket
+            if let notification = notification {
+                print("📬 [InboxView] Received WebSocket inbox notification: \(notification.notificationType)")
+                
+                // Add notification to NotificationService
+                Task {
+                    if let userEmail = authService.userEmail {
+                        await notificationService.fetchNotificationsFromAPI(userEmail: userEmail)
+                    }
+                }
+            }
+        }
+        .onReceive(websocketService.$followRequestNotification) { notification in
+            // Handle real-time follow request notifications
+            if let notification = notification {
+                print("📬 [InboxView] Received WebSocket follow request: \(notification.requesterUsername)")
+                
+                // Refresh follow requests list
+                Task {
+                    await loadFollowRequests()
+                }
             }
         }
     }
@@ -267,6 +302,45 @@ struct InboxView: View {
             )
             
             dismiss()
+        } else if notification.type == .commentReply,
+                  let videoId = notification.videoId ?? notification.actionUrl?.replacingOccurrences(of: "video://", with: "") {
+            print("🔔 [InboxView] Comment reply notification tapped for video: \(videoId)")
+            
+            // Navigate to the video/post on their timeline
+            // The videoId should be the fileId (SK format: FILE#fileId)
+            let fileId = videoId.hasPrefix("FILE#") ? videoId : "FILE#\(videoId)"
+            
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NavigateToVideo"),
+                object: nil,
+                userInfo: ["videoId": fileId, "openComments": true]
+            )
+            
+            dismiss()
+        } else if notification.type == .privateAccessGranted,
+                  let channelName = notification.actionUrl?.replacingOccurrences(of: "channel://", with: "") {
+            print("🔔 [InboxView] Private access granted notification tapped for channel: \(channelName)")
+            
+            // Navigate to the creator's channel
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NavigateToChannelViaDiscover"),
+                object: nil,
+                userInfo: ["channelName": channelName]
+            )
+            
+            dismiss()
+        } else if notification.type == .publicAccessGranted,
+                  let channelName = notification.actionUrl?.replacingOccurrences(of: "channel://", with: "") {
+            print("🔔 [InboxView] Public access granted notification tapped for channel: \(channelName)")
+            
+            // Navigate to the requester's channel (person who added them)
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NavigateToChannelViaDiscover"),
+                object: nil,
+                userInfo: ["channelName": channelName]
+            )
+            
+            dismiss()
         } else if notification.type == .followRequest {
             // Reload follow requests to show the new request
             Task {
@@ -280,6 +354,97 @@ struct InboxView: View {
                 name: NSNotification.Name("RefreshTwillyTVContent"),
                 object: nil
             )
+        }
+    }
+    
+    private func handleAcceptDirectStream(_ notification: StreamNotification) {
+        guard let userEmail = authService.userEmail,
+              let videoId = notification.videoId,
+              let streamerEmail = notification.metadata?["streamerEmail"],
+              let streamerUsername = notification.metadata?["streamerUsername"] else {
+            print("❌ [InboxView] Missing data for accepting direct stream")
+            return
+        }
+        
+        Task {
+            do {
+                let response = try await ChannelService.shared.acceptDirectStream(
+                    notificationId: notification.id,
+                    userEmail: userEmail,
+                    action: "accept",
+                    videoId: videoId,
+                    streamerEmail: streamerEmail,
+                    streamerUsername: streamerUsername,
+                    videoTitle: notification.metadata?["videoTitle"],
+                    videoThumbnail: notification.metadata?["videoThumbnail"],
+                    channelName: notification.metadata?["channelName"],
+                    streamKey: notification.streamKey,
+                    isPrivateUsername: notification.metadata?["isPrivateUsername"] == "true",
+                    isPremium: notification.metadata?["isPremium"] == "true"
+                )
+                
+                await MainActor.run {
+                    if let success = response["success"] as? Bool, success {
+                        // Mark notification as read and refresh
+                        notificationService.markAsRead(notification.id)
+                        Task {
+                            if let userEmail = authService.userEmail {
+                                await notificationService.fetchNotificationsFromAPI(userEmail: userEmail)
+                            }
+                        }
+                        // Refresh content to show the new video
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("RefreshTwillyTVContent"),
+                            object: nil
+                        )
+                    }
+                }
+            } catch {
+                print("❌ [InboxView] Error accepting direct stream: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    private func handleRejectDirectStream(_ notification: StreamNotification) {
+        guard let userEmail = authService.userEmail,
+              let videoId = notification.videoId,
+              let streamerEmail = notification.metadata?["streamerEmail"],
+              let streamerUsername = notification.metadata?["streamerUsername"] else {
+            print("❌ [InboxView] Missing data for rejecting direct stream")
+            return
+        }
+        
+        Task {
+            do {
+                let response = try await ChannelService.shared.acceptDirectStream(
+                    notificationId: notification.id,
+                    userEmail: userEmail,
+                    action: "reject",
+                    videoId: videoId,
+                    streamerEmail: streamerEmail,
+                    streamerUsername: streamerUsername,
+                    videoTitle: notification.metadata?["videoTitle"],
+                    videoThumbnail: notification.metadata?["videoThumbnail"],
+                    channelName: notification.metadata?["channelName"],
+                    streamKey: notification.streamKey,
+                    isPrivateUsername: notification.metadata?["isPrivateUsername"] == "true",
+                    isPremium: notification.metadata?["isPremium"] == "true"
+                )
+                
+                await MainActor.run {
+                    if let success = response["success"] as? Bool, success {
+                        // Mark notification as read and refresh
+                        notificationService.markAsRead(notification.id)
+                        Task {
+                            if let userEmail = authService.userEmail {
+                                await notificationService.fetchNotificationsFromAPI(userEmail: userEmail)
+                            }
+                        }
+                    }
+                }
+            } catch {
+                print("❌ [InboxView] Error rejecting direct stream: \(error.localizedDescription)")
+            }
         }
     }
 }
@@ -381,8 +546,11 @@ struct NotificationCard: View {
     let notification: StreamNotification
     let onTap: () -> Void
     let onDelete: () -> Void
+    var onAccept: (() -> Void)? = nil
+    var onReject: (() -> Void)? = nil
     
     @State private var isExpanded = false
+    @State private var isProcessing = false
     
     var body: some View {
         Button(action: onTap) {
@@ -418,6 +586,64 @@ struct NotificationCard: View {
                         .font(.subheadline)
                         .foregroundColor(.white.opacity(0.7))
                         .lineLimit(2)
+                    
+                    // Accept/Reject buttons for direct stream requests
+                    if notification.type == .directStreamRequest && !notification.isRead {
+                        HStack(spacing: 12) {
+                            if let onAccept = onAccept {
+                                Button(action: {
+                                    isProcessing = true
+                                    onAccept()
+                                }) {
+                                    HStack {
+                                        if isProcessing {
+                                            ProgressView()
+                                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                                .scaleEffect(0.8)
+                                        } else {
+                                            Text("Accept")
+                                                .font(.caption)
+                                                .fontWeight(.semibold)
+                                        }
+                                    }
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 8)
+                                    .background(Color.green)
+                                    .cornerRadius(8)
+                                }
+                                .disabled(isProcessing)
+                            }
+                            
+                            if let onReject = onReject {
+                                Button(action: {
+                                    isProcessing = true
+                                    onReject()
+                                }) {
+                                    HStack {
+                                        if isProcessing {
+                                            ProgressView()
+                                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                                .scaleEffect(0.8)
+                                        } else {
+                                            Text("Reject")
+                                                .font(.caption)
+                                                .fontWeight(.semibold)
+                                        }
+                                    }
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 8)
+                                    .background(Color.red)
+                                    .cornerRadius(8)
+                                }
+                                .disabled(isProcessing)
+                            }
+                            
+                            Spacer()
+                        }
+                        .padding(.top, 4)
+                    }
                     
                     // Channel and time
                     HStack {
@@ -473,6 +699,14 @@ struct NotificationCard: View {
             return "person.crop.circle.badge.checkmark"
         case .followDeclined:
             return "person.crop.circle.badge.xmark"
+        case .commentReply:
+            return "message.fill"
+        case .privateAccessGranted:
+            return "lock.fill"
+        case .publicAccessGranted:
+            return "person.crop.circle.badge.plus"
+        case .directStreamRequest:
+            return "video.fill"
         }
     }
     
@@ -490,6 +724,14 @@ struct NotificationCard: View {
             return .green
         case .followDeclined:
             return .red
+        case .commentReply:
+            return .twillyCyan
+        case .privateAccessGranted:
+            return .green
+        case .publicAccessGranted:
+            return .blue
+        case .directStreamRequest:
+            return .yellow
         }
     }
     
@@ -507,6 +749,14 @@ struct NotificationCard: View {
             return Color.green.opacity(0.2)
         case .followDeclined:
             return Color.red.opacity(0.2)
+        case .commentReply:
+            return Color.twillyCyan.opacity(0.2)
+        case .privateAccessGranted:
+            return Color.green.opacity(0.2)
+        case .publicAccessGranted:
+            return Color.blue.opacity(0.2)
+        case .directStreamRequest:
+            return Color.yellow.opacity(0.2)
         }
     }
     

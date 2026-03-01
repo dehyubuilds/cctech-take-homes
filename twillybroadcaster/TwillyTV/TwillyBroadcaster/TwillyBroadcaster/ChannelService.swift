@@ -15,7 +15,6 @@ struct Channel: Identifiable, Codable {
     let hasStreamKey: Bool
     let visibility: String?
     let isPublic: Bool?
-    
     enum CodingKeys: String, CodingKey {
         case id
         case name
@@ -37,9 +36,7 @@ struct UsernameSearchResult: Identifiable, Codable {
     let isPrivate: Bool? // Whether user is private
     let isPremium: Bool? // Whether user has Premium enabled
     let subscriptionPrice: Double? // Monthly subscription price if Premium
-    
     var id: String { username }
-    
     // Computed property for display
     var displayName: String {
         return displayUsername ?? username
@@ -55,7 +52,6 @@ struct CollaboratorInfo: Identifiable, Codable {
     let joinedAt: String?
     let status: String?
     let role: String?
-    
     var id: String { userId }
 }
 
@@ -91,7 +87,6 @@ struct DiscoverableChannel: Identifiable, Codable {
     let isPublic: Bool
     let subscriptionPrice: Double?
     let contentType: String?
-    
     var id: String { channelId }
 }
 
@@ -112,7 +107,9 @@ struct ChannelContent: Identifiable, Codable {
     let airdate: String?  // Scheduled airdate (ISO8601 format)
     let creatorUsername: String?  // Username of the person who posted this video
     let isPrivateUsername: Bool?  // Whether this was streamed as private (username 🔒)
-    
+    let isPremium: Bool?  // Whether this is premium content (requires payment)
+    let status: String?  // e.g. "PUBLISHED", "HELD" (scheduled)
+    let scheduledDropDate: String?  // ISO8601 when drop will air (if HELD)
     // Local file URL for immediate display (before server processing)
     // Not part of Codable - only used for local display
     var localFileURL: URL? {
@@ -120,11 +117,9 @@ struct ChannelContent: Identifiable, Codable {
         set { _localFileURL = newValue }
     }
     private var _localFileURL: URL?
-    
     var id: String { SK }
-    
     // Custom init to support local files
-    init(SK: String, fileName: String, title: String? = nil, description: String? = nil, hlsUrl: String? = nil, thumbnailUrl: String? = nil, createdAt: String? = nil, isVisible: Bool? = nil, price: Double? = nil, category: String? = nil, uploadId: String? = nil, fileId: String? = nil, airdate: String? = nil, creatorUsername: String? = nil, isPrivateUsername: Bool? = nil, localFileURL: URL? = nil) {
+    init(SK: String, fileName: String, title: String? = nil, description: String? = nil, hlsUrl: String? = nil, thumbnailUrl: String? = nil, createdAt: String? = nil, isVisible: Bool? = nil, price: Double? = nil, category: String? = nil, uploadId: String? = nil, fileId: String? = nil, airdate: String? = nil, creatorUsername: String? = nil, isPrivateUsername: Bool? = nil, isPremium: Bool? = nil, status: String? = nil, scheduledDropDate: String? = nil, localFileURL: URL? = nil) {
         self.SK = SK
         self.fileName = fileName
         self.title = title
@@ -140,12 +135,14 @@ struct ChannelContent: Identifiable, Codable {
         self.fileId = fileId
         self.creatorUsername = creatorUsername
         self.isPrivateUsername = isPrivateUsername
+        self.isPremium = isPremium
+        self.status = status
+        self.scheduledDropDate = scheduledDropDate
         self._localFileURL = localFileURL
     }
-    
     // Custom Codable implementation to exclude localFileURL
     enum CodingKeys: String, CodingKey {
-        case SK, fileName, title, description, hlsUrl, thumbnailUrl, createdAt, isVisible, price, category, uploadId, fileId, airdate, creatorUsername, isPrivateUsername
+        case SK, fileName, title, description, hlsUrl, thumbnailUrl, createdAt, isVisible, price, category, uploadId, fileId, airdate, creatorUsername, isPrivateUsername, isPremium, status, scheduledDropDate
     }
 }
 
@@ -203,29 +200,30 @@ private struct CachedDiscoverableChannels: Codable {
 
 class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
     static let shared = ChannelService()
-    
     private let baseURL = "https://twilly.app/api"
     private let rtmpServerURL = "rtmp://100.24.103.57:1935/live"
-    
+    // WebSocket endpoint for real-time comment notifications
+    var websocketEndpoint: String {
+        // Using the production WebSocket API endpoint
+        return "wss://0t56fn3cml.execute-api.us-east-1.amazonaws.com/production"
+    }
     // GraphQL configuration (set to nil to disable, or configure with AppSync endpoint)
     private var useGraphQL: Bool = false // Disable GraphQL for now (DNS issues) - use REST API directly
     private let graphQLEndpoint: String? = "https://kh56cqqjzfexzdrps2ob4uoyse.appsync-api.us-east-1.amazonaws.com/graphql"
     // Note: API key value is only shown once at creation in AWS Console
     // If this doesn't work, get the actual key value from: AWS Console > AppSync > TwillyGraphQL > API Keys
     private let graphQLApiKey: String? = "da2-zmc3cjkk75gjjpodmxntgayzwy" // Latest API Key ID - may need actual key value from console
-    
     // Cache for channels - using persistent storage for better performance
     private var cachedChannels: [String: (channels: [Channel], timestamp: Date)] = [:]
     private var cachedDiscoverableChannels: [String: (channels: [DiscoverableChannel], timestamp: Date)] = [:]
     private var cachedContent: [String: (content: PaginatedContent, timestamp: Date)] = [:]
     private var cachedBothViewsContent: [String: (content: BothViewsContent, timestamp: Date)] = [:]
     private let cacheExpirationInterval: TimeInterval = 3600 // 1 hour (longer cache for better performance)
-    private let contentCacheExpirationInterval: TimeInterval = 300 // 5 minutes for content (fresher)
+    private let contentCacheExpirationInterval: TimeInterval = 600 // 10 minutes for content (hybrid optimization - longer cache for instant loading)
     private let cacheKey = "twilly_cached_channels"
     private let discoverableCacheKey = "twilly_cached_discoverable_channels"
     private let contentCacheKey = "twilly_cached_content"
     private let bothViewsCacheKey = "twilly_cached_both_views"
-    
     // Custom URLSession for regular API calls (fast timeout for quick responses)
     private lazy var urlSession: URLSession = {
         let configuration = URLSessionConfiguration.default
@@ -233,7 +231,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         configuration.timeoutIntervalForResource = 60
         return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }()
-    
     // Separate URLSession for large file uploads (longer timeout)
     private lazy var uploadSession: URLSession = {
         let configuration = URLSessionConfiguration.default
@@ -242,11 +239,9 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         configuration.waitsForConnectivity = true
         return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }()
-    
     override private init() {
         super.init()
     }
-    
     // URLSessionDelegate to handle SSL certificate validation
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         // For twilly.app, accept the certificate even if validation fails
@@ -260,7 +255,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         // For other domains, use default handling
         completionHandler(.performDefaultHandling, nil)
     }
-    
     // Fetch channels for the authenticated user (with persistent caching)
     // Returns cached data immediately if available, then refreshes in background
     func fetchChannels(userEmail: String, forceRefresh: Bool = false) async throws -> [Channel] {
@@ -278,7 +272,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 return cached.channels
             }
         }
-        
         // FAST PATH: Check persistent cache (UserDefaults) - very fast
         if !forceRefresh, let cachedData = UserDefaults.standard.data(forKey: "\(cacheKey)_\(userEmail)") {
             if let cached = try? JSONDecoder().decode(CachedChannels.self, from: cachedData) {
@@ -297,29 +290,22 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 }
             }
         }
-        
         // Fetch from API
         guard let url = URL(string: "\(baseURL)/channels/list") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
-        
         // Parse response
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
            let success = json["success"] as? Bool, success,
@@ -332,7 +318,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 let hasStreamKey = channelDict["hasStreamKey"] as? Bool ?? false
                 let visibility = channelDict["visibility"] as? String ?? "private"
                 let isPublic = channelDict["isPublic"] as? Bool ?? false
-                
                 return Channel(
                     id: id,
                     name: name,
@@ -343,38 +328,29 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     isPublic: isPublic
                 )
             }
-            
             // Cache the results (both in-memory and persistent)
             let timestamp = Date()
             cachedChannels[userEmail] = (channels: parsedChannels, timestamp: timestamp)
-            
             // Persist to UserDefaults for faster subsequent loads
             let cached = CachedChannels(channels: parsedChannels, timestamp: timestamp)
             if let encoded = try? JSONEncoder().encode(cached) {
                 UserDefaults.standard.set(encoded, forKey: "\(cacheKey)_\(userEmail)")
                 print("💾 Cached \(parsedChannels.count) channels (in-memory + persistent) for \(userEmail)")
             }
-            
             return parsedChannels
         }
-        
         return []
     }
-    
     // Fetch channels user is a collaborator of (for streaming access)
     func fetchCollaboratorChannels(userId: String, userEmail: String, username: String? = nil, forceRefresh: Bool = false) async throws -> [Channel] {
         print("🔍 [ChannelService] Fetching collaborator channels for userId: \(userId), email: \(userEmail), username: \(username ?? "nil")")
-        
         // Fetch collaborator roles from UserRoleService
         let roles = try await UserRoleService.shared.fetchCollaboratorRoles(userId: userId, userEmail: userEmail, username: username)
-        
         print("📊 [ChannelService] Found \(roles.count) collaborator roles")
-        
         // Log each channel found
         roles.forEach { role in
             print("   📺 Channel: \(role.channelName) (ID: \(role.channelId))")
         }
-        
         // Convert collaborator roles to Channel objects
         let channels = roles.map { role -> Channel in
             Channel(
@@ -387,18 +363,15 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 isPublic: true
             )
         }
-        
         print("✅ [ChannelService] Returning \(channels.count) collaborator channels")
         return channels
     }
-    
     // Clear cache for a specific user (useful when channels are added/removed)
     func clearCache(for userEmail: String) {
         cachedChannels.removeValue(forKey: userEmail)
         UserDefaults.standard.removeObject(forKey: "\(cacheKey)_\(userEmail)")
         print("🗑️ Cleared cache for \(userEmail)")
     }
-    
     // Clear discoverable channels cache (useful when new channels are published)
     func clearDiscoverableCache() {
         cachedDiscoverableChannels.removeAll()
@@ -408,7 +381,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         keys.forEach { defaults.removeObject(forKey: $0) }
         print("🗑️ Cleared all discoverable channel caches")
     }
-    
     // Clear all cache
     func clearAllCache() {
         cachedChannels.removeAll()
@@ -426,77 +398,59 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         keys.forEach { defaults.removeObject(forKey: $0) }
         print("🗑️ Cleared all channel and content caches")
     }
-    
     // Clear content cache for a specific channel (useful when content is updated)
     func clearContentCache(channelName: String, creatorEmail: String, viewerEmail: String? = nil, showPrivateContent: Bool = false) {
         let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")_\(showPrivateContent)"
-        
         // Clear in-memory cache
         cachedContent.removeValue(forKey: cacheKey)
-        
         // Clear persistent cache
         let persistentCacheKey = "\(contentCacheKey)_\(cacheKey)"
         UserDefaults.standard.removeObject(forKey: persistentCacheKey)
-        
         print("🗑️ [ChannelService] Cleared content cache for channel: \(channelName)")
     }
-    
     // Clear both views cache for Twilly TV
     func clearBothViewsCache(channelName: String, creatorEmail: String, viewerEmail: String? = nil) {
         let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")"
-        
         // Clear in-memory cache
         cachedBothViewsContent.removeValue(forKey: cacheKey)
-        
         // Clear persistent cache
         let persistentCacheKey = "\(bothViewsCacheKey)_\(cacheKey)"
         UserDefaults.standard.removeObject(forKey: persistentCacheKey)
-        
         print("🗑️ [ChannelService] Cleared both views cache for channel: \(channelName)")
     }
-    
     // Generate or fetch stream key for a channel
     // Get or create collaborator stream key for a channel
     func getOrCreateCollaboratorStreamKey(channelId: String, channelName: String, userId: String, userEmail: String) async throws -> String {
         guard let url = URL(string: "\(baseURL)/collaborations/get-or-create-stream-key") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "channelId": channelId,
             "channelName": channelName,
             "userId": userId,
             "userEmail": userEmail
         ]
-        
         print("🔍 [ChannelService] Requesting collaborator stream key:")
         print("   📝 channelId: \(channelId)")
         print("   📝 channelName: \(channelName)")
         print("   📝 userId: \(userId)")
         print("   📝 userEmail: \(userEmail)")
         print("   📝 URL: \(url.absoluteString)")
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         do {
             let (data, response) = try await urlSession.data(for: request)
-            
             guard let httpResponse = response as? HTTPURLResponse else {
                 print("❌ [ChannelService] Invalid HTTP response")
                 throw URLError(.badServerResponse)
             }
-            
             print("🔍 [ChannelService] HTTP Status: \(httpResponse.statusCode)")
-            
             // Handle non-200 status codes
             if httpResponse.statusCode != 200 {
                 let responseString = String(data: data, encoding: .utf8) ?? "Unable to decode response"
                 print("❌ [ChannelService] Server error response (status \(httpResponse.statusCode)): \(responseString)")
-                
                 // Try to parse error message from response
                 if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     if let message = json["message"] as? String {
@@ -508,14 +462,11 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                         throw NSError(domain: "ChannelService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: statusMessage])
                     }
                 }
-                
                 // If we can't parse the error, throw a generic error
                 throw NSError(domain: "ChannelService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server error: HTTP \(httpResponse.statusCode)"])
             }
-            
             if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 print("🔍 [ChannelService] Response JSON: \(json)")
-                
                 // Check for success field
                 if let success = json["success"] as? Bool {
                     if success {
@@ -543,7 +494,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     }
                 }
             }
-            
             throw URLError(.badServerResponse)
         } catch let error as URLError {
             print("❌ [ChannelService] URL Error: \(error.localizedDescription), code: \(error.code.rawValue)")
@@ -553,32 +503,24 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             throw error
         }
     }
-    
     func getOrGenerateStreamKey(userEmail: String, channelName: String) async throws -> String {
         guard let url = URL(string: "\(baseURL)/stream-keys/generate") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail,
             "channelName": channelName
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard response is HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
-        
         let decoder = JSONDecoder()
         let keyResponse = try decoder.decode(StreamKeyResponse.self, from: data)
-        
         if keyResponse.success, let streamKey = keyResponse.streamKey {
             return streamKey
         } else if let existingKey = keyResponse.existingStreamKey {
@@ -587,37 +529,29 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             throw NSError(domain: "ChannelService", code: 1, userInfo: [NSLocalizedDescriptionKey: keyResponse.message ?? "Failed to get stream key"])
         }
     }
-    
     // Get share URL for a channel
     func getShareUrl(userEmail: String, channelName: String, username: String?) async throws -> String {
         // Use the get-share-params-by-series endpoint
         guard let url = URL(string: "\(baseURL)/creators/get-share-params-by-series") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         // Slugify channel name for URL
         let slug = channelName.lowercased()
             .replacingOccurrences(of: " ", with: "-")
             .replacingOccurrences(of: "[^a-z0-9-]", with: "", options: .regularExpression)
-        
         let body: [String: Any] = [
             "seriesSlug": slug,
             "series": channelName
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
-        
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
             // Try to get username and series
             if let username = json["username"] as? String,
@@ -629,7 +563,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 // Use clean format: /{username}/{series} (same as managefiles)
                 return "https://twilly.app/\(username)/\(seriesSlug)"
             }
-            
             // Fallback: use menu/share format if username not available
             let series = json["series"] as? String ?? channelName
             let seriesSlug = series.lowercased()
@@ -638,7 +571,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             let encodedEmail = userEmail.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? userEmail
             return "https://twilly.app/menu/share/\(encodedEmail)/\(seriesSlug)"
         }
-        
         // Final fallback
         let seriesSlug = channelName.lowercased()
             .replacingOccurrences(of: " ", with: "-")
@@ -646,30 +578,26 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         let encodedEmail = userEmail.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? userEmail
         return "https://twilly.app/menu/share/\(encodedEmail)/\(seriesSlug)"
     }
-    
     // Update video details in DynamoDB (same as web app)
     func updateVideoDetails(PK: String, fileId: String, streamKey: String? = nil, title: String? = nil, description: String? = nil, price: Double? = nil) async throws -> UpdateDetailsResponse {
         guard let url = URL(string: "\(baseURL)/files/update-details") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         var body: [String: Any] = [
             "PK": PK,
             "fileId": fileId
         ]
-        
         // Only include streamKey if provided (for bulk updates)
         // If nil, only the specific file will be updated
         if let streamKey = streamKey {
             body["streamKey"] = streamKey
         }
-        
-        if let title = title {
-            body["title"] = title.isEmpty ? nil : title
+        // Always include title if provided (even if empty string) so backend knows to update it
+        if title != nil {
+            body["title"] = title!
         }
         if let description = description {
             body["description"] = description.isEmpty ? nil : description
@@ -677,21 +605,16 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         if let price = price {
             body["price"] = price
         }
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "Server error: \(errorMessage)"])
         }
-        
         let decoder = JSONDecoder()
         return try decoder.decode(UpdateDetailsResponse.self, from: data)
     }
-    
     // Update file details with airdate support
     func updateFileDetails(
         fileId: String,
@@ -705,18 +628,16 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         guard let url = URL(string: "\(baseURL)/files/update-details") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         var body: [String: Any] = [
             "PK": "USER#\(userId)",
             "fileId": fileId
         ]
-        
-        if let title = title {
-            body["title"] = title.isEmpty ? nil : title
+        // Always include title if provided (even if empty string) so backend knows to update it
+        if title != nil {
+            body["title"] = title!
         }
         if let description = description {
             body["description"] = description.isEmpty ? nil : description
@@ -730,21 +651,16 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         if let airdate = airdate {
             body["airdate"] = airdate.ISO8601Format()
         }
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "Server error: \(errorMessage)"])
         }
-        
         let decoder = JSONDecoder()
         return try decoder.decode(UpdateDetailsResponse.self, from: data)
     }
-    
     // Schedule airdate for an episode
     func scheduleAirdate(
         episodeId: String,
@@ -755,32 +671,25 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         guard let url = URL(string: "\(baseURL)/episodes/schedule-airdate") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "episodeId": episodeId,
             "userId": userId,
             "seriesName": seriesName,
             "airdate": airdate.ISO8601Format()
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "Server error: \(errorMessage)"])
         }
-        
         let decoder = JSONDecoder()
         return try decoder.decode(ScheduleAirdateResponse.self, from: data)
     }
-    
     // Upload video file to server (server processes it like RTMP stream)
     // uploadId: Unique identifier for this upload to ensure metadata is unique per video
     // title, description, price: Optional metadata to send WITH upload (so Lambda can apply it)
@@ -789,20 +698,17 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         print("📤 [TIMING] Starting video upload: \(fileURL.lastPathComponent)")
         print("📤 Channel: \(channelName), Email: \(userEmail), StreamKey: \(streamKey)")
         print("📤 METADATA RECEIVED - Title: \(title ?? "nil"), Description: \(description ?? "nil"), Price: \(price != nil ? String(price!) : "nil")")
-        
         // Check if file exists
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             print("❌ Video file does not exist at path: \(fileURL.path)")
             throw URLError(.fileDoesNotExist)
         }
-        
         // Get file size
         if let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
            let fileSize = attributes[.size] as? Int64 {
             let fileSizeMB = Double(fileSize) / (1024 * 1024)
             print("📤 File size: \(String(format: "%.2f", fileSizeMB)) MB")
         }
-        
         // Upload directly to EC2 server (bypassing Nuxt API for now)
         // Note: Metadata (title, description, price) is still sent and will be stored
         let ec2ServerURL = "http://100.24.103.57:3000"
@@ -810,47 +716,34 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             print("❌ Invalid upload URL")
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         // Timeout handled by uploadSession configuration (30 minutes)
-        
         // Create multipart form data
         let boundary = UUID().uuidString
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        
         var body = Data()
-        
         // Add form fields
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"channelName\"\r\n\r\n".data(using: .utf8)!)
-        body.append(channelName.data(using: .utf8)!)
-        body.append("\r\n".data(using: .utf8)!)
-        
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"userEmail\"\r\n\r\n".data(using: .utf8)!)
         body.append(userEmail.data(using: .utf8)!)
         body.append("\r\n".data(using: .utf8)!)
-        
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"streamKey\"\r\n\r\n".data(using: .utf8)!)
         body.append(streamKey.data(using: .utf8)!)
         body.append("\r\n".data(using: .utf8)!)
-        
         // Add unique uploadId to ensure metadata is unique per upload
         let uniqueUploadId = uploadId ?? UUID().uuidString
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"uploadId\"\r\n\r\n".data(using: .utf8)!)
         body.append(uniqueUploadId.data(using: .utf8)!)
         body.append("\r\n".data(using: .utf8)!)
-        
         // CRITICAL: Send metadata WITH upload so EC2 can store it BEFORE Lambda processes
         // This ensures Lambda can find and apply metadata during S3 event processing
         print("📤 ChannelService: Preparing to add metadata to form data")
         print("   Title: \(title ?? "nil") (isEmpty: \(title?.isEmpty ?? true))")
         print("   Description: \(description ?? "nil") (isEmpty: \(description?.isEmpty ?? true))")
         print("   Price: \(price != nil ? String(price!) : "nil")")
-        
         if let title = title, !title.isEmpty {
             print("📤 ChannelService: Adding title to form data: '\(title)'")
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
@@ -860,7 +753,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         } else {
             print("📤 ChannelService: NOT adding title (nil or empty)")
         }
-        
         if let description = description, !description.isEmpty {
             print("📤 ChannelService: Adding description to form data: '\(description.prefix(50))...'")
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
@@ -870,7 +762,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         } else {
             print("📤 ChannelService: NOT adding description (nil or empty)")
         }
-        
         if let price = price {
             print("📤 ChannelService: Adding price to form data: \(price)")
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
@@ -880,7 +771,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         } else {
             print("📤 ChannelService: NOT adding price (nil)")
         }
-        
         // CRITICAL PRIVACY FIX: Pass isPrivateUsername directly in upload request
         // This eliminates race condition where createVideoEntryImmediately runs before setStreamUsernameType completes
         if let isPrivate = isPrivateUsername {
@@ -892,16 +782,13 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         } else {
             print("📤 ChannelService: NOT adding isPrivateUsername (nil - will default to public)")
         }
-        
         // Add video file header
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"video\"; filename=\"\(fileURL.lastPathComponent)\"\r\n".data(using: .utf8)!)
         body.append("Content-Type: video/quicktime\r\n\r\n".data(using: .utf8)!)
-        
         // Instead of loading entire file into memory, create a temp file with multipart body
         // This allows streaming the upload without memory issues
         let tempFileURL = FileManager.default.temporaryDirectory.appendingPathComponent("upload-\(UUID().uuidString).tmp")
-        
         print("📤 Creating temporary multipart file for streaming upload...")
         do {
             // Create file handle for writing
@@ -910,17 +797,14 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 throw URLError(.cannotWriteToFile)
             }
             defer { fileHandle.closeFile() }
-            
             // Write form fields (already in body)
             fileHandle.write(body)
-            
             // Stream video file in chunks (8MB chunks for efficiency)
             let chunkSize = 8 * 1024 * 1024 // 8MB
             guard let videoFileHandle = FileHandle(forReadingAtPath: fileURL.path) else {
                 throw URLError(.fileDoesNotExist)
             }
             defer { videoFileHandle.closeFile() }
-            
             var totalBytesWritten = 0
             while true {
                 let chunk = videoFileHandle.readData(ofLength: chunkSize)
@@ -930,13 +814,10 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 fileHandle.write(chunk)
                 totalBytesWritten += chunk.count
             }
-            
             print("📤 Video file streamed: \(totalBytesWritten) bytes")
-            
             // Write closing boundary
             let closingBoundary = "\r\n--\(boundary)--\r\n"
             fileHandle.write(closingBoundary.data(using: .utf8)!)
-            
             // Get final file size
             if let attributes = try? FileManager.default.attributesOfItem(atPath: tempFileURL.path),
                let fileSize = attributes[.size] as? Int64 {
@@ -949,7 +830,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             print("❌ Failed to create multipart file: \(error.localizedDescription)")
             throw error
         }
-        
         let uploadNetworkStartTime = Date()
         print("📤 [TIMING] Starting streaming upload...")
         // Use uploadTask with file URL for efficient streaming (30 min timeout)
@@ -966,26 +846,20 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             }
             task.resume()
         }
-        
         let uploadNetworkDuration = Date().timeIntervalSince(uploadNetworkStartTime)
         print("📤 [TIMING] Network upload completed in \(String(format: "%.2f", uploadNetworkDuration)) seconds")
-        
         // Clean up temp file after upload
         try? FileManager.default.removeItem(at: tempFileURL)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             print("❌ Invalid HTTP response")
             throw URLError(.badServerResponse)
         }
-        
         print("📤 Upload response status: \(httpResponse.statusCode)")
-        
         guard (200...299).contains(httpResponse.statusCode) else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             print("❌ Upload failed with status \(httpResponse.statusCode): \(errorMessage)")
             throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "Server error: \(httpResponse.statusCode) - \(errorMessage)"])
         }
-        
         print("📤 Parsing upload response...")
         let decoder = JSONDecoder()
         do {
@@ -999,46 +873,35 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             throw error
         }
     }
-    
     // Mark streamed content as visible
     func markContentVisible(streamKey: String, userEmail: String) async throws -> MarkVisibleResponse {
         guard let url = URL(string: "\(baseURL)/streams/mark-visible") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "streamKey": streamKey,
             "userEmail": userEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard response is HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
-        
         let decoder = JSONDecoder()
         let result = try decoder.decode(MarkVisibleResponse.self, from: data)
         return result
     }
-    
     // Build full RTMP URL from stream key
     func buildRTMPURL(streamKey: String) -> String {
         return "\(rtmpServerURL)/\(streamKey)"
     }
-    
     // MARK: - Discovery & Search
-    
     // Fetch discoverable channels (public and searchable) with caching
     func fetchDiscoverableChannels(searchQuery: String? = nil, forceRefresh: Bool = false) async throws -> [DiscoverableChannel] {
         let cacheKeyString = "\(discoverableCacheKey)_\(searchQuery ?? "all")"
-        
         // FAST PATH: Check in-memory cache first (instant)
         if !forceRefresh, let cached = cachedDiscoverableChannels[cacheKeyString] {
             let age = Date().timeIntervalSince(cached.timestamp)
@@ -1053,7 +916,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 return cached.channels
             }
         }
-        
         // FAST PATH: Check persistent cache (UserDefaults) - very fast
         if !forceRefresh, let cachedData = UserDefaults.standard.data(forKey: cacheKeyString) {
             if let cached = try? JSONDecoder().decode(CachedDiscoverableChannels.self, from: cachedData) {
@@ -1072,53 +934,40 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 }
             }
         }
-        
         // Fetch from API
         guard let url = URL(string: "\(baseURL)/channels/get-public-channels") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "searchQuery": searchQuery ?? ""
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         print("🌐 [ChannelService] Fetching discoverable channels from API")
         print("   URL: \(url.absoluteString)")
         print("   Search Query: \(searchQuery ?? "nil")")
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             print("❌ [ChannelService] Invalid HTTP response")
             throw URLError(.badServerResponse)
         }
-        
         print("📡 [ChannelService] API Response Status: \(httpResponse.statusCode)")
-        
         guard httpResponse.statusCode == 200 else {
             let responseString = String(data: data, encoding: .utf8) ?? "Unable to decode"
             print("❌ [ChannelService] API returned non-200 status: \(httpResponse.statusCode)")
             print("   Response body: \(responseString)")
             throw URLError(.badServerResponse)
         }
-        
         // Log raw response for debugging
         if let responseString = String(data: data, encoding: .utf8) {
             print("📦 [ChannelService] API Response (first 500 chars): \(String(responseString.prefix(500)))")
         }
-        
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
            let success = json["success"] as? Bool, success,
            let channels = json["channels"] as? [[String: Any]] {
-            
             print("✅ [ChannelService] API returned \(channels.count) channels")
-            
             // Log Twilly TV channel specifically
             if let twillyTV = channels.first(where: { ($0["channelName"] as? String ?? "").lowercased().contains("twilly tv") }) {
                 print("📺 [ChannelService] Found Twilly TV channel in API response:")
@@ -1126,23 +975,27 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 print("   Poster URL: \(twillyTV["posterUrl"] ?? "nil")")
                 print("   Creator Email: \(twillyTV["creatorEmail"] ?? "nil")")
             }
-            
             let discoverableChannels = channels.compactMap { channelDict -> DiscoverableChannel? in
                 guard let channelId = channelDict["channelId"] as? String,
                       let channelName = channelDict["channelName"] as? String else {
                     print("⚠️ [ChannelService] Skipping channel - missing channelId or channelName")
                     return nil
                 }
-                
                 let creatorEmail = channelDict["creatorEmail"] as? String ?? ""
                 let creatorUsername = channelDict["creatorUsername"] as? String ?? "Unknown"
                 let description = channelDict["description"] as? String ?? "Your personalized streaming network. Add creators you love, curate your timeline, and watch content that matters to you."
-                let posterUrl = channelDict["posterUrl"] as? String ?? ""
+                var posterUrl = channelDict["posterUrl"] as? String ?? ""
+                
+                // CRITICAL FIX: Normalize poster URL - remove double /public/public/
+                if !posterUrl.isEmpty {
+                    // Fix double /public/public/ issue from backend
+                    posterUrl = posterUrl.replacingOccurrences(of: "/public/public/", with: "/public/")
+                }
+                
                 let visibility = channelDict["visibility"] as? String ?? "private"
                 let isPublic = channelDict["isPublic"] as? Bool ?? false
                 let subscriptionPrice = channelDict["subscriptionPrice"] as? Double
                 let contentType = channelDict["contentType"] as? String
-                
                 // Log poster URL parsing
                 print("📋 [ChannelService] Parsing channel: \(channelName)")
                 print("   Channel ID: \(channelId)")
@@ -1167,7 +1020,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                         print("   posterUrl key does not exist in API response")
                     }
                 }
-                
                 return DiscoverableChannel(
                     channelId: channelId,
                     channelName: channelName,
@@ -1181,7 +1033,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     contentType: contentType
                 )
             }
-            
             // Filter based on search query and visibility
             let filteredChannels: [DiscoverableChannel]
             if let query = searchQuery, !query.isEmpty {
@@ -1195,7 +1046,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 // When browsing: show only public channels
                 filteredChannels = discoverableChannels.filter { $0.visibility == "public" }
             }
-            
             // Deduplicate channels by channelId
             var seenChannelIds = Set<String>()
             let uniqueChannels = filteredChannels.filter { channel in
@@ -1206,36 +1056,29 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 seenChannelIds.insert(channel.channelId)
                 return true
             }
-            
             // Log if duplicates were found
             if uniqueChannels.count < filteredChannels.count {
                 print("⚠️ [ChannelService] Removed \(filteredChannels.count - uniqueChannels.count) duplicate channel(s)")
             }
-            
             // Cache the results (both in-memory and persistent)
             let timestamp = Date()
             cachedDiscoverableChannels[cacheKeyString] = (channels: uniqueChannels, timestamp: timestamp)
-            
             // Persist to UserDefaults for faster subsequent loads
             let cached = CachedDiscoverableChannels(channels: uniqueChannels, timestamp: timestamp, searchQuery: searchQuery)
             if let encoded = try? JSONEncoder().encode(cached) {
                 UserDefaults.standard.set(encoded, forKey: cacheKeyString)
                 print("💾 Cached \(uniqueChannels.count) unique discoverable channels (in-memory + persistent)")
             }
-            
             return uniqueChannels
         }
-        
         return []
     }
-    
     // Pagination result structure
     struct PaginatedContent {
         let content: [ChannelContent]
         let nextToken: String?
         let hasMore: Bool
     }
-    
     // Both views result structure (for single request returning both public and private)
     struct BothViewsContent {
         let publicContent: [ChannelContent]
@@ -1245,7 +1088,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         let publicHasMore: Bool
         let privateHasMore: Bool
     }
-    
     // Fetch content for a specific channel with pagination
     // Uses GraphQL if enabled, otherwise falls back to REST API
     // OPTIMIZATION: Returns cached data immediately if available, then refreshes in background
@@ -1261,7 +1103,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         // FAST PATH: Check cache first (only for first page, no nextToken)
         if !forceRefresh && nextToken == nil {
             let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")_\(showPrivateContent)"
-            
             // Check in-memory cache first (instant)
             if let cached = cachedContent[cacheKey] {
                 let age = Date().timeIntervalSince(cached.timestamp)
@@ -1284,7 +1125,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     return cached.content
                 }
             }
-            
             // Check persistent cache (UserDefaults) - very fast
             let persistentCacheKey = "\(contentCacheKey)_\(cacheKey)"
             if let cachedData = UserDefaults.standard.data(forKey: persistentCacheKey) {
@@ -1341,43 +1181,34 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 // Continue to REST fallback below
             }
         }
-        
         // Fall back to REST API
         print("📡 [ChannelService] Using REST API for channel content (limit: \(limit))")
         guard let url = URL(string: "\(baseURL)/channels/get-content") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         // Add cache control headers if forceRefresh is true
         if forceRefresh {
             request.cachePolicy = .reloadIgnoringLocalCacheData
         }
-        
         var body: [String: Any] = [
             "channelName": channelName,
             "creatorEmail": creatorEmail,
             "limit": limit
         ]
-        
         if let nextToken = nextToken {
             body["nextToken"] = nextToken
         }
-        
         // Add viewerEmail for Twilly TV filtering
         if let viewerEmail = viewerEmail {
             body["viewerEmail"] = viewerEmail
         }
-        
         // Add showPrivateContent for server-side filtering (CRITICAL for privacy)
         // When false, server will NEVER return private videos (except viewer's own)
         body["showPrivateContent"] = showPrivateContent
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         // OPTIMIZATION: Use reasonable timeout - don't make it too long
         let session = forceRefresh ? {
             let config = URLSessionConfiguration.default
@@ -1385,10 +1216,8 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             config.timeoutIntervalForResource = 120.0
             return URLSession(configuration: config, delegate: self, delegateQueue: nil)
         }() : urlSession
-        
         print("📡 [ChannelService] Fetching content for channel: \(channelName), creatorEmail: \(creatorEmail), forceRefresh: \(forceRefresh)")
         let (data, response) = try await session.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -1398,15 +1227,12 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             }
             throw URLError(.badServerResponse)
         }
-        
         // Log raw response for debugging
         if let responseString = String(data: data, encoding: .utf8) {
             print("🔍 [ChannelService] Raw API response: \(responseString.prefix(500))")
         }
-        
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
             print("🔍 [ChannelService] Parsed JSON keys: \(json.keys.sorted())")
-            
             // Handle both success format and direct content format
             let contentArray: [[String: Any]]
             if let success = json["success"] as? Bool, success, let content = json["content"] as? [[String: Any]] {
@@ -1420,15 +1246,12 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 print("   JSON structure: \(json)")
                 return PaginatedContent(content: [], nextToken: nil, hasMore: false)
             }
-            
             let contents = contentArray.compactMap { itemDict -> ChannelContent? in
                 guard let sk = itemDict["SK"] as? String else {
                     print("⚠️ [ChannelService] Item missing SK field: \(itemDict.keys)")
                     return nil
                 }
-                
                 let thumbnailUrl = itemDict["thumbnailUrl"] as? String
-                
                 // Debug: Log all fields for videos
                 if let category = itemDict["category"] as? String, category == "Videos" {
                     let fileName = itemDict["fileName"] as? String ?? "unknown"
@@ -1447,7 +1270,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     print("   thumbnailUrl=\(thumbnailUrl ?? "MISSING")")
                     print("   isPrivateUsername=\(isPrivateUsername != nil ? String(describing: isPrivateUsername!) : "MISSING") (type: \(isPrivateUsername != nil ? String(describing: type(of: isPrivateUsername!)) : "nil"))")
                 }
-                
                 // Parse price - handle string, number (Double, Int, NSNumber) formats from DynamoDB
                 var price: Double? = nil
                 if let priceValue = itemDict["price"] {
@@ -1461,23 +1283,19 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                         price = priceDouble
                     }
                 }
-                
                 // Parse title - handle empty strings as nil (to match web app behavior)
                 var title: String? = itemDict["title"] as? String
                 if let titleStr = title, titleStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     title = nil // Treat empty strings as nil
                 }
-                
                 // Parse description - handle empty strings as nil
                 var description: String? = itemDict["description"] as? String
                 if let descStr = description, descStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     description = nil // Treat empty strings as nil
                 }
-                
                 // Extract creator username from response if available, or from streamKey lookup
                 let creatorUsername = itemDict["creatorUsername"] as? String ?? 
                                      itemDict["username"] as? String
-                
                 // Parse isPrivateUsername - handle boolean, string, number, or nil
                 var isPrivateUsername: Bool? = nil
                 if let isPrivateValue = itemDict["isPrivateUsername"] {
@@ -1500,7 +1318,28 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 } else {
                     print("   ❌ [ChannelService] isPrivateUsername NOT FOUND in itemDict. Available keys: \(itemDict.keys.joined(separator: ", "))")
                 }
-                
+                // Parse isPremium - handle boolean, string, number, or nil (same as isPrivateUsername)
+                var isPremium: Bool? = nil
+                if let isPremiumValue = itemDict["isPremium"] {
+                    print("   🔍 [ChannelService] Found isPremium in itemDict: \(isPremiumValue) (type: \(type(of: isPremiumValue)))")
+                    if let isPremiumBool = isPremiumValue as? Bool {
+                        isPremium = isPremiumBool
+                        print("   ✅ [ChannelService] Parsed isPremium as Bool: \(isPremium!)")
+                    } else if let isPremiumString = isPremiumValue as? String {
+                        isPremium = isPremiumString.lowercased() == "true" || isPremiumString == "1"
+                        print("   ✅ [ChannelService] Parsed isPremium as String: \(isPremium!)")
+                    } else if let isPremiumNumber = isPremiumValue as? NSNumber {
+                        isPremium = isPremiumNumber.boolValue
+                        print("   ✅ [ChannelService] Parsed isPremium as NSNumber: \(isPremium!)")
+                    } else if let isPremiumInt = isPremiumValue as? Int {
+                        isPremium = isPremiumInt == 1
+                        print("   ✅ [ChannelService] Parsed isPremium as Int: \(isPremium!)")
+                    } else {
+                        print("   ⚠️ [ChannelService] isPremium has unexpected type: \(type(of: isPremiumValue))")
+                    }
+                } else {
+                    print("   ℹ️ [ChannelService] isPremium NOT FOUND in itemDict (defaulting to nil)")
+                }
                 return ChannelContent(
                     SK: sk,
                     fileName: itemDict["fileName"] as? String ?? "",
@@ -1516,36 +1355,32 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     fileId: itemDict["fileId"] as? String,
                     airdate: itemDict["airdate"] as? String,
                     creatorUsername: creatorUsername,
-                    isPrivateUsername: isPrivateUsername
+                    isPrivateUsername: isPrivateUsername,
+                    isPremium: isPremium,
+                    status: itemDict["status"] as? String,
+                    scheduledDropDate: itemDict["scheduledDropDate"] as? String
                 )
             }
-            
             print("📦 Parsed \(contents.count) content items")
             // Debug: Log thumbnail URLs for all videos
             for content in contents.filter({ $0.category == "Videos" }) {
                 print("   📹 \(content.fileName): thumbnailUrl = \(content.thumbnailUrl ?? "nil")")
             }
-            
             // Get nextToken from response if available
             let nextToken = json["nextToken"] as? String
-            
             // If we got exactly the limit, there might be more
             let hasMore = contents.count == limit || nextToken != nil
-            
             let result = PaginatedContent(
                 content: contents,
                 nextToken: nextToken,
                 hasMore: hasMore
             )
-            
             // OPTIMIZATION: Cache result (only for first page, no nextToken)
             if nextToken == nil {
                 let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")_\(showPrivateContent)"
                 let timestamp = Date()
-                
                 // Update in-memory cache
                 cachedContent[cacheKey] = (content: result, timestamp: timestamp)
-                
                 // Save to persistent cache (UserDefaults)
                 let cached = CachedContent(
                     content: contents,
@@ -1563,13 +1398,10 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     print("💾 [ChannelService] Cached \(contents.count) content items (in-memory + persistent)")
                 }
             }
-            
             return result
         }
-        
         return PaginatedContent(content: [], nextToken: nil, hasMore: false)
     }
-    
     // Fetch both public and private content in a single request for instant toggle
     // OPTIMIZATION: Returns cached data immediately if available, then refreshes in background
     func fetchBothViewsContent(
@@ -1583,7 +1415,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         // FAST PATH: Check cache first
         if !forceRefresh {
             let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")"
-            
             // Check in-memory cache first (instant)
             if let cached = cachedBothViewsContent[cacheKey] {
                 let age = Date().timeIntervalSince(cached.timestamp)
@@ -1604,7 +1435,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     return cached.content
                 }
             }
-            
             // Check persistent cache (UserDefaults) - very fast
             let persistentCacheKey = "\(bothViewsCacheKey)_\(cacheKey)"
             if let cachedData = UserDefaults.standard.data(forKey: persistentCacheKey) {
@@ -1639,68 +1469,54 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 }
             }
         }
-        
         print("📡 [ChannelService] Fetching both views in single request (limit: \(limit))")
         guard let url = URL(string: "\(baseURL)/channels/get-content") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         if forceRefresh {
             request.cachePolicy = .reloadIgnoringLocalCacheData
         }
-        
         var body: [String: Any] = [
             "channelName": channelName,
             "creatorEmail": creatorEmail,
             "limit": limit,
             "returnBothViews": true
         ]
-        
         if let viewerEmail = viewerEmail {
             body["viewerEmail"] = viewerEmail
         }
-        
         // Send client-added usernames as fallback if server doesn't have them (e.g., auth error prevented add)
         if let clientAddedUsernames = clientAddedUsernames, !clientAddedUsernames.isEmpty {
             body["clientAddedUsernames"] = clientAddedUsernames
             print("📤 [ChannelService] Sending \(clientAddedUsernames.count) client-added usernames to backend: \(clientAddedUsernames.joined(separator: ", "))")
         }
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let session = forceRefresh ? {
             let config = URLSessionConfiguration.default
             config.timeoutIntervalForRequest = 60.0
             config.timeoutIntervalForResource = 120.0
             return URLSession(configuration: config, delegate: self, delegateQueue: nil)
         }() : urlSession
-        
         let (data, response) = try await session.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
             print("❌ [ChannelService] Failed to fetch both views - status: \(statusCode)")
             throw URLError(.badServerResponse)
         }
-        
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let success = json["success"] as? Bool, success else {
             print("❌ [ChannelService] Invalid response format for both views")
             throw URLError(.badServerResponse)
         }
-        
         // Parse public and private content arrays
         let parseContentArray = { (array: [[String: Any]]) -> [ChannelContent] in
             return array.compactMap { itemDict -> ChannelContent? in
                 guard let sk = itemDict["SK"] as? String else { return nil }
-                
                 let thumbnailUrl = itemDict["thumbnailUrl"] as? String
-                
                 var price: Double? = nil
                 if let priceValue = itemDict["price"] {
                     if let priceDouble = priceValue as? Double {
@@ -1713,20 +1529,16 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                         price = priceDouble
                     }
                 }
-                
                 var title: String? = itemDict["title"] as? String
                 if let titleStr = title, titleStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     title = nil
                 }
-                
                 var description: String? = itemDict["description"] as? String
                 if let descStr = description, descStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     description = nil
                 }
-                
                 let creatorUsername = itemDict["creatorUsername"] as? String ?? 
                                      itemDict["username"] as? String
-                
                 var isPrivateUsername: Bool? = nil
                 if let isPrivateValue = itemDict["isPrivateUsername"] {
                     if let isPrivateBool = isPrivateValue as? Bool {
@@ -1739,7 +1551,19 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                         isPrivateUsername = isPrivateInt == 1
                     }
                 }
-                
+                // Parse isPremium - handle boolean, string, number, or nil (same as isPrivateUsername)
+                var isPremium: Bool? = nil
+                if let isPremiumValue = itemDict["isPremium"] {
+                    if let isPremiumBool = isPremiumValue as? Bool {
+                        isPremium = isPremiumBool
+                    } else if let isPremiumString = isPremiumValue as? String {
+                        isPremium = isPremiumString.lowercased() == "true" || isPremiumString == "1"
+                    } else if let isPremiumNumber = isPremiumValue as? NSNumber {
+                        isPremium = isPremiumNumber.boolValue
+                    } else if let isPremiumInt = isPremiumValue as? Int {
+                        isPremium = isPremiumInt == 1
+                    }
+                }
                 return ChannelContent(
                     SK: sk,
                     fileName: itemDict["fileName"] as? String ?? "",
@@ -1755,24 +1579,22 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     fileId: itemDict["fileId"] as? String,
                     airdate: itemDict["airdate"] as? String,
                     creatorUsername: creatorUsername,
-                    isPrivateUsername: isPrivateUsername
+                    isPrivateUsername: isPrivateUsername,
+                    isPremium: isPremium,
+                    status: itemDict["status"] as? String,
+                    scheduledDropDate: itemDict["scheduledDropDate"] as? String
                 )
             }
         }
-        
         let publicArray = json["publicContent"] as? [[String: Any]] ?? []
         let privateArray = json["privateContent"] as? [[String: Any]] ?? []
-        
         let publicContent = parseContentArray(publicArray)
         let privateContent = parseContentArray(privateArray)
-        
         let publicNextToken = json["publicNextToken"] as? String
         let privateNextToken = json["privateNextToken"] as? String
         let publicHasMore = json["publicHasMore"] as? Bool ?? (publicNextToken != nil)
         let privateHasMore = json["privateHasMore"] as? Bool ?? (privateNextToken != nil)
-        
         print("✅ [ChannelService] Fetched both views - public: \(publicContent.count), private: \(privateContent.count)")
-        
         let result = BothViewsContent(
             publicContent: publicContent,
             privateContent: privateContent,
@@ -1781,14 +1603,11 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             publicHasMore: publicHasMore,
             privateHasMore: privateHasMore
         )
-        
         // OPTIMIZATION: Cache result
         let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")"
         let timestamp = Date()
-        
         // Update in-memory cache
         cachedBothViewsContent[cacheKey] = (content: result, timestamp: timestamp)
-        
         // Save to persistent cache (UserDefaults)
         let cached = CachedBothViewsContent(
             publicContent: publicContent,
@@ -1807,10 +1626,8 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             UserDefaults.standard.set(encoded, forKey: persistentCacheKey)
             print("💾 [ChannelService] Cached both views (public: \(publicContent.count), private: \(privateContent.count)) (in-memory + persistent)")
         }
-        
         return result
     }
-    
     // Convenience method for backward compatibility (loads first page)
     func fetchChannelContent(channelName: String, creatorEmail: String, forceRefresh: Bool = false) async throws -> [ChannelContent] {
         let result = try await fetchChannelContent(
@@ -1822,9 +1639,7 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         )
         return result.content
     }
-    
     // MARK: - GraphQL Methods (Private)
-    
     private func fetchChannelContentGraphQL(
         channelName: String,
         creatorEmail: String,
@@ -1836,12 +1651,10 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         guard let url = URL(string: endpoint) else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        
         let query = """
         query ChannelContent($channelName: String!, $creatorEmail: String!, $limit: Int, $nextToken: String) {
           channelContent(channelName: $channelName, creatorEmail: $creatorEmail, limit: $limit, nextToken: $nextToken) {
@@ -1865,7 +1678,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
           }
         }
         """
-        
         var variables: [String: Any] = [
             "channelName": channelName,
             "creatorEmail": creatorEmail,
@@ -1874,47 +1686,37 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         if let nextToken = nextToken {
             variables["nextToken"] = nextToken
         }
-        
         let body: [String: Any] = [
             "query": query,
             "variables": variables
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
-        
         // Parse GraphQL response
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw URLError(.badServerResponse)
         }
-        
         // Check for GraphQL errors
         if let errors = json["errors"] as? [[String: Any]], !errors.isEmpty {
             let errorMessage = errors.first?["message"] as? String ?? "GraphQL error"
             print("❌ [ChannelService] GraphQL error: \(errorMessage)")
             throw NSError(domain: "ChannelService", code: 1, userInfo: [NSLocalizedDescriptionKey: errorMessage])
         }
-        
         // Parse data
         guard let dataDict = json["data"] as? [String: Any],
               let channelContent = dataDict["channelContent"] as? [String: Any],
               let contentArray = channelContent["content"] as? [[String: Any]] else {
             return ([], nil)
         }
-        
         // Get nextToken
         let nextToken = channelContent["nextToken"] as? String
-        
         // Convert to ChannelContent objects
         let contents = contentArray.compactMap { itemDict -> ChannelContent? in
             guard let sk = itemDict["SK"] as? String else { return nil }
-            
             var price: Double? = nil
             if let priceValue = itemDict["price"] {
                 if let priceDouble = priceValue as? Double {
@@ -1925,21 +1727,17 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     price = priceDouble
                 }
             }
-            
             var title: String? = itemDict["title"] as? String
             if let titleStr = title, titleStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 title = nil
             }
-            
             var description: String? = itemDict["description"] as? String
             if let descStr = description, descStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 description = nil
             }
-            
             // Extract creator username from response if available
             let creatorUsername = itemDict["creatorUsername"] as? String ?? 
                                  itemDict["username"] as? String
-            
             return ChannelContent(
                 SK: sk,
                 fileName: itemDict["fileName"] as? String ?? "",
@@ -1953,16 +1751,18 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 category: itemDict["category"] as? String,
                 uploadId: itemDict["uploadId"] as? String,
                 fileId: itemDict["fileId"] as? String,
-                creatorUsername: creatorUsername
+                airdate: itemDict["airdate"] as? String,
+                creatorUsername: creatorUsername,
+                isPrivateUsername: itemDict["isPrivateUsername"] as? Bool,
+                isPremium: itemDict["isPremium"] as? Bool,
+                status: itemDict["status"] as? String,
+                scheduledDropDate: itemDict["scheduledDropDate"] as? String
             )
         }
-        
         print("📦 [ChannelService] GraphQL fetched \(contents.count) content items, nextToken: \(nextToken ?? "nil")")
         return (contents, nextToken)
     }
-    
     // MARK: - Channel Management (Phase 1)
-    
     // Channel model for user's own channels (with management info)
     struct MyChannel: Identifiable, Codable {
         let channelId: String
@@ -1975,10 +1775,8 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         let createdAt: String
         let updatedAt: String
         let creatorUsername: String
-        
         var id: String { channelId }
     }
-    
     // Create a new channel
     func createChannel(
         channelName: String,
@@ -1993,11 +1791,9 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         guard let url = URL(string: "\(baseURL)/channels/create") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "channelName": channelName,
             "creatorEmail": creatorEmail,
@@ -2008,64 +1804,50 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             "description": description,
             "category": category
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "Server error: \(errorMessage)"])
         }
-        
         let decoder = JSONDecoder()
         return try decoder.decode(CreateChannelResponse.self, from: data)
     }
-    
     // Fetch user's own channels
     func fetchMyChannels(creatorEmail: String, userId: String? = nil) async throws -> [MyChannel] {
         // Try GraphQL first if enabled
         if useGraphQL, let endpoint = graphQLEndpoint, let apiKey = graphQLApiKey {
             return try await fetchMyChannelsGraphQL(creatorEmail: creatorEmail, endpoint: endpoint, apiKey: apiKey)
         }
-        
         // Fallback to REST API
         guard let url = URL(string: "\(baseURL)/channels/my-channels") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         var body: [String: Any] = [
             "creatorEmail": creatorEmail
         ]
         if let userId = userId {
             body["userId"] = userId
         }
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             print("❌ [ChannelService] fetchMyChannels REST API error: status code \((response as? HTTPURLResponse)?.statusCode ?? -1)")
             throw URLError(.badServerResponse)
         }
-        
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
            let success = json["success"] as? Bool, success,
            let channels = json["channels"] as? [[String: Any]] {
-            
             let myChannels = channels.compactMap { channelDict -> MyChannel? in
                 guard let channelId = channelDict["channelId"] as? String,
                       let channelName = channelDict["channelName"] as? String else {
                     return nil
                 }
-                
                 return MyChannel(
                     channelId: channelId,
                     channelName: channelName,
@@ -2079,13 +1861,10 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     creatorUsername: channelDict["creatorUsername"] as? String ?? creatorEmail
                 )
             }
-            
             return myChannels
         }
-        
         return []
     }
-    
     // GraphQL query for myChannels
     private func fetchMyChannelsGraphQL(creatorEmail: String, endpoint: String, apiKey: String) async throws -> [MyChannel] {
         let query = """
@@ -2104,59 +1883,48 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
           }
         }
         """
-        
         let variables: [String: Any] = [
             "creatorEmail": creatorEmail
         ]
-        
         let requestBody: [String: Any] = [
             "query": query,
             "variables": variables
         ]
-        
         guard let url = URL(string: endpoint) else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             print("❌ [ChannelService] fetchMyChannels GraphQL error: status code \((response as? HTTPURLResponse)?.statusCode ?? -1)")
             throw URLError(.badServerResponse)
         }
-        
         // Parse GraphQL response
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw URLError(.badServerResponse)
         }
-        
         // Check for GraphQL errors
         if let errors = json["errors"] as? [[String: Any]], !errors.isEmpty {
             let errorMessage = errors.first?["message"] as? String ?? "GraphQL error"
             print("❌ [ChannelService] GraphQL error: \(errorMessage)")
             throw NSError(domain: "ChannelService", code: 1, userInfo: [NSLocalizedDescriptionKey: errorMessage])
         }
-        
         // Parse myChannels response
         guard let dataDict = json["data"] as? [String: Any],
               let channelsArray = dataDict["myChannels"] as? [[String: Any]] else {
             print("⚠️ [ChannelService] GraphQL myChannels query returned no channels")
             return []
         }
-        
         let myChannels = channelsArray.compactMap { channelDict -> MyChannel? in
             guard let channelId = channelDict["channelId"] as? String,
                   let channelName = channelDict["channelName"] as? String else {
                 return nil
             }
-            
             return MyChannel(
                 channelId: channelId,
                 channelName: channelName,
@@ -2170,11 +1938,9 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 creatorUsername: channelDict["creatorUsername"] as? String ?? creatorEmail
             )
         }
-        
         print("✅ [ChannelService] GraphQL fetched \(myChannels.count) channels")
         return myChannels
     }
-    
     // Update channel visibility
     func updateChannelVisibility(
         channelId: String,
@@ -2185,32 +1951,25 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         guard let url = URL(string: "\(baseURL)/channels/update-visibility") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "channelId": channelId,
             "channelName": channelName,
             "creatorUsername": creatorUsername,
             "visibility": visibility
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "Server error: \(errorMessage)"])
         }
-        
         let decoder = JSONDecoder()
         return try decoder.decode(UpdateVisibilityResponse.self, from: data)
     }
-    
     // Update channel subscription price
     func updateChannelSubscriptionPrice(
         channelId: String,
@@ -2221,57 +1980,43 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         guard let url = URL(string: "\(baseURL)/channels/update-subscription-price") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "channelId": channelId,
             "channelName": channelName,
             "creatorUsername": creatorUsername,
             "newPrice": newPrice
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "Server error: \(errorMessage)"])
         }
-        
         let decoder = JSONDecoder()
         return try decoder.decode(UpdateSubscriptionPriceResponse.self, from: data)
     }
-    
     // MARK: - Username Management
-    
     func checkUsernameAvailability(username: String, userId: String) async throws -> Bool {
         guard let url = URL(string: "\(baseURL)/creators/check-username") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "username": username,
             "userId": userId
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         do {
             let (data, response) = try await urlSession.data(for: request)
-            
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw URLError(.badServerResponse)
             }
-            
             // Parse response body for error messages
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 // Check for success and available fields
@@ -2279,7 +2024,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                    let available = json["available"] as? Bool {
                     return available
                 }
-                
                 // Check for error message in response
                 if let message = json["message"] as? String {
                     throw NSError(
@@ -2289,7 +2033,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     )
                 }
             }
-            
             // Handle non-200 status codes with error message
             if httpResponse.statusCode != 200 {
                 let errorMessage: String
@@ -2300,14 +2043,12 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 } else {
                     errorMessage = "Server error: \(httpResponse.statusCode)"
                 }
-                
                 throw NSError(
                     domain: "ChannelService",
                     code: httpResponse.statusCode,
                     userInfo: [NSLocalizedDescriptionKey: errorMessage]
                 )
             }
-            
             // Default to false if we can't parse the response
             return false
         } catch let error as URLError {
@@ -2329,22 +2070,18 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             throw URLError(error.code, userInfo: userInfo)
         }
     }
-    
     // Update content details (title, description, price, visibility)
     func updateContentDetails(fileId: String, pk: String, title: String?, description: String?, price: Double?, isVisible: Bool?) async throws {
         guard let url = URL(string: "\(baseURL)/files/update-details") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         var body: [String: Any] = [
             "fileId": fileId,
             "PK": pk
         ]
-        
         if let title = title {
             body["title"] = title
         }
@@ -2357,16 +2094,12 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         if let isVisible = isVisible {
             body["isVisible"] = isVisible
         }
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
-        
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
            let success = json["success"] as? Bool, success {
             print("✅ [ChannelService] Content updated successfully")
@@ -2374,70 +2107,53 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             throw URLError(.badServerResponse)
         }
     }
-    
     // Update content visibility (live/draft toggle)
     // MARK: - Air Schedule Functions
-    
     func saveAirSchedule(userEmail: String, userId: String, airDay: String, airTime: String) async throws -> AirScheduleResponse {
         guard let url = URL(string: "\(baseURL)/air-schedule/save") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail,
             "userId": userId,
             "airDay": airDay,
             "airTime": airTime
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await URLSession.shared.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ChannelServiceError.invalidResponse
         }
-        
         if httpResponse.statusCode != 200 {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw ChannelServiceError.serverError(errorMessage)
         }
-        
         let decoder = JSONDecoder()
         return try decoder.decode(AirScheduleResponse.self, from: data)
     }
-    
     func getAirSchedule(userEmail: String) async throws -> AirScheduleResponse {
         print("🔍 [ChannelService] Fetching air schedule for userEmail: \(userEmail)")
         guard let url = URL(string: "\(baseURL)/air-schedule/get") else {
             print("❌ [ChannelService] Invalid URL for getAirSchedule")
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         print("📤 [ChannelService] Sending POST request to: \(url.absoluteString)")
         let (data, response) = try await URLSession.shared.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             print("❌ [ChannelService] Invalid response type for getAirSchedule")
             throw ChannelServiceError.invalidResponse
         }
-        
         print("📥 [ChannelService] getAirSchedule response status: \(httpResponse.statusCode)")
-        
         if httpResponse.statusCode == 404 {
             // 404 means endpoint doesn't exist yet or user has no schedule
             // Return a response indicating no schedule exists
@@ -2446,152 +2162,116 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             print("   Returning empty schedule response")
             return AirScheduleResponse(success: false, message: "No schedule found", schedule: nil)
         }
-        
         if httpResponse.statusCode != 200 {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             print("❌ [ChannelService] getAirSchedule server error \(httpResponse.statusCode): \(errorMessage)")
             throw ChannelServiceError.serverError(errorMessage)
         }
-        
         if let responseString = String(data: data, encoding: .utf8) {
             print("📄 [ChannelService] getAirSchedule response body: \(responseString)")
         }
-        
         let decoder = JSONDecoder()
         let result = try decoder.decode(AirScheduleResponse.self, from: data)
         print("✅ [ChannelService] getAirSchedule parsed successfully: success=\(result.success), hasSchedule=\(result.schedule != nil)")
         return result
     }
-    
     func setPostAutomatically(userEmail: String, userId: String?, postAutomatically: Bool) async throws -> AirScheduleResponse {
         print("🔧 [ChannelService] Setting postAutomatically=\(postAutomatically) for userEmail: \(userEmail)")
         guard let url = URL(string: "\(baseURL)/air-schedule/post-automatically") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         var body: [String: Any] = [
             "userEmail": userEmail,
             "postAutomatically": postAutomatically
         ]
-        
         if let userId = userId {
             body["userId"] = userId
         }
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await URLSession.shared.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ChannelServiceError.invalidResponse
         }
-        
         if httpResponse.statusCode != 200 {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw ChannelServiceError.serverError(errorMessage)
         }
-        
         let decoder = JSONDecoder()
         return try decoder.decode(AirScheduleResponse.self, from: data)
     }
-    
     func getPostAutomatically(userEmail: String) async throws -> Bool {
         print("🔍 [ChannelService] Getting postAutomatically setting for userEmail: \(userEmail)")
         guard let url = URL(string: "\(baseURL)/air-schedule/get-post-automatically") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await URLSession.shared.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ChannelServiceError.invalidResponse
         }
-        
         if httpResponse.statusCode == 404 {
             // Default to false if not set
             return false
         }
-        
         if httpResponse.statusCode != 200 {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw ChannelServiceError.serverError(errorMessage)
         }
-        
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let postAutomatically = json["postAutomatically"] as? Bool {
             return postAutomatically
         }
-        
         return false
     }
-    
     func pauseSchedule(userEmail: String, pause: Bool) async throws -> AirScheduleResponse {
         print("🔧 [ChannelService] \(pause ? "Pausing" : "Resuming") schedule for userEmail: \(userEmail)")
         guard let url = URL(string: "\(baseURL)/air-schedule/unset") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail,
             "pause": pause
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await URLSession.shared.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ChannelServiceError.invalidResponse
         }
-        
         if httpResponse.statusCode != 200 {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw ChannelServiceError.serverError(errorMessage)
         }
-        
         let decoder = JSONDecoder()
         return try decoder.decode(AirScheduleResponse.self, from: data)
     }
-    
     func getOccupiedSlots() async throws -> [String] {
         print("🔍 [ChannelService] Fetching occupied slots...")
         guard let url = URL(string: "\(baseURL)/air-schedule/occupied-slots") else {
             print("❌ [ChannelService] Invalid URL for getOccupiedSlots")
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         print("📤 [ChannelService] Sending POST request to: \(url.absoluteString)")
         let (data, response) = try await URLSession.shared.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             print("❌ [ChannelService] Invalid response type for getOccupiedSlots")
             throw ChannelServiceError.invalidResponse
         }
-        
         print("📥 [ChannelService] getOccupiedSlots response status: \(httpResponse.statusCode)")
-        
         if httpResponse.statusCode == 404 {
             // 404 means endpoint doesn't exist yet or no slots are occupied
             // Return empty array - this is normal if backend isn't deployed yet
@@ -2600,52 +2280,45 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             print("   Returning empty array - treating as 'no slots occupied'")
             return []
         }
-        
         if httpResponse.statusCode != 200 {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             print("❌ [ChannelService] getOccupiedSlots server error \(httpResponse.statusCode): \(errorMessage)")
             throw ChannelServiceError.serverError(errorMessage)
         }
-        
         if let responseString = String(data: data, encoding: .utf8) {
             print("📄 [ChannelService] getOccupiedSlots response body: \(responseString)")
         }
-        
         let decoder = JSONDecoder()
         let result = try decoder.decode(OccupiedSlotsResponse.self, from: data)
         print("✅ [ChannelService] getOccupiedSlots parsed successfully: \(result.occupiedSlots.count) slots")
         return result.occupiedSlots
     }
-    
     func updateContentVisibility(fileId: String, pk: String, isVisible: Bool) async throws {
         try await updateContentDetails(fileId: fileId, pk: pk, title: nil, description: nil, price: nil, isVisible: isVisible)
     }
-    
     // Response structure for convertStreamToPost
     struct ConvertToPostResponse: Codable {
         let success: Bool
         let message: String?
         let fileId: String? // File ID (SK without "FILE#" prefix)
     }
-    
     // Create collaborator invite
     // Convert recorded RTMP stream to channel post
     // Returns fileId if successful (for moving file to selected channel)
-    func convertStreamToPost(channelName: String, streamKey: String, title: String? = nil, description: String? = nil, price: Double? = nil, userEmail: String) async throws -> String? {
+    // scheduledDropDate: when set (Schedule Drop), backend stores status=HELD so premiere shows on timeline as "Airs [date]"
+    func convertStreamToPost(channelName: String, streamKey: String, title: String? = nil, description: String? = nil, price: Double? = nil, userEmail: String, postImmediately: Bool = true, scheduledDropDate: Date? = nil) async throws -> String? {
         guard let url = URL(string: "\(baseURL)/streams/convert-to-post") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         var body: [String: Any] = [
             "channelName": channelName,
             "streamKey": streamKey,
-            "userEmail": userEmail
+            "userEmail": userEmail,
+            "postImmediately": postImmediately
         ]
-        
         if let title = title {
             body["title"] = title
         }
@@ -2655,15 +2328,16 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         if let price = price {
             body["price"] = price
         }
-        
+        if let date = scheduledDropDate {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            body["scheduledDropDate"] = formatter.string(from: date)
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
-        
         if httpResponse.statusCode != 200 {
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let message = json["message"] as? String {
@@ -2671,11 +2345,9 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             }
             throw URLError(.badServerResponse)
         }
-        
         // Parse response
         let decoder = JSONDecoder()
         let convertResponse = try decoder.decode(ConvertToPostResponse.self, from: data)
-        
         if convertResponse.success {
             print("✅ Stream converted to post successfully")
             return convertResponse.fileId
@@ -2683,34 +2355,26 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             throw NSError(domain: "ChannelService", code: 1, userInfo: [NSLocalizedDescriptionKey: convertResponse.message ?? "Failed to convert stream to post"])
         }
     }
-    
     // Move file to a different channel/folder (same as managefiles move function)
     func moveFile(userEmail: String, fileId: String, targetChannel: String) async throws {
         guard let url = URL(string: "\(baseURL)/files/move") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         // The move API expects fileId to be the full SK (FILE#...), not just the ID
         let fullFileId = fileId.hasPrefix("FILE#") ? fileId : "FILE#\(fileId)"
-        
         let body: [String: Any] = [
             "userId": userEmail,
             "fileId": fullFileId,
             "targetFolder": targetChannel
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
-        
         if httpResponse.statusCode != 200 {
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let message = json["message"] as? String {
@@ -2718,7 +2382,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             }
             throw URLError(.badServerResponse)
         }
-        
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let success = json["success"] as? Bool, success {
             print("✅ File moved to channel '\(targetChannel)' successfully")
@@ -2726,7 +2389,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             throw NSError(domain: "ChannelService", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to move file"])
         }
     }
-    
     // Check subscription status for a channel (GraphQL optimized)
     func checkSubscriptionStatus(channelId: String, userEmail: String) async throws -> Bool {
         // Use GraphQL for fast subscription check
@@ -2734,7 +2396,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             // Fallback to REST API
             return try await checkSubscriptionStatusREST(channelId: channelId, userEmail: userEmail)
         }
-        
         let query = """
         query CheckSubscription($channelId: String!, $userEmail: String!) {
           checkSubscription(channelId: $channelId, userEmail: $userEmail) {
@@ -2742,60 +2403,46 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
           }
         }
         """
-        
         let variables: [String: Any] = [
             "channelId": channelId,
             "userEmail": userEmail
         ]
-        
         // GraphQL implementation would go here
         // For now, fallback to REST
         return try await checkSubscriptionStatusREST(channelId: channelId, userEmail: userEmail)
     }
-    
     private func checkSubscriptionStatusREST(channelId: String, userEmail: String) async throws -> Bool {
         guard let url = URL(string: "\(baseURL)/subscriptions/check") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "channelId": channelId,
             "userEmail": userEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             return false
         }
-        
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let isSubscribed = json["isSubscribed"] as? Bool {
             return isSubscribed
         }
-        
         return false
     }
-    
     func createCollaboratorInvite(channelName: String, channelOwnerEmail: String, channelOwnerId: String) async throws -> String {
         guard let url = URL(string: "\(baseURL)/collaborations/store-invite") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         // Generate invite code (UUID)
         let inviteCode = UUID().uuidString
-        
         let body: [String: Any] = [
             "PK": "INVITE",
             "SK": inviteCode,
@@ -2806,16 +2453,12 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             "expiresAt": ISO8601DateFormatter().string(from: Date().addingTimeInterval(7 * 24 * 60 * 60)), // 7 days
             "status": "active"
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
-        
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
            let success = json["success"] as? Bool, success {
             return inviteCode
@@ -2823,50 +2466,39 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             throw URLError(.badServerResponse)
         }
     }
-    
     // Check if user can upload to a channel (must be owner or collaborator)
     func canUploadToChannel(channelName: String, userEmail: String, userId: String? = nil) async throws -> Bool {
         guard let url = URL(string: "\(baseURL)/collaborations/check-upload-permission") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         var body: [String: Any] = [
             "userEmail": userEmail,
             "channelName": channelName
         ]
-        
         if let userId = userId {
             body["userId"] = userId
         }
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             print("❌ [ChannelService] canUploadToChannel error: status code \((response as? HTTPURLResponse)?.statusCode ?? -1)")
             // On error, default to false for security
             return false
         }
-        
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
            let success = json["success"] as? Bool,
            let canUpload = json["canUpload"] as? Bool {
             print("✅ [ChannelService] canUploadToChannel result: \(canUpload) for channel: \(channelName)")
             return success && canUpload
         }
-        
         // Default to false if we can't parse the response
         return false
     }
-    
     // MARK: - Invite Code Management
-    
     // Accept invite code to unlock streaming access
     struct AcceptInviteResponse: Codable {
         let success: Bool
@@ -2875,7 +2507,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         let hasPayoutSetup: Bool?
         let payoutSetupRequired: Bool?
         let collaborator: CollaboratorResponse?
-        
         struct CollaboratorResponse: Codable {
             let channelId: String?
             let channelName: String?
@@ -2885,39 +2516,29 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             let payoutSetupRequired: Bool?
         }
     }
-    
     func acceptInviteCode(inviteCode: String, userId: String, userEmail: String, channelName: String? = nil) async throws -> AcceptInviteResponse {
         guard let url = URL(string: "\(baseURL)/collaborations/accept-invite") else {
             throw URLError(.badURL)
         }
-        
         print("🎫 [ChannelService] Accepting invite code: \(inviteCode) for channel: \(channelName ?? "unknown")")
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         var body: [String: Any] = [
             "inviteCode": inviteCode,
             "userId": userId,
             "userEmail": userEmail
         ]
-        
         // Include channelName if provided (for validation)
         if let channelName = channelName {
             body["channelName"] = channelName
         }
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
-        
         print("📡 [ChannelService] Accept invite response status: \(httpResponse.statusCode)")
-        
         if httpResponse.statusCode != 200 {
             if let errorData = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let message = errorData["message"] as? String {
@@ -2925,70 +2546,52 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             }
             throw URLError(.badServerResponse)
         }
-        
         let decoder = JSONDecoder()
         let result = try decoder.decode(AcceptInviteResponse.self, from: data)
-        
         print("✅ [ChannelService] Invite code accepted: \(result.success)")
         return result
     }
-    
     // MARK: - Collaborator Management (Admin Only)
-    
     // Search for usernames on Twilly
     func searchUsernames(query: String, limit: Int = 50, visibilityFilter: String = "all") async throws -> [UsernameSearchResult] {
         guard let url = URL(string: "\(baseURL)/users/search-usernames") else {
             throw URLError(.badURL)
         }
-        
         print("🔍 [ChannelService] Searching usernames with query: '\(query)', limit: \(limit), filter: \(visibilityFilter)")
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "searchQuery": query,
             "limit": limit,
             "visibilityFilter": visibilityFilter
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             print("❌ [ChannelService] Invalid response")
             throw URLError(.badServerResponse)
         }
-        
         print("📡 [ChannelService] Response status: \(httpResponse.statusCode)")
-        
         if httpResponse.statusCode != 200 {
             if let errorData = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 print("❌ [ChannelService] Error response: \(errorData)")
             }
             throw URLError(.badServerResponse)
         }
-        
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
             print("📦 [ChannelService] Response JSON keys: \(json.keys.joined(separator: ", "))")
-            
             if let success = json["success"] as? Bool {
                 print("   success: \(success)")
             }
-            
             if let usernames = json["usernames"] as? [[String: Any]] {
                 print("   usernames array count: \(usernames.count)")
             } else {
                 print("   ⚠️ usernames is not an array or missing")
             }
-            
             if let success = json["success"] as? Bool, success,
                let usernames = json["usernames"] as? [[String: Any]] {
-                
                 print("✅ [ChannelService] Found \(usernames.count) usernames")
-                
                 let results = usernames.compactMap { userDict -> UsernameSearchResult? in
                     guard let username = userDict["username"] as? String else {
                         print("⚠️ [ChannelService] User dict missing username: \(userDict)")
@@ -3008,7 +2611,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     print("   ✅ Parsed: \(username) (display: \(result.displayName), \(privacyStatus))")
                     return result
                 }
-                
                 let publicCount = results.filter { $0.isPrivate != true }.count
                 let privateCount = results.filter { $0.isPrivate == true }.count
                 print("✅ [ChannelService] Returning \(results.count) parsed results:")
@@ -3032,76 +2634,57 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 print("   Raw response: \(responseString.prefix(500))")
             }
         }
-        
         print("⚠️ [ChannelService] Returning empty array")
         return []
     }
-    
     // List collaborators for a channel (admin only)
     func listCollaborators(channelName: String, userEmail: String) async throws -> [CollaboratorInfo] {
         guard let url = URL(string: "\(baseURL)/collaborations/list") else {
             throw URLError(.badURL)
         }
-        
         print("🔍 [ChannelService] Listing collaborators for channel: '\(channelName)', userEmail: '\(userEmail)'")
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "channelName": channelName,
             "userEmail": userEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
-        
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
             print("🔍 [ChannelService] listCollaborators response: \(json)")
             print("🔍 [ChannelService] Response keys: \(json.keys)")
-            
             if let success = json["success"] as? Bool {
                 print("🔍 [ChannelService] success: \(success)")
             }
-            
             if let message = json["message"] as? String {
                 print("🔍 [ChannelService] message: \(message)")
             }
-            
             if let collaborators = json["collaborators"] as? [[String: Any]] {
                 print("✅ [ChannelService] Found \(collaborators.count) collaborators in response")
-                
                 for (index, collab) in collaborators.enumerated() {
                     print("   [\(index)] Raw collaborator data: \(collab)")
                 }
             } else {
                 print("⚠️ [ChannelService] No 'collaborators' array in response, or it's not an array")
             }
-            
             if let success = json["success"] as? Bool, success,
                let collaborators = json["collaborators"] as? [[String: Any]] {
-                
                 print("✅ [ChannelService] Processing \(collaborators.count) collaborators")
-                
                 let parsed = collaborators.compactMap { collabDict -> CollaboratorInfo? in
                     guard let userId = collabDict["userId"] as? String,
                           let userEmail = collabDict["userEmail"] as? String else {
                         print("⚠️ [ChannelService] Invalid collaborator data - missing userId or userEmail: \(collabDict)")
                         return nil
                     }
-                    
                     // Username is optional, default to "Unknown" if missing
                     let username = (collabDict["username"] as? String) ?? "Unknown"
-                    
                     print("   - Parsed: \(username) (\(userEmail), userId: \(userId))")
-                    
                     return CollaboratorInfo(
                         userId: userId,
                         userEmail: userEmail,
@@ -3112,7 +2695,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                         role: collabDict["role"] as? String
                     )
                 }
-                
                 print("✅ [ChannelService] Returning \(parsed.count) valid collaborators")
                 return parsed
             } else {
@@ -3122,39 +2704,30 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 }
             }
         }
-        
         return []
     }
-    
     // Remove collaborator from a channel (admin only)
     func removeCollaborator(channelName: String, collaboratorUsername: String, userEmail: String) async throws -> Bool {
         guard let url = URL(string: "\(baseURL)/collaborations/remove") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "channelName": channelName,
             "collaboratorUsername": collaboratorUsername,
             "userEmail": userEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
-        
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let success = json["success"] as? Bool {
                 return success
             }
-            
             // Check for error message
             if let message = json["message"] as? String {
                 throw NSError(
@@ -3164,40 +2737,31 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 )
             }
         }
-        
         // If status is not 200, throw error
         if httpResponse.statusCode != 200 {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "Server error: \(errorMessage)"])
         }
-        
         return true
     }
-    
     // Add collaborator to a channel (admin only)
     func addCollaborator(channelName: String, collaboratorUsername: String, userEmail: String) async throws -> Bool {
         guard let url = URL(string: "\(baseURL)/collaborations/add") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "channelName": channelName,
             "collaboratorUsername": collaboratorUsername,
             "userEmail": userEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
-        
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let success = json["success"] as? Bool {
                 if !success {
@@ -3213,7 +2777,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 }
                 return true
             }
-            
             // Check for error message
             if let message = json["message"] as? String {
                 throw NSError(
@@ -3223,74 +2786,57 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 )
             }
         }
-        
         // If status is not 200, throw error
         if httpResponse.statusCode != 200 {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "Server error: \(errorMessage)"])
         }
-        
         return true
     }
-    
     // Get email from username (for admin check - username can change, email shouldn't)
     func getEmailFromUsername(username: String) async throws -> String? {
         guard let url = URL(string: "\(baseURL)/users/get-email-from-username") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "username": username
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
-        
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
            let success = json["success"] as? Bool, success,
            let email = json["email"] as? String {
             return email
         }
-        
         return nil
     }
-    
     func updateUsername(userId: String, username: String, email: String) async throws {
         guard let url = URL(string: "\(baseURL)/creators/update-username") else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userId": userId,
             "username": username,
             "email": email
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "Server error: \(errorMessage)"])
         }
     }
-    
     func fetchUsername(userId: String, email: String) async throws -> String? {
         // Try GraphQL first if enabled, but fall back to REST on error
         if useGraphQL, let endpoint = graphQLEndpoint, let apiKey = graphQLApiKey {
@@ -3303,36 +2849,28 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 // Continue to REST fallback below
             }
         }
-        
         // Fallback to REST API with shorter timeout for quick username fetch
         guard let url = URL(string: "\(baseURL)/creators/get-username") else {
             throw URLError(.badURL)
         }
-        
         // Create a URLSession with shorter timeout for username fetch (10 seconds)
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 10.0
         config.timeoutIntervalForResource = 15.0
         let quickSession = URLSession(configuration: config, delegate: self, delegateQueue: nil)
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userId": userId,
             "email": email
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await quickSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             print("❌ [ChannelService] fetchUsername REST API error: invalid response type")
             throw URLError(.badServerResponse)
         }
-        
         // Handle 403 specifically (Netlify security challenge)
         if httpResponse.statusCode == 403 {
             print("⚠️ [ChannelService] fetchUsername got 403 - likely Netlify security challenge")
@@ -3353,7 +2891,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 )
             }
         }
-        
         guard httpResponse.statusCode == 200 else {
             print("❌ [ChannelService] fetchUsername REST API error: status code \(httpResponse.statusCode)")
             // Try to parse error message
@@ -3369,15 +2906,12 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 throw URLError(.badServerResponse)
             }
         }
-        
         // Log the raw response for debugging
         if let responseString = String(data: data, encoding: .utf8) {
             print("🔍 [ChannelService] fetchUsername REST API response: \(responseString)")
         }
-        
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
             print("🔍 [ChannelService] fetchUsername JSON: \(json)")
-            
             // Handle both "username" and empty string cases
             // Also check for "found" field to see if user record exists
             if let found = json["found"] as? Bool, found {
@@ -3404,11 +2938,9 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 }
             }
         }
-        
         print("⚠️ [ChannelService] Could not parse JSON response")
         return nil
     }
-    
     // GraphQL query for username using userAccount query
     private func fetchUsernameGraphQL(userId: String, email: String, endpoint: String, apiKey: String) async throws -> String? {
         let query = """
@@ -3421,45 +2953,36 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
           }
         }
         """
-        
         let variables: [String: Any] = [
             "userId": userId
         ]
-        
         let requestBody: [String: Any] = [
             "query": query,
             "variables": variables
         ]
-        
         guard let url = URL(string: endpoint) else {
             throw URLError(.badURL)
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
-        
         // Parse GraphQL response
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw URLError(.badServerResponse)
         }
-        
         // Check for GraphQL errors
         if let errors = json["errors"] as? [[String: Any]], !errors.isEmpty {
             let errorMessage = errors.first?["message"] as? String ?? "GraphQL error"
             print("❌ [ChannelService] GraphQL error: \(errorMessage)")
             throw NSError(domain: "ChannelService", code: 1, userInfo: [NSLocalizedDescriptionKey: errorMessage])
         }
-        
         // Parse userAccount response
         if let dataDict = json["data"] as? [String: Any],
            let userAccount = dataDict["userAccount"] as? [String: Any],
@@ -3468,200 +2991,149 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             print("✅ [ChannelService] GraphQL found username: \(username)")
             return username
         }
-        
         print("⚠️ [ChannelService] GraphQL userAccount query returned no username")
         return nil
     }
-    
     // MARK: - Username Visibility
-    
     func setUsernameVisibility(userEmail: String, isPublic: Bool) async throws -> UsernameVisibilityResponse {
         guard let url = URL(string: "\(baseURL)/users/set-visibility") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail,
             "isPublic": isPublic
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw ChannelServiceError.invalidResponse
         }
-        
         return try JSONDecoder().decode(UsernameVisibilityResponse.self, from: data)
     }
-    
     // MARK: - Delete File
-    
     func deleteFile(userId: String, fileId: String, fileName: String, folderName: String?) async throws -> DeleteFileResponse {
         guard let url = URL(string: "\(baseURL)/files/delete") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         var body: [String: Any] = [
             "userId": userId,
             "fileId": fileId,
             "fileName": fileName
         ]
-        
         if let folderName = folderName {
             body["folderName"] = folderName
         }
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             print("❌ [ChannelService] deleteFile: Invalid HTTP response")
             throw ChannelServiceError.invalidResponse
         }
-        
         if httpResponse.statusCode != 200 {
             let responseString = String(data: data, encoding: .utf8) ?? "Unable to decode"
             print("❌ [ChannelService] deleteFile: HTTP \(httpResponse.statusCode) - \(responseString)")
-            
             // Try to parse error message from response
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let message = json["message"] as? String {
                 throw ChannelServiceError.serverError(message)
             }
-            
             throw ChannelServiceError.serverError("Server error: HTTP \(httpResponse.statusCode)")
         }
-        
         return try JSONDecoder().decode(DeleteFileResponse.self, from: data)
     }
-    
     func getUsernameVisibility(userEmail: String) async throws -> UsernameVisibilityResponse {
         guard let url = URL(string: "\(baseURL)/users/get-visibility") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             print("❌ [ChannelService] getUsernameVisibility: Invalid HTTP response")
             throw ChannelServiceError.invalidResponse
         }
-        
         if httpResponse.statusCode != 200 {
             let responseString = String(data: data, encoding: .utf8) ?? "Unable to decode"
             print("❌ [ChannelService] getUsernameVisibility: HTTP \(httpResponse.statusCode) - \(responseString)")
             throw ChannelServiceError.invalidResponse
         }
-        
         // Log response for debugging
         if let responseString = String(data: data, encoding: .utf8) {
             print("🔍 [ChannelService] getUsernameVisibility response: \(responseString)")
         }
-        
         return try JSONDecoder().decode(UsernameVisibilityResponse.self, from: data)
     }
-    
     // MARK: - Private Username
-    
     func setPrivateUsername(userEmail: String, privateUsername: String?) async throws -> PrivateUsernameResponse {
         guard let url = URL(string: "\(baseURL)/users/set-private-username") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         var body: [String: Any] = [
             "userEmail": userEmail
         ]
-        
         if let username = privateUsername {
             body["privateUsername"] = username
         }
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw ChannelServiceError.invalidResponse
         }
-        
         return try JSONDecoder().decode(PrivateUsernameResponse.self, from: data)
     }
-    
     func getPrivateUsername(userEmail: String) async throws -> PrivateUsernameResponse {
         guard let url = URL(string: "\(baseURL)/users/get-private-username") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw ChannelServiceError.invalidResponse
         }
-        
         return try JSONDecoder().decode(PrivateUsernameResponse.self, from: data)
     }
-    
     // MARK: - Stream Username Type
-    
-    func setStreamUsernameType(streamKey: String, isPrivateUsername: Bool, streamUsername: String) async throws -> StreamUsernameTypeResponse {
+    func setStreamUsernameType(streamKey: String, isPrivateUsername: Bool, streamUsername: String, isPremium: Bool = false) async throws -> StreamUsernameTypeResponse {
         // CRITICAL PRIVACY FIX: Call EC2 immediate endpoint FIRST (BLOCKING) before Netlify API
         // This ensures the global map is set BEFORE the stream starts - NO RACE CONDITION
         // This MUST complete before the stream starts, so we await it
         let ec2ServerURL = "http://100.24.103.57:3000"
         let immediateURL = "\(ec2ServerURL)/api/streams/set-privacy-immediate"
-        
         // CRITICAL: This MUST be blocking (await) so it completes BEFORE stream starts
         do {
             if let ec2URL = URL(string: immediateURL) {
                 var request = URLRequest(url: ec2URL)
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                
                 let ec2Body: [String: Any] = [
                     "streamKey": streamKey,
                     "isPrivateUsername": isPrivateUsername
                 ]
                 request.httpBody = try JSONSerialization.data(withJSONObject: ec2Body)
                 request.timeoutInterval = 5.0
-                
                 print("🔍 [ChannelService] Calling EC2 immediate endpoint (BLOCKING) for streamKey: \(streamKey), isPrivate: \(isPrivateUsername)")
                 let (_, response) = try await URLSession.shared.data(for: request)
                 if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
@@ -3678,91 +3150,69 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         guard let url = URL(string: "\(baseURL)/streams/set-stream-username-type") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "streamKey": streamKey,
             "isPrivateUsername": isPrivateUsername,
-            "streamUsername": streamUsername
+            "streamUsername": streamUsername,
+            "isPremium": isPremium
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             print("❌ [ChannelService] setStreamUsernameType: Invalid response type")
             throw ChannelServiceError.invalidResponse
         }
-        
         guard httpResponse.statusCode == 200 else {
             let responseBody = String(data: data, encoding: .utf8) ?? "Unable to decode response"
             print("❌ [ChannelService] setStreamUsernameType: HTTP \(httpResponse.statusCode)")
             print("   Response body: \(responseBody)")
             throw ChannelServiceError.serverError("HTTP \(httpResponse.statusCode): \(responseBody)")
         }
-        
         return try JSONDecoder().decode(StreamUsernameTypeResponse.self, from: data)
     }
-    
     // MARK: - Follow Requests
-    
     func requestFollow(requesterEmail: String, requestedUsername: String, requesterUsername: String? = nil, isPrivateStreamRequest: Bool = false) async throws -> FollowRequestResponse {
         guard let url = URL(string: "\(baseURL)/users/request-follow") else {
             throw ChannelServiceError.invalidURL
         }
-        
         print("📤 [ChannelService] requestFollow: requesterEmail=\(requesterEmail), requestedUsername=\(requestedUsername), requesterUsername=\(requesterUsername ?? "nil"), isPrivateStreamRequest=\(isPrivateStreamRequest)")
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         var body: [String: Any] = [
             "requesterEmail": requesterEmail,
             "requestedUsername": requestedUsername,
             "isPrivateStreamRequest": isPrivateStreamRequest
         ]
-        
         // Include requesterUsername if provided (frontend already knows it)
         if let requesterUsername = requesterUsername, !requesterUsername.isEmpty {
             body["requesterUsername"] = requesterUsername
         }
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             print("❌ [ChannelService] requestFollow: Invalid response type")
             throw ChannelServiceError.invalidResponse
         }
-        
         print("📥 [ChannelService] requestFollow response status: \(httpResponse.statusCode)")
-        
         guard httpResponse.statusCode == 200 else {
             let responseBody = String(data: data, encoding: .utf8) ?? "Unable to decode response"
             print("❌ [ChannelService] requestFollow: HTTP \(httpResponse.statusCode)")
             print("   Response body: \(responseBody)")
-            
             // Try to parse error message from response
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let message = json["message"] as? String {
                 throw ChannelServiceError.serverError(message)
             }
-            
             throw ChannelServiceError.serverError("Server error: HTTP \(httpResponse.statusCode)")
         }
-        
         if let responseString = String(data: data, encoding: .utf8) {
             print("✅ [ChannelService] requestFollow response: \(responseString)")
         }
-        
         let followResponse = try JSONDecoder().decode(FollowRequestResponse.self, from: data)
-        
         // Return the response even if success: false
         // This allows the caller to check response.status and handle "already pending" cases
         // Only throw for actual HTTP errors (handled above)
@@ -3770,44 +3220,55 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             let errorMsg = followResponse.message ?? "Failed to add username"
             print("⚠️ [ChannelService] requestFollow: API returned success=false - \(errorMsg) (status: \(followResponse.status ?? "nil"))")
         }
-        
         return followResponse
     }
-    
+    /// Remind Me for scheduled drops: opt-in to reminder for a drop by contentId and premiere time.
+    func optInDropReminder(contentId: String, viewerEmail: String, premiereAt: Date) async {
+        guard let url = URL(string: "\(baseURL)/drops/remind-me") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let formatter = ISO8601DateFormatter()
+        let body: [String: Any] = [
+            "contentId": contentId,
+            "viewerEmail": viewerEmail,
+            "premiereAt": formatter.string(from: premiereAt)
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (_, response) = try await urlSession.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 200 {
+                print("✅ [ChannelService] optInDropReminder succeeded for \(contentId)")
+            }
+        } catch {
+            print("⚠️ [ChannelService] optInDropReminder failed (non-blocking): \(error.localizedDescription)")
+        }
+    }
     // MARK: - Private Viewer Management
-    
     func addPrivateViewer(ownerUsername: String, viewerUsername: String, viewerEmail: String? = nil) async throws -> [String: Any] {
         guard let url = URL(string: "\(baseURL)/users/add-private-viewer") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         // Include ownerEmail if available (optimization - bypasses username lookup)
         var body: [String: Any] = [
             "ownerUsername": ownerUsername,
             "viewerUsername": viewerUsername
         ]
-        
         // Add ownerEmail if we have it from auth (fastest path)
         if let ownerEmail = AuthService.shared.userEmail {
             body["ownerEmail"] = ownerEmail
             print("   📧 Including ownerEmail in request: \(ownerEmail)")
         }
-        
         // Do NOT include viewerEmail - backend will do GSI lookup by username
         // The search already validated the username exists, so backend can find it
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ChannelServiceError.invalidResponse
         }
-        
         guard httpResponse.statusCode == 200 else {
             let responseBody = String(data: data, encoding: .utf8) ?? "Unable to decode response"
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -3816,23 +3277,18 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             }
             throw ChannelServiceError.serverError("Server error: HTTP \(httpResponse.statusCode)")
         }
-        
         return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
     }
-    
     func removePrivateViewer(ownerEmail: String, viewerEmail: String?, ownerUsername: String? = nil, viewerUsername: String? = nil, authenticatedUserEmail: String? = nil) async throws -> [String: Any] {
         guard let url = URL(string: "\(baseURL)/users/remove-private-viewer") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         var body: [String: Any] = [
             "ownerEmail": ownerEmail
         ]
-        
         // CRITICAL SECURITY: Send authenticated user email for backend verification
         // Backend will verify that authenticated user is the owner
         if let authenticatedUserEmail = authenticatedUserEmail, !authenticatedUserEmail.isEmpty {
@@ -3843,27 +3299,21 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             body["authenticatedUserEmail"] = ownerEmail
             body["userEmail"] = ownerEmail
         }
-        
         // Prefer email if available, otherwise use username
         if let viewerEmail = viewerEmail, !viewerEmail.isEmpty {
             body["viewerEmail"] = viewerEmail
         } else if let viewerUsername = viewerUsername {
             body["viewerUsername"] = viewerUsername
         }
-        
         // Include ownerUsername if provided (for backend lookup optimization)
         if let ownerUsername = ownerUsername {
             body["ownerUsername"] = ownerUsername
         }
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ChannelServiceError.invalidResponse
         }
-        
         guard httpResponse.statusCode == 200 else {
             let responseBody = String(data: data, encoding: .utf8) ?? "Unable to decode response"
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -3872,61 +3322,84 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             }
             throw ChannelServiceError.serverError("Server error: HTTP \(httpResponse.statusCode)")
         }
-        
         return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
     }
-    
     func getPrivateViewers(ownerEmail: String) async throws -> [String: Any] {
         guard let url = URL(string: "\(baseURL)/users/get-private-viewers") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "ownerEmail": ownerEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw ChannelServiceError.invalidResponse
         }
-        
         return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
     }
-    
     func acceptFollowRequest(userEmail: String, requesterEmail: String) async throws -> FollowRequestResponse {
         guard let url = URL(string: "\(baseURL)/users/accept-follow") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail,
             "requesterEmail": requesterEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw ChannelServiceError.invalidResponse
         }
-        
         return try JSONDecoder().decode(FollowRequestResponse.self, from: data)
     }
-    
+    func acceptDirectStream(
+        notificationId: String,
+        userEmail: String,
+        action: String,
+        videoId: String,
+        streamerEmail: String,
+        streamerUsername: String,
+        videoTitle: String?,
+        videoThumbnail: String?,
+        channelName: String?,
+        streamKey: String?,
+        isPrivateUsername: Bool,
+        isPremium: Bool
+    ) async throws -> [String: Any] {
+        guard let url = URL(string: "\(baseURL)/streams/accept-direct-stream") else {
+            throw ChannelServiceError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = [
+            "notificationId": notificationId,
+            "userEmail": userEmail,
+            "accept": action == "accept"
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ChannelServiceError.invalidResponse
+        }
+        if httpResponse.statusCode != 200 {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw ChannelServiceError.invalidResponse
+        }
+        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return json
+        }
+        return ["success": true]
+    }
     func removeFollow(requesterEmail: String, requestedUsername: String, requestedUserEmail: String? = nil) async throws -> FollowRequestResponse {
         // Use provided email if available, otherwise look it up from username
         let requestedUserEmailToUse: String
@@ -3941,218 +3414,162 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             }
             requestedUserEmailToUse = email
         }
-        
         guard let url = URL(string: "\(baseURL)/users/remove-follow") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "requesterEmail": requesterEmail,
             "requestedUserEmail": requestedUserEmailToUse
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             print("❌ [ChannelService] removeFollow: Invalid HTTP response")
             throw ChannelServiceError.invalidResponse
         }
-        
         print("📥 [ChannelService] removeFollow response status: \(httpResponse.statusCode)")
         if let responseString = String(data: data, encoding: .utf8) {
             print("📄 [ChannelService] removeFollow response body: \(responseString)")
         }
-        
         guard httpResponse.statusCode == 200 else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown server error"
             throw ChannelServiceError.serverError("HTTP \(httpResponse.statusCode): \(errorMessage)")
         }
-        
         let decodedResponse = try JSONDecoder().decode(FollowRequestResponse.self, from: data)
-        
         // Check the 'success' field from the API response
         guard decodedResponse.success else {
             let message = decodedResponse.message ?? "Failed to remove user from timeline"
             throw ChannelServiceError.serverError(message)
         }
-        
         return decodedResponse
     }
-    
     func declineFollowRequest(userEmail: String, requesterEmail: String) async throws -> FollowRequestResponse {
         guard let url = URL(string: "\(baseURL)/users/decline-follow") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail,
             "requesterEmail": requesterEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw ChannelServiceError.invalidResponse
         }
-        
         return try JSONDecoder().decode(FollowRequestResponse.self, from: data)
     }
-    
     func getFollowRequests(userEmail: String, status: String = "pending") async throws -> FollowRequestsResponse {
         guard let url = URL(string: "\(baseURL)/users/follow-requests") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail,
             "status": status
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw ChannelServiceError.invalidResponse
         }
-        
         return try JSONDecoder().decode(FollowRequestsResponse.self, from: data)
     }
-    
     // Get follow requests sent by the current user
     func getSentFollowRequests(requesterEmail: String, status: String = "pending") async throws -> SentFollowRequestsResponse {
         guard let url = URL(string: "\(baseURL)/users/sent-follow-requests") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "requesterEmail": requesterEmail,
             "status": status
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw ChannelServiceError.invalidResponse
         }
-        
         return try JSONDecoder().decode(SentFollowRequestsResponse.self, from: data)
     }
-    
     // Get notifications
     func getNotifications(userEmail: String, limit: Int = 50, unreadOnly: Bool = false) async throws -> NotificationsResponse {
         guard let url = URL(string: "\(baseURL)/users/get-notifications") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail,
             "limit": limit,
             "unreadOnly": unreadOnly
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw ChannelServiceError.invalidResponse
         }
-        
         return try JSONDecoder().decode(NotificationsResponse.self, from: data)
     }
-    
     // Mark notification as read
     func markNotificationRead(userEmail: String, notificationId: String) async throws -> FollowRequestResponse {
         guard let url = URL(string: "\(baseURL)/users/mark-notification-read") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail,
             "notificationId": notificationId
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw ChannelServiceError.invalidResponse
         }
-        
         return try JSONDecoder().decode(FollowRequestResponse.self, from: data)
     }
-    
     // MARK: - Added Usernames
-    
     func getAddedUsernames(userEmail: String) async throws -> AddedUsernamesResponse {
         guard let url = URL(string: "\(baseURL)/users/added-usernames") else {
             throw ChannelServiceError.invalidURL
         }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             print("❌ [ChannelService] getAddedUsernames: Invalid HTTP response")
             throw ChannelServiceError.invalidResponse
         }
-        
         print("📥 [ChannelService] getAddedUsernames response status: \(httpResponse.statusCode)")
         if let responseString = String(data: data, encoding: .utf8) {
             print("📄 [ChannelService] getAddedUsernames response body: \(responseString)")
         }
-        
         guard httpResponse.statusCode == 200 else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown server error"
             throw ChannelServiceError.serverError("HTTP \(httpResponse.statusCode): \(errorMessage)")
         }
-        
         do {
             return try JSONDecoder().decode(AddedUsernamesResponse.self, from: data)
         } catch {
@@ -4163,83 +3580,60 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             throw ChannelServiceError.invalidResponse
         }
     }
-    
     // MARK: - Premium & Subscriptions
-    
     func getPremiumStatus(userEmail: String) async throws -> PremiumStatusResponse {
         guard let url = URL(string: "\(baseURL)/users/get-premium-status") else {
             throw ChannelServiceError.invalidURL
         }
-        
         print("💰 [ChannelService] getPremiumStatus: userEmail=\(userEmail)")
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ChannelServiceError.invalidResponse
         }
-        
         guard httpResponse.statusCode == 200 else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown server error"
             throw ChannelServiceError.serverError("HTTP \(httpResponse.statusCode): \(errorMessage)")
         }
-        
         return try JSONDecoder().decode(PremiumStatusResponse.self, from: data)
     }
-    
     func enablePremium(userEmail: String, enable: Bool) async throws -> FollowRequestResponse {
         guard let url = URL(string: "\(baseURL)/users/enable-premium") else {
             throw ChannelServiceError.invalidURL
         }
-        
         print("💰 [ChannelService] enablePremium: userEmail=\(userEmail), enable=\(enable)")
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "userEmail": userEmail,
             "enable": enable
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ChannelServiceError.invalidResponse
         }
-        
         guard httpResponse.statusCode == 200 else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown server error"
             throw ChannelServiceError.serverError("HTTP \(httpResponse.statusCode): \(errorMessage)")
         }
-        
         return try JSONDecoder().decode(FollowRequestResponse.self, from: data)
     }
-    
     func setPremiumPrice(userEmail: String, price: Double?) async throws -> FollowRequestResponse {
         guard let url = URL(string: "\(baseURL)/users/set-premium-price") else {
             throw ChannelServiceError.invalidURL
         }
-        
         print("💰 [ChannelService] setPremiumPrice: userEmail=\(userEmail), price=\(price ?? 0)")
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         var body: [String: Any] = [
             "userEmail": userEmail
         ]
@@ -4248,90 +3642,65 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         } else {
             body["subscriptionPrice"] = NSNull()
         }
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ChannelServiceError.invalidResponse
         }
-        
         guard httpResponse.statusCode == 200 else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown server error"
             throw ChannelServiceError.serverError("HTTP \(httpResponse.statusCode): \(errorMessage)")
         }
-        
         return try JSONDecoder().decode(FollowRequestResponse.self, from: data)
     }
-    
     func getSubscriptionStatus(subscriberEmail: String, creatorEmail: String) async throws -> SubscriptionStatusResponse {
         guard let url = URL(string: "\(baseURL)/users/get-subscription-status") else {
             throw ChannelServiceError.invalidURL
         }
-        
         print("📋 [ChannelService] getSubscriptionStatus: subscriber=\(subscriberEmail), creator=\(creatorEmail)")
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "subscriberEmail": subscriberEmail,
             "creatorEmail": creatorEmail
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ChannelServiceError.invalidResponse
         }
-        
         guard httpResponse.statusCode == 200 else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown server error"
             throw ChannelServiceError.serverError("HTTP \(httpResponse.statusCode): \(errorMessage)")
         }
-        
         return try JSONDecoder().decode(SubscriptionStatusResponse.self, from: data)
     }
-    
     func createPremiumSubscription(subscriberEmail: String, creatorEmail: String, creatorUsername: String) async throws -> CreatePremiumSubscriptionResponse {
         guard let url = URL(string: "\(baseURL)/users/create-premium-subscription") else {
             throw ChannelServiceError.invalidURL
         }
-        
         print("💰 [ChannelService] createPremiumSubscription: subscriber=\(subscriberEmail), creator=\(creatorEmail)")
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = [
             "subscriberEmail": subscriberEmail,
             "creatorEmail": creatorEmail,
             "creatorUsername": creatorUsername
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
         let (data, response) = try await urlSession.data(for: request)
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ChannelServiceError.invalidResponse
         }
-        
         guard httpResponse.statusCode == 200 else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown server error"
             throw ChannelServiceError.serverError("HTTP \(httpResponse.statusCode): \(errorMessage)")
         }
-        
         return try JSONDecoder().decode(CreatePremiumSubscriptionResponse.self, from: data)
     }
-    
     // MARK: - Updated getContent to include viewerEmail for filtering
-    
 }
 
 // Error type for ChannelService
@@ -4456,7 +3825,6 @@ struct FollowRequest: Codable, Identifiable {
     let requestedAt: String?
     let respondedAt: String?
     let status: String
-    
     var id: String { requesterEmail }
 }
 
@@ -4472,7 +3840,6 @@ struct SentFollowRequest: Codable, Identifiable {
     let requestedAt: String?
     let respondedAt: String?
     let status: String
-    
     var id: String { requestedUserEmail }
 }
 
@@ -4492,7 +3859,6 @@ struct AppNotification: Codable, Identifiable {
     let isRead: Bool
     let createdAt: String
     let SK: String? // Store SK for ID extraction
-    
     enum CodingKeys: String, CodingKey {
         case SK
         case type
@@ -4503,7 +3869,6 @@ struct AppNotification: Codable, Identifiable {
         case read // Handle old format
         case createdAt
     }
-    
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         // Extract ID from SK (format: NOTIFICATION#notification-123...)
@@ -4528,7 +3893,6 @@ struct AppNotification: Codable, Identifiable {
         }
         self.createdAt = try container.decode(String.self, forKey: .createdAt)
     }
-    
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(SK, forKey: .SK)
@@ -4554,7 +3918,6 @@ struct AddedUsername: Codable, Identifiable {
     let streamerUsername: String
     let addedAt: String?
     let streamerVisibility: String?
-    
     var id: String { streamerEmail }
 }
 
@@ -4595,11 +3958,9 @@ struct CreatePremiumSubscriptionResponse: Codable {
 // Helper to handle AnyCodable for JSON decoding
 struct AnyCodable: Codable {
     let value: Any
-    
     init(_ value: Any) {
         self.value = value
     }
-    
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if let bool = try? container.decode(Bool.self) {
@@ -4618,7 +3979,6 @@ struct AnyCodable: Codable {
             throw DecodingError.dataCorruptedError(in: container, debugDescription: "Cannot decode AnyCodable")
         }
     }
-    
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         switch value {
@@ -4640,3 +4000,404 @@ struct AnyCodable: Codable {
     }
 }
 
+// MARK: - Comment model (shared by ChannelService, ChannelDetailView, MessagingService)
+struct Comment: Identifiable, Codable, Equatable {
+    let id: String
+    let videoId: String
+    let userId: String
+    let username: String
+    let text: String
+    let createdAt: Date
+    var likeCount: Int
+    var isLiked: Bool
+    var isPrivate: Bool?
+    var parentCommentId: String?
+    var visibleTo: [String]?
+    var mentionedUsername: String?
+    
+    static func == (lhs: Comment, rhs: Comment) -> Bool {
+        return lhs.id == rhs.id &&
+               lhs.videoId == rhs.videoId &&
+               lhs.userId == rhs.userId &&
+               lhs.username == rhs.username &&
+               lhs.text == rhs.text &&
+               lhs.createdAt == rhs.createdAt &&
+               lhs.likeCount == rhs.likeCount &&
+               lhs.isLiked == rhs.isLiked &&
+               lhs.isPrivate == rhs.isPrivate &&
+               lhs.parentCommentId == rhs.parentCommentId &&
+               lhs.visibleTo == rhs.visibleTo &&
+               lhs.mentionedUsername == rhs.mentionedUsername
+    }
+}
+
+// MARK: - Comment API Methods
+extension ChannelService {
+    // Get comments for a video
+    // Response struct for comments API
+    struct CommentsResponse {
+        let comments: [Comment]
+        let threadsByParent: [String: [Comment]]
+    }
+    
+    func getComments(videoId: String, userId: String? = nil, viewerEmail: String? = nil) async throws -> [Comment] {
+        let response = try await getCommentsWithThreads(videoId: videoId, userId: userId, viewerEmail: viewerEmail)
+        return response.comments
+    }
+    
+    func getCommentsWithThreads(videoId: String, userId: String? = nil, viewerEmail: String? = nil) async throws -> CommentsResponse {
+        let url = URL(string: "\(baseURL)/comments/get")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [
+            "videoId": videoId
+        ]
+        if let userId = userId {
+            body["userId"] = userId
+        }
+        if let viewerEmail = viewerEmail {
+            body["viewerEmail"] = viewerEmail
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "ChannelService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+        }
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw NSError(domain: "ChannelService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let success = json?["success"] as? Bool, success == true,
+              let commentsArray = json?["comments"] as? [[String: Any]] else {
+            throw NSError(domain: "ChannelService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])
+        }
+        
+        // Parse comments
+        let parseComment: ([String: Any]) -> Comment? = { dict in
+            guard let id = dict["id"] as? String,
+                  let videoId = dict["videoId"] as? String,
+                  let userId = dict["userId"] as? String,
+                  let username = dict["username"] as? String,
+                  let text = dict["text"] as? String else {
+                return nil
+            }
+            
+            // Handle createdAt as either number (timestamp) or string (ISO8601)
+            let createdAt: Date
+            if let timestamp = dict["createdAt"] as? TimeInterval {
+                // Number format (milliseconds since epoch)
+                createdAt = Date(timeIntervalSince1970: timestamp / 1000.0)
+            } else if let timestamp = dict["createdAt"] as? Int {
+                // Integer format (milliseconds since epoch)
+                createdAt = Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000.0)
+            } else if let createdAtString = dict["createdAt"] as? String {
+                // String format (ISO8601)
+                let formatter = ISO8601DateFormatter()
+                createdAt = formatter.date(from: createdAtString) ?? Date()
+            } else {
+                // Fallback to current date
+                createdAt = Date()
+            }
+            let likeCount = dict["likeCount"] as? Int ?? 0
+            let isLiked = dict["isLiked"] as? Bool ?? false
+            let isPrivate = dict["isPrivate"] as? Bool
+            let parentCommentId = dict["parentCommentId"] as? String
+            let visibleTo = dict["visibleTo"] as? [String]
+            let mentionedUsername = dict["mentionedUsername"] as? String
+            return Comment(
+                id: id,
+                videoId: videoId,
+                userId: userId,
+                username: username,
+                text: text,
+                createdAt: createdAt,
+                likeCount: likeCount,
+                isLiked: isLiked,
+                isPrivate: isPrivate,
+                parentCommentId: parentCommentId,
+                visibleTo: visibleTo,
+                mentionedUsername: mentionedUsername
+            )
+        }
+        
+        let comments = commentsArray.compactMap(parseComment)
+        
+        // Parse threadsByParent from backend
+        var threadsByParent: [String: [Comment]] = [:]
+        if let threadsByParentDict = json?["threadsByParent"] as? [String: [[String: Any]]] {
+            for (parentId, threadArray) in threadsByParentDict {
+                let threadComments = threadArray.compactMap(parseComment)
+                threadsByParent[parentId] = threadComments
+            }
+        }
+        
+        print("📊 [ChannelService] Parsed \(comments.count) comments and \(threadsByParent.count) private threads from backend")
+        
+        return CommentsResponse(comments: comments, threadsByParent: threadsByParent)
+    }
+    func postComment(
+        videoId: String,
+        userId: String,
+        username: String,
+        text: String,
+        parentCommentId: String? = nil,
+        creatorEmail: String? = nil,
+        commenterEmail: String? = nil
+    ) async throws -> Comment {
+        let url = URL(string: "\(baseURL)/comments/post")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [
+            "videoId": videoId,
+            "userId": userId,
+            "username": username,
+            "text": text
+        ]
+        // Add optional parameters for private threads
+        if let parentCommentId = parentCommentId {
+            body["parentCommentId"] = parentCommentId
+        }
+        if let creatorEmail = creatorEmail {
+            body["creatorEmail"] = creatorEmail
+        }
+        if let commenterEmail = commenterEmail {
+            body["commenterEmail"] = commenterEmail
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "ChannelService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+        }
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw NSError(domain: "ChannelService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let success = json?["success"] as? Bool, success == true,
+              let commentDict = json?["comment"] as? [String: Any],
+              let id = commentDict["id"] as? String,
+              let videoId = commentDict["videoId"] as? String,
+              let userId = commentDict["userId"] as? String,
+              let username = commentDict["username"] as? String,
+              let text = commentDict["text"] as? String,
+              let createdAtString = commentDict["createdAt"] as? String else {
+            throw NSError(domain: "ChannelService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])
+        }
+        let formatter = ISO8601DateFormatter()
+        let createdAt = formatter.date(from: createdAtString) ?? Date()
+        let likeCount = commentDict["likeCount"] as? Int ?? 0
+        let isLiked = commentDict["isLiked"] as? Bool ?? false
+        let isPrivate = commentDict["isPrivate"] as? Bool
+        let parentCommentIdResponse = commentDict["parentCommentId"] as? String
+        let visibleTo = commentDict["visibleTo"] as? [String]
+        let mentionedUsername = commentDict["mentionedUsername"] as? String
+        return Comment(
+            id: id,
+            videoId: videoId,
+            userId: userId,
+            username: username,
+            text: text,
+            createdAt: createdAt,
+            likeCount: likeCount,
+            isLiked: isLiked,
+            isPrivate: isPrivate,
+            parentCommentId: parentCommentIdResponse,
+            visibleTo: visibleTo,
+            mentionedUsername: mentionedUsername
+        )
+    }
+    // Like/unlike a comment
+    func likeComment(videoId: String, commentId: String, userId: String, isLiked: Bool) async throws -> (likeCount: Int, isLiked: Bool) {
+        let url = URL(string: "\(baseURL)/comments/like")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = [
+            "videoId": videoId,
+            "commentId": commentId,
+            "userId": userId,
+            "isLiked": isLiked
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "ChannelService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+        }
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw NSError(domain: "ChannelService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let success = json?["success"] as? Bool, success == true,
+              let likeCount = json?["likeCount"] as? Int,
+              let isLikedResult = json?["isLiked"] as? Bool else {
+            throw NSError(domain: "ChannelService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])
+        }
+        return (likeCount: likeCount, isLiked: isLikedResult)
+    }
+    // Get unread comment counts for multiple videos
+    func getUnreadCommentCounts(videoIds: [String], viewerEmail: String, lastViewedTimestamps: [String: String]? = nil) async throws -> [String: Int] {
+        let url = URL(string: "\(baseURL)/comments/unread-count")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [
+            "videoIds": videoIds,
+            "viewerEmail": viewerEmail
+        ]
+        if let timestamps = lastViewedTimestamps {
+            body["lastViewedTimestamps"] = timestamps
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "ChannelService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+        }
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw NSError(domain: "ChannelService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let success = json?["success"] as? Bool, success == true,
+              let unreadCountsDict = json?["unreadCounts"] as? [String: Any] else {
+            throw NSError(domain: "ChannelService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])
+        }
+        
+        // Parse the response - handle both old format (Int) and new format (dict with total/threads)
+        var result: [String: Int] = [:]
+        for (videoId, value) in unreadCountsDict {
+            if let intValue = value as? Int {
+                // Old format - just total count
+                result[videoId] = intValue
+            } else if let dictValue = value as? [String: Any],
+                      let total = dictValue["total"] as? Int {
+                // New format - extract total count
+                result[videoId] = total
+            } else {
+                // Default to 0
+                result[videoId] = 0
+            }
+        }
+        return result
+    }
+
+    // Check all unreads on login/restart and send indicator notifications via WebSocket
+    func checkAllUnreads(viewerEmail: String) async throws {
+        let url = URL(string: "\(baseURL)/comments/check-all-unreads")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body: [String: Any] = [
+            "viewerEmail": viewerEmail
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "ChannelService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+        }
+        
+        if !(200...299).contains(httpResponse.statusCode) {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw NSError(domain: "ChannelService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+        }
+        
+        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let success = json["success"] as? Bool, success {
+            let unreadVideosCount = json["unreadVideosCount"] as? Int ?? 0
+            print("✅ [ChannelService] Checked all unreads: \(unreadVideosCount) videos with unreads")
+        }
+    }
+    
+    // Get unread comment counts with per-thread details (returns full response with total and threads)
+    func getUnreadCommentCountsDetailed(videoIds: [String], viewerEmail: String, lastViewedTimestamps: [String: String]? = nil) async throws -> [String: Any] {
+        let url = URL(string: "\(baseURL)/comments/unread-count")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [
+            "videoIds": videoIds,
+            "viewerEmail": viewerEmail
+        ]
+        if let timestamps = lastViewedTimestamps {
+            body["lastViewedTimestamps"] = timestamps
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "ChannelService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+        }
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw NSError(domain: "ChannelService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let success = json?["success"] as? Bool, success == true,
+              let unreadCountsDict = json?["unreadCounts"] as? [String: Any] else {
+            throw NSError(domain: "ChannelService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])
+        }
+        return unreadCountsDict
+    }
+    // Mark a private thread as read
+    func markThreadAsRead(videoId: String, viewerEmail: String, threadId: String) async throws {
+        let url = URL(string: "\(baseURL)/comments/mark-thread-read")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = [
+            "videoId": videoId,
+            "viewerEmail": viewerEmail,
+            "threadId": threadId
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "ChannelService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+        }
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw NSError(domain: "ChannelService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let success = json?["success"] as? Bool, success == true else {
+            throw NSError(domain: "ChannelService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])
+        }
+    }
+    // Clear all comments for a video (for testing)
+    func clearAllComments(videoId: String) async throws {
+        let url = URL(string: "\(baseURL)/comments/clear-all")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body: [String: Any] = [
+            "videoId": videoId
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await urlSession.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "ChannelService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+        }
+        
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw NSError(domain: "ChannelService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+        }
+        
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let success = json?["success"] as? Bool, success == true else {
+            throw NSError(domain: "ChannelService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])
+        }
+    }
+
+
+}

@@ -295,6 +295,12 @@ struct ChannelSelectionView: View {
                                                     .stroke(Color.twillyTeal.opacity(0.3), lineWidth: 1)
                                             )
                                             .foregroundColor(.white)
+                                            .onChange(of: videoTitle) { newValue in
+                                                // Limit to 50 characters to fit on one line
+                                                if newValue.count > 50 {
+                                                    videoTitle = String(newValue.prefix(50))
+                                                }
+                                            }
                                     }
                                     
                                     // Description field
