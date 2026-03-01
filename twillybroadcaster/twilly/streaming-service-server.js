@@ -1127,7 +1127,8 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
   let finalUploadId = uploadId;
   let finalChannelName = null; // Will be set from streamKey mapping for RTMP, or request context for HTTP uploads
   let finalIsPrivateUsername = null; // Will be set from global map or mapping
-  
+  let finalIsPremium = false; // Will be set from stream key mapping (for Lambda metadata)
+
   if (isUpload) {
     // NEW FLOW: HTTP uploads - generate 1080p first, return success, then process remaining variants
     console.log(`🚀 Using Snapchat-style approach: Generate 1080p first, then background processing`);
@@ -1426,6 +1427,11 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
               }
             }
           }
+          if (streamKeyResult.Item.isPremium != null) {
+            const raw = streamKeyResult.Item.isPremium;
+            finalIsPremium = raw === true || raw === 'true' || raw === 1 || (typeof raw === 'string' && raw.toLowerCase() === 'true');
+            console.log(`✅ [RTMP] Got isPremium from mapping: ${finalIsPremium}`);
+          }
         } else {
           console.error(`❌ [RTMP] CRITICAL: streamKey mapping NOT FOUND for: ${streamName}`);
           // Default to PUBLIC if mapping doesn't exist
@@ -1484,7 +1490,19 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
       
       // Store metadata for Lambda to use (for DynamoDB entry creation)
       const uniquePrefix = `${streamName}_${timestamp}_${uniqueId}`;
-      
+      if (!finalIsPremium) {
+        try {
+          const pm = await dynamodb.get({
+            TableName: 'Twilly',
+            Key: { PK: `STREAM_KEY#${streamName}`, SK: 'MAPPING' },
+            ConsistentRead: true
+          }).promise();
+          if (pm.Item && pm.Item.isPremium != null) {
+            const raw = pm.Item.isPremium;
+            finalIsPremium = raw === true || raw === 'true' || raw === 1 || (typeof raw === 'string' && raw.toLowerCase() === 'true');
+          }
+        } catch (_) {}
+      }
       // Create metadata entry for Lambda (if needed)
       if (finalUserEmail && finalUploadId) {
         try {
@@ -1496,6 +1514,7 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
             streamKey: streamName,
             uploadId: finalUploadId,
             isPrivateUsername: finalIsPrivateUsername || false,
+            isPremium: finalIsPremium,
             uniquePrefix: uniquePrefix,
             createdAt: new Date().toISOString()
           };
@@ -1505,7 +1524,7 @@ async function processStreamInternal(streamName, schedulerId, uploadId = null) {
             Item: metadataItem
           }).promise();
           
-          console.log(`✅ [LAMBDA PROCESSING] Metadata stored for Lambda processing`);
+          console.log(`✅ [LAMBDA PROCESSING] Metadata stored for Lambda processing (isPremium: ${finalIsPremium})`);
         } catch (metadataError) {
           console.error(`⚠️ [LAMBDA PROCESSING] Failed to store metadata: ${metadataError.message}`);
         }
@@ -2963,6 +2982,26 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
     postAutomatically = true;
   }
   
+  // Check for scheduled drop date from streamKey mapping
+  let scheduledDropDate = null;
+  let isHeld = false;
+  if (streamKeyResult && streamKeyResult.Item && streamKeyResult.Item.scheduledDropDate) {
+    scheduledDropDate = streamKeyResult.Item.scheduledDropDate;
+    const scheduledTime = new Date(scheduledDropDate);
+    const now = new Date();
+    
+    if (scheduledTime > now) {
+      // Scheduled date is in the future - set to HELD state
+      isHeld = true;
+      postAutomatically = false; // Override postAutomatically - don't show until scheduled time
+      console.log(`📅 [createVideoEntryImmediately] Video scheduled for future drop: ${scheduledDropDate}`);
+      console.log(`   Setting to HELD state - will be released at scheduled time`);
+    } else {
+      // Scheduled date is in the past - post immediately
+      console.log(`📅 [createVideoEntryImmediately] Scheduled date is in the past - posting immediately`);
+    }
+  }
+  
   // Create video item with consistent fileId based on uploadId (makes function idempotent)
   // This allows calling it multiple times (e.g., after thumbnail, after HLS ready) without creating duplicates
   const fileId = `file-${uploadId}`;
@@ -3193,7 +3232,14 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   // If undefined, DynamoDB DocumentClient might omit the field, causing Lambda to default to public
   videoItem.isPrivateUsername = isPrivateUsername === true ? true : false; // Explicitly set to boolean
   console.log(`📝 [createVideoEntryImmediately] Final isPrivateUsername value: ${videoItem.isPrivateUsername} (type: ${typeof videoItem.isPrivateUsername}, will be saved to video entry)`);
-  
+  // Stream to premium: read isPremium from stream key mapping and set on video entry
+  let isPremium = false;
+  if (streamKeyResult && streamKeyResult.Item && streamKeyResult.Item.isPremium != null) {
+    const raw = streamKeyResult.Item.isPremium;
+    isPremium = raw === true || raw === 'true' || raw === 1 || (typeof raw === 'string' && raw.toLowerCase() === 'true');
+  }
+  videoItem.isPremium = isPremium;
+  console.log(`📝 [createVideoEntryImmediately] isPremium from mapping: ${videoItem.isPremium} (saved to video entry)`);
   // REVERTED: Just use username from mapping (no lock logic complexity)
   // Get username from streamKey mapping - simple and reliable
   if (streamKeyResult && streamKeyResult.Item) {
@@ -3287,6 +3333,19 @@ async function createVideoEntryImmediately(streamName, uploadId, uniquePrefix, u
   }
   if (metadata.description) {
     videoItem.description = metadata.description;
+  }
+  
+  // Set status and visibility based on scheduled drop date
+  if (isHeld && scheduledDropDate) {
+    videoItem.status = 'HELD';
+    videoItem.isVisible = false; // Not visible until scheduled time
+    videoItem.scheduledDropDate = scheduledDropDate;
+    console.log(`📅 [createVideoEntryImmediately] Video set to HELD state - scheduled for: ${scheduledDropDate}`);
+  } else {
+    videoItem.status = 'PUBLISHED';
+    if (scheduledDropDate) {
+      videoItem.scheduledDropDate = scheduledDropDate; // Store even if in past for reference
+    }
   }
   
   // Write to DynamoDB using DocumentClient format
