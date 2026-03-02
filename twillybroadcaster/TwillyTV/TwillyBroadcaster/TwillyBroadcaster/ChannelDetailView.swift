@@ -924,18 +924,10 @@ struct ChannelDetailView: View {
     
     private var twillyLogoFilterButton: some View {
         Button(action: handleFilterToggle) {
-            HStack(spacing: 4) {
-                // Filter label
-                Text(showOnlyOwnContent ? "My" : "All")
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundColor(showOnlyOwnContent ? .twillyCyan : .white.opacity(0.8))
-                
-                // Filter indicator icon - use square.grid.2x2 for "All" view
-                Image(systemName: showOnlyOwnContent ? "person.fill" : "square.grid.2x2")
-                    .font(.system(size: 20))
-                    .foregroundColor(showOnlyOwnContent ? .twillyCyan : .white)
-            }
+            // Icon only: grid = owner videos (editing), list = full timeline
+            Image(systemName: showOnlyOwnContent ? "square.grid.2x2" : "list.bullet")
+                .font(.system(size: 20))
+                .foregroundColor(showOnlyOwnContent ? .twillyCyan : .white)
         }
     }
     
@@ -1023,13 +1015,10 @@ struct ChannelDetailView: View {
     // MARK: - Action Handlers
     private func handleFilterToggle() {
         let wasFiltered = showOnlyOwnContent
-        withAnimation {
-            showOnlyOwnContent.toggle()
-        }
+        let willBeFiltered = !wasFiltered
+        // CRITICAL: Update content FIRST, then toggle state — prevents blank frame and flicker
         // When enabling "show only own content", filter from existing cache (same as public view)
-        // CRITICAL: Don't refresh from server - this would reorder content and break the instant toggle
-        // Just filter from existing privateContent/publicContent arrays to preserve order
-        if showOnlyOwnContent {
+        if willBeFiltered {
             let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
             
             // CRITICAL: "My" filter should only match videos where creatorUsername matches viewer's username
@@ -1106,38 +1095,24 @@ struct ChannelDetailView: View {
                 print("⚡ [ChannelDetailView] Filtered to own content from \(showPrivateContent ? "private" : "public") array: \(content.count) items (preserved order, same as public view)")
             } else {
                 // For non-Twilly TV channels, filter from existing content
-                // Only include videos where creatorUsername (normalized) matches viewer username
                 var filtered = content.filter { item in
                     let normalizedViewerUsername = normalizeViewerUsername(authService.username)
                     let normalizedCreatorUsername = normalizeUsername(item.creatorUsername)
-                    
                     if let viewerUsername = normalizedViewerUsername,
                        let creatorUsername = normalizedCreatorUsername {
                         return creatorUsername == viewerUsername
                     }
                     return false
                 }
-            
-            // Also apply visibility filter if active
-            if showPrivateContent {
-                filtered = filtered.filter { item in
-                    item.isPrivateUsername == true
+                if showPrivateContent {
+                    filtered = filtered.filter { item in item.isPrivateUsername == true }
+                } else {
+                    filtered = filtered.filter { item in item.isPrivateUsername != true }
                 }
-            } else {
-                filtered = filtered.filter { item in
-                    item.isPrivateUsername != true
+                content = filtered
+                if showFavoritesOnly {
+                    content = content.filter { item in favoriteContentIds.contains(item.SK) }
                 }
-            }
-            
-            content = filtered
-            
-            // Apply favorites filter if active
-            if showFavoritesOnly {
-                content = content.filter { item in
-                    favoriteContentIds.contains(item.SK)
-                }
-            }
-            
                 print("⚡ [ChannelDetailView] Filtered to own content: \(content.count) items")
             }
         } else if wasFiltered {
@@ -1226,6 +1201,13 @@ struct ChannelDetailView: View {
                 }
             }
         }
+        // Toggle state after content is set — no animation to prevent blank frame and flicker
+        var transaction = Transaction(animation: .none)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            showOnlyOwnContent.toggle()
+        }
+        scrollToTopTrigger = UUID()
     }
     
     private func handlePrivateToggle() {
@@ -5644,15 +5626,22 @@ struct ChannelDetailView: View {
     @ViewBuilder
     private var contentSection: some View {
         // INSTAGRAM/TIKTOK PATTERN: Simple, reliable state management
-        // Priority: Error > Content > Loading > Empty (only if explicitly confirmed)
+        // Priority: Error > Content > Filter-empty message > Previous content > Loading > Empty
+        // CRITICAL: When in filter mode with no results, always show a message — never blank
         
         if let error = errorMessage {
             errorView(error)
         } else if !content.isEmpty {
             // Always show content if available (even if loading in background)
             contentListView
-        } else if !previousContentBeforeFilter.isEmpty {
-            // Show previous content while filtering (smooth transition)
+        } else if content.isEmpty && showOnlyOwnContent {
+            // "My" filter on but no owner files — show message instead of blank
+            filterEmptyStateView
+        } else if content.isEmpty && showFavoritesOnly {
+            // Favorites filter on but no favorites — show message instead of blank
+            emptyStateView
+        } else if !previousContentBeforeFilter.isEmpty && !(showOnlyOwnContent || showFavoritesOnly) {
+            // Show previous content while filtering (smooth transition) — only when not in filter mode with zero results
             LazyVStack(spacing: 12) {
                 ForEach(previousContentBeforeFilter) { item in
                     contentCard(for: item)
@@ -5666,12 +5655,9 @@ struct ChannelDetailView: View {
             loadingView
         } else if hasLoadedOnce {
             // Show empty state if we've loaded at least once (even if other view has content)
-            // For Twilly TV, if one view is empty but the other has content, still show empty state
-            // This prevents showing loading spinner when we know the current view is empty
             emptyStateView
         } else {
             // Fallback: Show loading only if we haven't loaded yet
-            // This handles the initial load state
             loadingView
         }
     }
@@ -6013,6 +5999,25 @@ struct ChannelDetailView: View {
                 .padding(.horizontal)
         }
         .padding(.top, 40)
+    }
+    
+    /// Shown when "My" filter is on but there are no videos from the user to edit.
+    private var filterEmptyStateView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "person.crop.rectangle.stack")
+                .font(.system(size: 40))
+                .foregroundColor(.white.opacity(0.5))
+            Text("No Videos From You")
+                .font(.headline)
+                .foregroundColor(.white)
+            Text("You don't have any videos on this timeline to edit. Turn off the filter to see all content.")
+                .font(.subheadline)
+                .foregroundColor(.white.opacity(0.7))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
     }
     
     private var emptyStateView: some View {
@@ -6638,9 +6643,10 @@ struct ChannelDetailView: View {
                 toggleFavorite(for: item)
             },
             showPrivateContent: showPrivateContent,
-            onRemindMe: (item.status == "HELD" && item.scheduledDropDate != nil) ? {
+            onRemindMe: nil, // Remind me removed for now
+            onUnschedule: (isOwnContent && item.status == "HELD" && item.scheduledDropDate != nil) ? {
                 Task {
-                    await optInReminderFor(item)
+                    await unscheduleDrop(item)
                 }
             } : nil
         )
@@ -6656,6 +6662,25 @@ struct ChannelDetailView: View {
               let premiereAt = ISO8601DateFormatter().date(from: dateString) else { return }
         await ChannelService.shared.optInDropReminder(contentId: item.SK, viewerEmail: email, premiereAt: premiereAt)
         TwillyAnalyticsService.shared.trackReminderOptIn(dropId: item.SK, premiereAt: premiereAt)
+    }
+    
+    /// Exit schedule: release drop now (same behavior as tapping Schedule Drop off). Owner only.
+    private func unscheduleDrop(_ item: ChannelContent) async {
+        guard let userEmail = authService.userEmail else { return }
+        let fileId = item.SK.hasPrefix("FILE#") ? String(item.SK.dropFirst(5)) : item.SK
+        do {
+            _ = try await ChannelService.shared.updateFileDetails(
+                fileId: fileId,
+                userId: userEmail,
+                isVisible: true,
+                status: "PUBLISHED"
+            )
+            await MainActor.run {
+                NotificationCenter.default.post(name: NSNotification.Name("RefreshTwillyTVContent"), object: nil)
+            }
+        } catch {
+            print("⚠️ [ChannelDetailView] unscheduleDrop failed: \(error.localizedDescription)")
+        }
     }
     
     private func formatAirScheduleLabel(day: String, time: String) -> String {
@@ -6768,6 +6793,39 @@ struct ChannelDetailView: View {
         // Fallback to standard ISO8601 without fractional seconds
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from: dateString)
+    }
+    
+    /// Sorts content by timeline: createdAt (newest first), HELD uses only createdAt so premiere position is kept; tie-break HELD first.
+    /// Use whenever publicContent/privateContent are set or merged so toggling/merge doesn't show unsorted order.
+    private func sortContentByTimeline(_ items: [ChannelContent]) -> [ChannelContent] {
+        func parseDate(_ dateString: String?) -> Date? {
+            guard let dateString = dateString, !dateString.isEmpty else { return nil }
+            let withFractional = ISO8601DateFormatter()
+            withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let withoutFractional = ISO8601DateFormatter()
+            withoutFractional.formatOptions = [.withInternetDateTime]
+            if let date = withFractional.date(from: dateString) { return date }
+            if let date = withoutFractional.date(from: dateString) { return date }
+            return nil
+        }
+        return items.sorted { item1, item2 in
+            var date1: Date?
+            if let createdAt = item1.createdAt, !createdAt.isEmpty { date1 = parseDate(createdAt) }
+            else if item1.status != "HELD", let airdate = item1.airdate, !airdate.isEmpty { date1 = parseDate(airdate) }
+            else if item1.status == "HELD" && item1.scheduledDropDate != nil { date1 = Date() }
+            var date2: Date?
+            if let createdAt = item2.createdAt, !createdAt.isEmpty { date2 = parseDate(createdAt) }
+            else if item2.status != "HELD", let airdate = item2.airdate, !airdate.isEmpty { date2 = parseDate(airdate) }
+            else if item2.status == "HELD" && item2.scheduledDropDate != nil { date2 = Date() }
+            if let d1 = date1, let d2 = date2 {
+                if d1 != d2 { return d1 > d2 }
+                if item1.status == "HELD" && item2.status != "HELD" { return true }
+                if item1.status != "HELD" && item2.status == "HELD" { return false }
+            }
+            if date1 != nil && date2 == nil { return true }
+            if date1 == nil && date2 != nil { return false }
+            return item1.fileName > item2.fileName
+        }
     }
     
     private var loadingMoreIndicator: some View {
@@ -7052,10 +7110,10 @@ struct ChannelDetailView: View {
                     }
                 }.value
                 
-                // Update both public and private content arrays with deduplicated content
+                // Update both public and private content arrays with deduplicated content (sorted so order is stable)
                 await MainActor.run {
-                    publicContent = deduplicatedPublic
-                    privateContent = deduplicatedPrivate
+                    publicContent = sortContentByTimeline(deduplicatedPublic)
+                    privateContent = sortContentByTimeline(deduplicatedPrivate)
                     publicNextToken = bothViews.publicNextToken
                     privateNextToken = bothViews.privateNextToken
                     publicHasMore = bothViews.publicHasMore
@@ -7663,20 +7721,20 @@ struct ChannelDetailView: View {
                                         return true
                                     }
                                     
-                                    publicContent = deduplicatedPublic
-                                    privateContent = deduplicatedPrivate
+                                    publicContent = sortContentByTimeline(deduplicatedPublic)
+                                    privateContent = sortContentByTimeline(deduplicatedPrivate)
                                     publicNextToken = bothViews.publicNextToken
                                     privateNextToken = bothViews.privateNextToken
                                     publicHasMore = bothViews.publicHasMore
                                     privateHasMore = bothViews.privateHasMore
                                     
-                                    // Update current view - use deduplicated arrays (not raw filtered)
+                                    // Update current view - use sorted arrays
                                     if showPrivateContent {
-                                        content = deduplicatedPrivate
+                                        content = privateContent
                                         nextToken = privateNextToken
                                         hasMoreContent = privateHasMore
                                     } else {
-                                        content = deduplicatedPublic
+                                        content = publicContent
                                         nextToken = publicNextToken
                                         hasMoreContent = publicHasMore
                                     }
@@ -7887,21 +7945,21 @@ struct ChannelDetailView: View {
                                     return true
                                 }
                                 
-                                publicContent = deduplicatedPublic
-                                privateContent = deduplicatedPrivate
+                                publicContent = sortContentByTimeline(deduplicatedPublic)
+                                privateContent = sortContentByTimeline(deduplicatedPrivate)
                                 publicNextToken = bothViews.publicNextToken
                                 privateNextToken = bothViews.privateNextToken
                                 publicHasMore = bothViews.publicHasMore
                                 privateHasMore = bothViews.privateHasMore
                                 bothViewsLoaded = true
                                 
-                                // Set current content based on showPrivateContent - use deduplicated arrays (not raw filtered)
+                                // Set current content based on showPrivateContent - use sorted arrays
                                 if showPrivateContent {
-                                    content = deduplicatedPrivate
+                                    content = privateContent
                                     nextToken = privateNextToken
                                     hasMoreContent = privateHasMore
                                 } else {
-                                    content = deduplicatedPublic
+                                    content = publicContent
                                     nextToken = publicNextToken
                                     hasMoreContent = publicHasMore
                                 }
@@ -8072,11 +8130,11 @@ struct ChannelDetailView: View {
                 return true
             }
             
-            // Update public and private arrays
+            // Update public and private arrays (always store sorted so toggling/merge never shows unsorted order)
             if replaceLocal {
-                // Replace entire arrays with deduplicated items
-                publicContent = deduplicatedPublicItems
-                privateContent = deduplicatedPrivateItems
+                // Replace entire arrays with deduplicated items, then sort by timeline
+                publicContent = sortContentByTimeline(deduplicatedPublicItems)
+                privateContent = sortContentByTimeline(deduplicatedPrivateItems)
             } else {
                 // Merge with existing, removing duplicates using Set for O(1) lookup
                 // CRITICAL: Check against BOTH arrays to prevent cross-contamination
@@ -8113,6 +8171,9 @@ struct ChannelDetailView: View {
                         print("⚠️ [ChannelDetailView] Removing duplicate private item during merge (already exists): \(item.fileName) (SK: \(item.SK))")
                     }
                 }
+                // Keep arrays sorted after merge so displayed order is stable
+                publicContent = sortContentByTimeline(publicContent)
+                privateContent = sortContentByTimeline(privateContent)
             }
                 
             // CRITICAL: Only update current view content if we're replacing or if content is empty
@@ -8342,68 +8403,53 @@ struct ChannelDetailView: View {
             print("🔄 [ChannelDetailView] Deduplicated: \(contentToShow.count) → \(deduplicatedContent.count) items")
         }
         
-        // Sort by airdate/createdAt (newest first) - match managefiles.vue: .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-        // CRITICAL: Sort by airdate first (if available), then createdAt, to match backend sorting
-        // Create date formatters once (outside the sorted closure for efficiency)
+        // Sort by when the post was created/streamed (newest first) — so last streamed stays on top until something new overtakes it
+        // CRITICAL: Use createdAt/timestamp first (when the drop was made), NOT airdate — so a premiere keeps its place until a newer stream appears
         let dateFormatterWithFractional = ISO8601DateFormatter()
         dateFormatterWithFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         
         let dateFormatterWithoutFractional = ISO8601DateFormatter()
         dateFormatterWithoutFractional.formatOptions = [.withInternetDateTime]
         
-        // Helper function to parse date from string (try multiple formats)
         func parseDate(_ dateString: String?) -> Date? {
             guard let dateString = dateString, !dateString.isEmpty else { return nil }
-            
-            // Try with fractional seconds first
-            if let date = dateFormatterWithFractional.date(from: dateString) {
-                return date
-            }
-            // Try without fractional seconds
-            if let date = dateFormatterWithoutFractional.date(from: dateString) {
-                return date
-            }
-            // Try standard date formatter as last resort
+            if let date = dateFormatterWithFractional.date(from: dateString) { return date }
+            if let date = dateFormatterWithoutFractional.date(from: dateString) { return date }
             let standardFormatter = DateFormatter()
             standardFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZ"
-            if let date = standardFormatter.date(from: dateString) {
-                return date
-            }
+            if let date = standardFormatter.date(from: dateString) { return date }
             standardFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
-            if let date = standardFormatter.date(from: dateString) {
-                return date
-            }
+            if let date = standardFormatter.date(from: dateString) { return date }
             return nil
         }
         
         let sortedContent = deduplicatedContent.sorted { item1, item2 in
-            // Priority 1: Use airdate if available (matches backend sorting)
+            // Priority 1: createdAt (when the post was streamed/created) — keeps last streamed (including premiere) on top
+            // For HELD (premiere), use only createdAt — never airdate/scheduledDropDate for sort (keeps position)
             var date1: Date?
-            if let airdate = item1.airdate, !airdate.isEmpty {
-                date1 = parseDate(airdate)
-            } else if let createdAt = item1.createdAt, !createdAt.isEmpty {
+            if let createdAt = item1.createdAt, !createdAt.isEmpty {
                 date1 = parseDate(createdAt)
+            } else if item1.status != "HELD", let airdate = item1.airdate, !airdate.isEmpty {
+                date1 = parseDate(airdate)
+            } else if item1.status == "HELD" && item1.scheduledDropDate != nil {
+                date1 = Date() // Premiere with no createdAt: treat as newest so it stays on top
             }
-            
             var date2: Date?
-            if let airdate = item2.airdate, !airdate.isEmpty {
-                date2 = parseDate(airdate)
-            } else if let createdAt = item2.createdAt, !createdAt.isEmpty {
+            if let createdAt = item2.createdAt, !createdAt.isEmpty {
                 date2 = parseDate(createdAt)
+            } else if item2.status != "HELD", let airdate = item2.airdate, !airdate.isEmpty {
+                date2 = parseDate(airdate)
+            } else if item2.status == "HELD" && item2.scheduledDropDate != nil {
+                date2 = Date()
             }
-            
-            // If both have dates, compare them (newer first = descending order)
             if let d1 = date1, let d2 = date2 {
-                return d1 > d2
+                if d1 != d2 { return d1 > d2 }
+                // Same date: keep premieres (HELD) on top
+                if item1.status == "HELD" && item2.status != "HELD" { return true }
+                if item1.status != "HELD" && item2.status == "HELD" { return false }
             }
-            // If only one has a date, prioritize it (items with dates come first)
-            if date1 != nil && date2 == nil {
-                return true
-            }
-            if date1 == nil && date2 != nil {
-                return false
-            }
-            // If neither has a date, use fileName as fallback
+            if date1 != nil && date2 == nil { return true }
+            if date1 == nil && date2 != nil { return false }
             return item1.fileName > item2.fileName
         }
         
@@ -8420,9 +8466,8 @@ struct ChannelDetailView: View {
             // This ensures we filter from the FULL arrays that include all owner videos
             let sourceArray = showPrivateContent ? privateContent : publicContent
             
-            // Sort the source array the same way as sortedContent
+            // Sort by createdAt first (when streamed) so last streamed / premiere stays on top
             let sortedSource = sourceArray.sorted { item1, item2 in
-                // Use same sorting logic as sortedContent
                 func parseDate(_ dateString: String?) -> Date? {
                     guard let dateString = dateString, !dateString.isEmpty else { return nil }
                     let dateFormatterWithFractional = ISO8601DateFormatter()
@@ -8433,23 +8478,19 @@ struct ChannelDetailView: View {
                     if let date = dateFormatterWithoutFractional.date(from: dateString) { return date }
                     return nil
                 }
-                
+                // For HELD (premiere), use only createdAt; never airdate for sort so position is kept
                 var date1: Date?
-                if let airdate = item1.airdate, !airdate.isEmpty {
-                    date1 = parseDate(airdate)
-                } else if let createdAt = item1.createdAt, !createdAt.isEmpty {
-                    date1 = parseDate(createdAt)
-                }
-                
+                if let createdAt = item1.createdAt, !createdAt.isEmpty { date1 = parseDate(createdAt) }
+                else if item1.status != "HELD", let airdate = item1.airdate, !airdate.isEmpty { date1 = parseDate(airdate) }
+                else if item1.status == "HELD" && item1.scheduledDropDate != nil { date1 = Date() }
                 var date2: Date?
-                if let airdate = item2.airdate, !airdate.isEmpty {
-                    date2 = parseDate(airdate)
-                } else if let createdAt = item2.createdAt, !createdAt.isEmpty {
-                    date2 = parseDate(createdAt)
-                }
-                
+                if let createdAt = item2.createdAt, !createdAt.isEmpty { date2 = parseDate(createdAt) }
+                else if item2.status != "HELD", let airdate = item2.airdate, !airdate.isEmpty { date2 = parseDate(airdate) }
+                else if item2.status == "HELD" && item2.scheduledDropDate != nil { date2 = Date() }
                 if let d1 = date1, let d2 = date2 {
-                    return d1 > d2
+                    if d1 != d2 { return d1 > d2 }
+                    if item1.status == "HELD" && item2.status != "HELD" { return true }
+                    if item1.status != "HELD" && item2.status == "HELD" { return false }
                 }
                 if date1 != nil && date2 == nil { return true }
                 if date1 == nil && date2 != nil { return false }
@@ -10363,6 +10404,7 @@ struct ContentCard: View {
     let onFavorite: (() -> Void)? // Favorite toggle callback
     let showPrivateContent: Bool // Whether we're in private view (to show lock icon for all private videos)
     let onRemindMe: (() -> Void)? // Remind me for scheduled Drop (blueprint)
+    let onUnschedule: (() -> Void)? // Tap airtime to exit schedule (release now) — same as toggling off Schedule Drop
     
     @State private var videoDuration: TimeInterval? = nil
     @State private var isLoadingDuration = false
@@ -10439,7 +10481,7 @@ struct ContentCard: View {
         return formatter.date(from: dateString)
     }
     
-    init(content: ChannelContent, onTap: @escaping () -> Void, onPlay: (() -> Void)? = nil, isLocalVideo: Bool = false, isUploadComplete: Bool = false, isPollingForThumbnail: Bool = false, channelCreatorUsername: String = "", channelCreatorEmail: String = "", isLatestContent: Bool = false, airScheduleLabel: String? = nil, showDeleteButton: Bool = false, onDelete: (() -> Void)? = nil, showEditButton: Bool = false, onEdit: (() -> Void)? = nil, isOwnContent: Bool = false, isFavorite: Bool = false, onFavorite: (() -> Void)? = nil, showPrivateContent: Bool = false, onRemindMe: (() -> Void)? = nil) {
+    init(content: ChannelContent, onTap: @escaping () -> Void, onPlay: (() -> Void)? = nil, isLocalVideo: Bool = false, isUploadComplete: Bool = false, isPollingForThumbnail: Bool = false, channelCreatorUsername: String = "", channelCreatorEmail: String = "", isLatestContent: Bool = false, airScheduleLabel: String? = nil, showDeleteButton: Bool = false, onDelete: (() -> Void)? = nil, showEditButton: Bool = false, onEdit: (() -> Void)? = nil, isOwnContent: Bool = false, isFavorite: Bool = false, onFavorite: (() -> Void)? = nil, showPrivateContent: Bool = false, onRemindMe: (() -> Void)? = nil, onUnschedule: (() -> Void)? = nil) {
         self.content = content
         self.onTap = onTap
         self.onPlay = onPlay
@@ -10459,6 +10501,7 @@ struct ContentCard: View {
         self.onFavorite = onFavorite
         self.showPrivateContent = showPrivateContent
         self.onRemindMe = onRemindMe
+        self.onUnschedule = onUnschedule
     }
     
     var body: some View {
@@ -10555,17 +10598,34 @@ struct ContentCard: View {
                         // Thumbnail with favorite button overlay
                         ZStack(alignment: .topTrailing) {
                         // Thumbnail - maintain aspect ratio for portrait videos
+                        // Premiere/scheduled: default thumbnail until real one replaces it at airdate
                         ZStack {
-                            AsyncImage(url: URL(string: content.thumbnailUrl ?? "")) { phase in
-                                switch phase {
-                                case .success(let image):
-                                    image
-                                        .resizable()
-                                        .aspectRatio(contentMode: .fill)
-                                case .failure(_), .empty:
-                                    thumbnailPlaceholderView
-                                @unknown default:
-                                    thumbnailPlaceholderView
+                            if isScheduled && (content.thumbnailUrl == nil || (content.thumbnailUrl ?? "").trimmingCharacters(in: .whitespaces).isEmpty) {
+                                premiereThumbnailPlaceholderView
+                            } else {
+                                AsyncImage(url: URL(string: content.thumbnailUrl ?? "")) { phase in
+                                    switch phase {
+                                    case .success(let image):
+                                        image
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fill)
+                                    case .failure(_), .empty:
+                                        Group {
+                                            if isScheduled {
+                                                premiereThumbnailPlaceholderView
+                                            } else {
+                                                thumbnailPlaceholderView
+                                            }
+                                        }
+                                    @unknown default:
+                                        Group {
+                                            if isScheduled {
+                                                premiereThumbnailPlaceholderView
+                                            } else {
+                                                thumbnailPlaceholderView
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             
@@ -10661,14 +10721,18 @@ struct ContentCard: View {
                                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading) // Allow HStack to take available space
                             }
                             
-                            // Video duration and comment count
+                            // Video duration and comment count (same for premiere and non-premiere: show length)
                             VStack(alignment: .leading, spacing: 4) {
-                                // Duration
+                                // Duration (stream length) — same for all items including premieres
                                 HStack(spacing: 4) {
                                     Image(systemName: "clock.fill")
                                         .font(.system(size: 10))
                                         .foregroundColor(.white.opacity(0.7))
-                                    if isLoadingDuration {
+                                    if let durationSeconds = content.durationSeconds, durationSeconds > 0 {
+                                        Text(formatDuration(durationSeconds))
+                                            .font(.caption)
+                                            .foregroundColor(.white.opacity(0.7))
+                                    } else if isLoadingDuration {
                                         ProgressView()
                                             .scaleEffect(0.7)
                                             .tint(.white.opacity(0.7))
@@ -10829,24 +10893,34 @@ struct ContentCard: View {
                 .buttonStyle(PlainButtonStyle())
             }
             .padding()
-            .background(Color.white.opacity(0.1))
+            .background(isScheduled ? Color.twillyTeal.opacity(0.08) : Color.white.opacity(0.1))
             .cornerRadius(12)
             .overlay(
                 RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                    .stroke(isScheduled ? Color.twillyTeal.opacity(0.5) : Color.white.opacity(0.2), lineWidth: isScheduled ? 1.5 : 1)
             )
-            .opacity(isScheduled ? 0.6 : 1.0)
+            .opacity(isScheduled ? 0.92 : 1.0)
             .overlay(alignment: .topLeading) {
                 HStack(spacing: 4) {
-                    // "NEW" badge for latest content
+                    // Tag for latest content: "Premiere" (teal) when scheduled, "NEW" (red) when already aired
                     if isLatestContent {
-                        Text("NEW")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(Color.red)
-                            .cornerRadius(4)
+                        if isScheduled {
+                            Text("Premiere")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(Color.twillyTeal)
+                                .cornerRadius(4)
+                        } else {
+                            Text("NEW")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(Color.red)
+                                .cornerRadius(4)
+                        }
                     }
                     
                     // MINE badge removed - filtering still works via isOwnContent
@@ -10854,59 +10928,66 @@ struct ContentCard: View {
                 .padding(8)
             }
             .overlay(alignment: .topTrailing) {
-                // Scheduled drop badge: "Airs [date]" — visible on Twilly TV until airdate
+                // Scheduled drop badge: "Airs [date]" — tappable for owner to exit schedule (release now), same as clicking Schedule Drop off
                 if isScheduled, let date = scheduledDate {
-                    HStack(spacing: 4) {
-                        Image(systemName: "calendar.badge.clock")
-                            .font(.system(size: 10))
-                        Text("Airs \(formatScheduledDate(date))")
-                            .font(.system(size: 10, weight: .semibold))
+                    Button(action: { onUnschedule?() }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "calendar.badge.clock")
+                                .font(.system(size: 10))
+                            Text("Airs \(formatScheduledDate(date))")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule()
+                                .fill(Color.twillyTeal.opacity(0.9))
+                        )
                     }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        Capsule()
-                            .fill(Color.twillyTeal.opacity(0.9))
-                    )
+                    .buttonStyle(PlainButtonStyle())
                     .padding(8)
                 }
             }
             .overlay {
-                // Overlay for scheduled content (like Netflix - prevents interaction)
+                // Light dim for scheduled/premiere (keeps card readable; Airs badge stays tappable)
                 if isScheduled {
-                    Color.black.opacity(0.3)
+                    Color.black.opacity(0.2)
                         .allowsHitTesting(false)
                 } else {
                     Color.clear
-                }
-            }
-            .overlay(alignment: .bottom) {
-                // Remind Me for scheduled Drops (blueprint) — above dim so button is tappable
-                if isScheduled, onRemindMe != nil, let date = scheduledDate {
-                    Button(action: { onRemindMe?() }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "bell.badge")
-                                .font(.system(size: 11))
-                            Text("Remind me")
-                                .font(.system(size: 12, weight: .medium))
-                        }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Capsule().fill(Color.twillyTeal.opacity(0.95)))
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                    .padding(12)
                 }
             }
     }
     
     private func formatScheduledDate(_ date: Date) -> String {
         let formatter = DateFormatter()
+        formatter.timeZone = TimeZone.current
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter.string(from: date)
+    }
+    
+    /// Default thumbnail for premiere/scheduled drops until real thumbnail replaces it at airdate
+    private var premiereThumbnailPlaceholderView: some View {
+        ZStack {
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color.twillyTeal.opacity(0.35),
+                    Color(white: 0.08)
+                ]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            VStack(spacing: 6) {
+                Image(systemName: "film.fill")
+                    .font(.system(size: 32))
+                    .foregroundColor(.twillyTeal.opacity(0.9))
+                Text("Premiere")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.9))
+            }
+        }
     }
     
     /// Offline/no-service-friendly thumbnail placeholder (dark + play icon instead of gray)

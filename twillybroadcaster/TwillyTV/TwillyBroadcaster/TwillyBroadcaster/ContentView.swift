@@ -141,7 +141,9 @@
         private let streamTimeLimit: TimeInterval = 15 * 60 // 15 minutes in seconds
         @State private var streamTimeLimitTimer: Timer? = nil // Timer for monitoring stream time limit
         
-        // Stream drop: post now vs schedule
+        // Stream drop: post now vs schedule (persisted so schedule is saved and used on stop)
+        private let schedulePostImmediatelyKey = "StreamSchedulePostImmediately"
+        private let scheduleDropDateKey = "StreamScheduleDropDate"
         @State private var postImmediately = true
         @State private var scheduledDropDate: Date? = nil
         @State private var showingDatePicker = false
@@ -170,6 +172,8 @@
             loadSavedVisibilityPreference()
             // Load premium enabled from UserDefaults
             loadPremiumEnabled()
+            // Load schedule preference so Schedule Drop choice and date are restored
+            loadSchedulePreference()
             Task {
                 await checkUserRole()
                 // Load visibility state from server when view appears (but use saved preference as default)
@@ -538,16 +542,26 @@
                                 if streamManager.isStreaming {
                                     // Stop streaming - will save to channel and show metadata form
                                     print("🛑 [ContentView] Stopping stream...")
-                                    // Capture schedule state and stream key before stopping (for convert-to-post / premiere)
+                                    // Use PERSISTED schedule state so schedule is always honored (in-memory can be lost when UI is hidden during stream)
+                                    let postNow: Bool
+                                    let scheduledDate: Date?
+                                    if UserDefaults.standard.object(forKey: schedulePostImmediatelyKey) != nil {
+                                        postNow = UserDefaults.standard.bool(forKey: schedulePostImmediatelyKey)
+                                        scheduledDate = UserDefaults.standard.object(forKey: scheduleDropDateKey) as? Date
+                                    } else {
+                                        postNow = postImmediately
+                                        scheduledDate = scheduledDropDate
+                                    }
+                                    print("📅 [ContentView] Schedule for stop: postNow=\(postNow), scheduledDate=\(scheduledDate?.description ?? "nil")")
                                     let streamKey = streamManager.currentStreamKey
-                                    let postNow = postImmediately
-                                    let scheduledDate = scheduledDropDate
                                     let userEmail = authService.userEmail ?? ""
                                     // INSTANT: Update button state immediately
+                                    let durationSeconds = streamManager.recordingDuration
                                     streamManager.isStreaming = false
                                     streamManager.stopStreaming()
                                     // Tell backend to mark as post-now or scheduled (HELD) so premiere shows on timeline
                                     if let key = streamKey, !key.isEmpty, !userEmail.isEmpty {
+                                        let creatorEmail = twillyTVChannel?.creatorEmail ?? ""
                                         Task {
                                             do {
                                                 _ = try await ChannelService.shared.convertStreamToPost(
@@ -555,15 +569,41 @@
                                                     streamKey: key,
                                                     userEmail: userEmail,
                                                     postImmediately: postNow,
-                                                    scheduledDropDate: postNow ? nil : scheduledDate
+                                                    scheduledDropDate: postNow ? nil : scheduledDate,
+                                                    durationSeconds: durationSeconds > 0 ? durationSeconds : nil
                                                 )
+                                                // Invalidate Twilly TV content cache so next open/refresh shows new drop (HELD airdate or post-now)
+                                                await MainActor.run {
+                                                    ChannelService.shared.clearBothViewsCache(
+                                                        channelName: "Twilly TV",
+                                                        creatorEmail: creatorEmail,
+                                                        viewerEmail: userEmail.isEmpty ? nil : userEmail
+                                                    )
+                                                }
                                                 if !postNow, scheduledDate != nil {
                                                     print("📅 [ContentView] Scheduled drop sent to backend - premiere will show on timeline")
+                                                    await MainActor.run {
+                                                        NotificationCenter.default.post(name: NSNotification.Name("RefreshTwillyTVContent"), object: nil)
+                                                    }
+                                                }
+                                                // Clear schedule after stop so next stream defaults to Post Immediately
+                                                await MainActor.run {
+                                                    postImmediately = true
+                                                    scheduledDropDate = nil
+                                                    showingDatePicker = false
+                                                    saveSchedulePreference()
+                                                    print("📅 [ContentView] Schedule cleared after stop")
                                                 }
                                             } catch {
                                                 print("⚠️ [ContentView] convertStreamToPost failed: \(error.localizedDescription)")
                                             }
                                         }
+                                    } else {
+                                        // No stream key — still clear schedule for next time
+                                        postImmediately = true
+                                        scheduledDropDate = nil
+                                        showingDatePicker = false
+                                        saveSchedulePreference()
                                     }
                                 } else {
                                     // Cancel countdown if button is pressed during countdown
@@ -785,9 +825,10 @@
                                     scheduledDropDate = nil
                                     showingDatePicker = false
                                 } else {
-                                    scheduledDropDate = Date().addingTimeInterval(3600)
+                                    if scheduledDropDate == nil { scheduledDropDate = Date() }
                                     showingDatePicker = true
                                 }
+                                saveSchedulePreference()
                             }
                         }) {
                             HStack(spacing: 6) {
@@ -807,17 +848,40 @@
                             .cornerRadius(10)
                             .shadow(color: (streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.35), radius: 6, x: 0, y: 2)
                         }
+                        if !postImmediately, let date = scheduledDropDate {
+                            HStack(spacing: 4) {
+                                Image(systemName: "calendar.badge.clock")
+                                    .font(.system(size: 11))
+                                Text("Airs \(formatScheduleDate(date))")
+                                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                            }
+                            .foregroundColor(.white.opacity(0.95))
+                        }
                         if !postImmediately && showingDatePicker {
+                            VStack(spacing: 8) {
                             DatePicker(
                                 "Air time",
                                 selection: Binding(
-                                    get: { scheduledDropDate ?? Date().addingTimeInterval(3600) },
-                                    set: { scheduledDropDate = $0 }
+                                    get: { scheduledDropDate ?? Date() },
+                                    set: { newDate in scheduledDropDate = newDate; saveSchedulePreference() }
                                 ),
                                 displayedComponents: [.date, .hourAndMinute]
                             )
                             .datePickerStyle(.compact)
                             .accentColor(streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan)
+                            .padding(8)
+                            .background(Color.black.opacity(0.7))
+                            .cornerRadius(8)
+                                Button("Done") {
+                                    withAnimation { showingDatePicker = false }
+                                    saveSchedulePreference()
+                                }
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 6)
+                                .background(Capsule().fill((streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyTeal).opacity(0.9)))
+                            }
                             .padding(8)
                             .background(Color.black.opacity(0.7))
                             .cornerRadius(8)
@@ -869,6 +933,38 @@
         private func saveVisibilityPreference(_ isPublic: Bool) {
             UserDefaults.standard.set(isPublic, forKey: visibilityPreferenceKey)
             print("💾 [ContentView] Saved visibility preference: \(isPublic ? "public" : "private")")
+        }
+        
+        // Load schedule preference so Schedule Drop and date are restored (and used when stopping stream)
+        private func loadSchedulePreference() {
+            if UserDefaults.standard.object(forKey: schedulePostImmediatelyKey) != nil {
+                postImmediately = UserDefaults.standard.bool(forKey: schedulePostImmediatelyKey)
+            }
+            if let stored = UserDefaults.standard.object(forKey: scheduleDropDateKey) as? Date {
+                scheduledDropDate = stored
+                if !postImmediately {
+                    showingDatePicker = false
+                }
+            }
+            saveSchedulePreference()
+            print("✅ [ContentView] Loaded schedule: postImmediately=\(postImmediately), scheduledDropDate=\(scheduledDropDate?.description ?? "nil")")
+        }
+        
+        // No time restriction on scheduled air date. Timeline shows: if time reached → display as normal; if air date passed → treat as post automatically (isScheduled is false when scheduledDropDate <= now).
+        
+        // Save schedule so it persists and is used on stream stop.
+        private func saveSchedulePreference() {
+            UserDefaults.standard.set(postImmediately, forKey: schedulePostImmediatelyKey)
+            UserDefaults.standard.set(scheduledDropDate, forKey: scheduleDropDateKey)
+            print("💾 [ContentView] Saved schedule: postImmediately=\(postImmediately), scheduledDropDate=\(scheduledDropDate?.description ?? "nil")")
+        }
+        
+        private func formatScheduleDate(_ date: Date) -> String {
+            let formatter = DateFormatter()
+            formatter.timeZone = TimeZone.current
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .short
+            return formatter.string(from: date)
         }
         
         // Load premium enabled from UserDefaults

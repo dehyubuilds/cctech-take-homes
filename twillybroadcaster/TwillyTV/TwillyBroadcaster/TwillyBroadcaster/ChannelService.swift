@@ -110,6 +110,7 @@ struct ChannelContent: Identifiable, Codable {
     let isPremium: Bool?  // Whether this is premium content (requires payment)
     let status: String?  // e.g. "PUBLISHED", "HELD" (scheduled)
     let scheduledDropDate: String?  // ISO8601 when drop will air (if HELD)
+    let durationSeconds: Double?  // Video length in seconds (when available from backend; e.g. after processing or for premiere)
     // Local file URL for immediate display (before server processing)
     // Not part of Codable - only used for local display
     var localFileURL: URL? {
@@ -119,7 +120,7 @@ struct ChannelContent: Identifiable, Codable {
     private var _localFileURL: URL?
     var id: String { SK }
     // Custom init to support local files
-    init(SK: String, fileName: String, title: String? = nil, description: String? = nil, hlsUrl: String? = nil, thumbnailUrl: String? = nil, createdAt: String? = nil, isVisible: Bool? = nil, price: Double? = nil, category: String? = nil, uploadId: String? = nil, fileId: String? = nil, airdate: String? = nil, creatorUsername: String? = nil, isPrivateUsername: Bool? = nil, isPremium: Bool? = nil, status: String? = nil, scheduledDropDate: String? = nil, localFileURL: URL? = nil) {
+    init(SK: String, fileName: String, title: String? = nil, description: String? = nil, hlsUrl: String? = nil, thumbnailUrl: String? = nil, createdAt: String? = nil, isVisible: Bool? = nil, price: Double? = nil, category: String? = nil, uploadId: String? = nil, fileId: String? = nil, airdate: String? = nil, creatorUsername: String? = nil, isPrivateUsername: Bool? = nil, isPremium: Bool? = nil, status: String? = nil, scheduledDropDate: String? = nil, durationSeconds: Double? = nil, localFileURL: URL? = nil) {
         self.SK = SK
         self.fileName = fileName
         self.title = title
@@ -138,11 +139,12 @@ struct ChannelContent: Identifiable, Codable {
         self.isPremium = isPremium
         self.status = status
         self.scheduledDropDate = scheduledDropDate
+        self.durationSeconds = durationSeconds
         self._localFileURL = localFileURL
     }
     // Custom Codable implementation to exclude localFileURL
     enum CodingKeys: String, CodingKey {
-        case SK, fileName, title, description, hlsUrl, thumbnailUrl, createdAt, isVisible, price, category, uploadId, fileId, airdate, creatorUsername, isPrivateUsername, isPremium, status, scheduledDropDate
+        case SK, fileName, title, description, hlsUrl, thumbnailUrl, createdAt, isVisible, price, category, uploadId, fileId, airdate, creatorUsername, isPrivateUsername, isPremium, status, scheduledDropDate, durationSeconds
     }
 }
 
@@ -623,7 +625,8 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         description: String? = nil,
         price: Double? = nil,
         isVisible: Bool? = nil,
-        airdate: Date? = nil
+        airdate: Date? = nil,
+        status: String? = nil
     ) async throws -> UpdateDetailsResponse {
         guard let url = URL(string: "\(baseURL)/files/update-details") else {
             throw URLError(.badURL)
@@ -650,6 +653,9 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         }
         if let airdate = airdate {
             body["airdate"] = airdate.ISO8601Format()
+        }
+        if let status = status {
+            body["status"] = status
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await urlSession.data(for: request)
@@ -1347,7 +1353,7 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     description: description,
                     hlsUrl: itemDict["hlsUrl"] as? String,
                     thumbnailUrl: thumbnailUrl,
-                    createdAt: itemDict["createdAt"] as? String,
+                    createdAt: itemDict["createdAt"] as? String ?? itemDict["timestamp"] as? String,
                     isVisible: itemDict["isVisible"] as? Bool,
                     price: price,
                     category: itemDict["category"] as? String,
@@ -1358,7 +1364,8 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     isPrivateUsername: isPrivateUsername,
                     isPremium: isPremium,
                     status: itemDict["status"] as? String,
-                    scheduledDropDate: itemDict["scheduledDropDate"] as? String
+                    scheduledDropDate: itemDict["scheduledDropDate"] as? String,
+                    durationSeconds: (itemDict["durationSeconds"] as? NSNumber)?.doubleValue ?? (itemDict["duration"] as? NSNumber)?.doubleValue
                 )
             }
             print("📦 Parsed \(contents.count) content items")
@@ -1571,7 +1578,7 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     description: description,
                     hlsUrl: itemDict["hlsUrl"] as? String,
                     thumbnailUrl: thumbnailUrl,
-                    createdAt: itemDict["createdAt"] as? String,
+                    createdAt: itemDict["createdAt"] as? String ?? itemDict["timestamp"] as? String,
                     isVisible: itemDict["isVisible"] as? Bool,
                     price: price,
                     category: itemDict["category"] as? String,
@@ -1582,7 +1589,8 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     isPrivateUsername: isPrivateUsername,
                     isPremium: isPremium,
                     status: itemDict["status"] as? String,
-                    scheduledDropDate: itemDict["scheduledDropDate"] as? String
+                    scheduledDropDate: itemDict["scheduledDropDate"] as? String,
+                    durationSeconds: (itemDict["durationSeconds"] as? NSNumber)?.doubleValue ?? (itemDict["duration"] as? NSNumber)?.doubleValue
                 )
             }
         }
@@ -1745,7 +1753,7 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 description: description,
                 hlsUrl: itemDict["hlsUrl"] as? String,
                 thumbnailUrl: itemDict["thumbnailUrl"] as? String,
-                createdAt: itemDict["createdAt"] as? String,
+                createdAt: itemDict["createdAt"] as? String ?? itemDict["timestamp"] as? String,
                 isVisible: itemDict["isVisible"] as? Bool,
                 price: price,
                 category: itemDict["category"] as? String,
@@ -1756,7 +1764,8 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 isPrivateUsername: itemDict["isPrivateUsername"] as? Bool,
                 isPremium: itemDict["isPremium"] as? Bool,
                 status: itemDict["status"] as? String,
-                scheduledDropDate: itemDict["scheduledDropDate"] as? String
+                scheduledDropDate: itemDict["scheduledDropDate"] as? String,
+                durationSeconds: (itemDict["durationSeconds"] as? NSNumber)?.doubleValue ?? (itemDict["duration"] as? NSNumber)?.doubleValue
             )
         }
         print("📦 [ChannelService] GraphQL fetched \(contents.count) content items, nextToken: \(nextToken ?? "nil")")
@@ -2306,7 +2315,8 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
     // Convert recorded RTMP stream to channel post
     // Returns fileId if successful (for moving file to selected channel)
     // scheduledDropDate: when set (Schedule Drop), backend stores status=HELD so premiere shows on timeline as "Airs [date]"
-    func convertStreamToPost(channelName: String, streamKey: String, title: String? = nil, description: String? = nil, price: Double? = nil, userEmail: String, postImmediately: Bool = true, scheduledDropDate: Date? = nil) async throws -> String? {
+    // durationSeconds: stream length in seconds so premiere cards show video length
+    func convertStreamToPost(channelName: String, streamKey: String, title: String? = nil, description: String? = nil, price: Double? = nil, userEmail: String, postImmediately: Bool = true, scheduledDropDate: Date? = nil, durationSeconds: Double? = nil) async throws -> String? {
         guard let url = URL(string: "\(baseURL)/streams/convert-to-post") else {
             throw URLError(.badURL)
         }
@@ -2332,6 +2342,9 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             body["scheduledDropDate"] = formatter.string(from: date)
+        }
+        if let durationSeconds = durationSeconds, durationSeconds > 0 {
+            body["durationSeconds"] = durationSeconds
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await urlSession.data(for: request)
