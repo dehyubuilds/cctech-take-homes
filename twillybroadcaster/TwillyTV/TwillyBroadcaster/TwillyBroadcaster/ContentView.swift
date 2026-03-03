@@ -524,12 +524,12 @@
                     authenticatedControlsView
                 }
             }
-            .padding(.bottom, 12) // Same padding for both portrait and landscape - UI rotates automatically
+            .padding(.bottom, 12)
         }
         
         @ViewBuilder
         private var authenticatedControlsView: some View {
-            // Old working layout: VStack from bottom — button, visibility, Post Immediately, swipe (no .position)
+            // Layout: record button, visibility toggle, Post Immediately, swipe
             VStack(spacing: 12) {
                 HStack {
                     Spacer()
@@ -556,7 +556,8 @@
                                     let streamKey = streamManager.currentStreamKey
                                     let userEmail = authService.userEmail ?? ""
                                     // INSTANT: Update button state immediately
-                                    let durationSeconds = streamManager.recordingDuration
+                                    // Use RTMP stream duration for live streams; recordingDuration is only set for local recording (stays 0 for live)
+                                    let durationSeconds = streamManager.recordingDuration > 0 ? streamManager.recordingDuration : streamManager.duration
                                     streamManager.isStreaming = false
                                     streamManager.stopStreaming()
                                     // Tell backend to mark as post-now or scheduled (HELD) so premiere shows on timeline
@@ -572,14 +573,7 @@
                                                     scheduledDropDate: postNow ? nil : scheduledDate,
                                                     durationSeconds: durationSeconds > 0 ? durationSeconds : nil
                                                 )
-                                                // Invalidate Twilly TV content cache so next open/refresh shows new drop (HELD airdate or post-now)
-                                                await MainActor.run {
-                                                    ChannelService.shared.clearBothViewsCache(
-                                                        channelName: "Twilly TV",
-                                                        creatorEmail: creatorEmail,
-                                                        viewerEmail: userEmail.isEmpty ? nil : userEmail
-                                                    )
-                                                }
+                                                // Keep cache so Twilly TV opens instantly; refresh will merge new drop
                                                 if !postNow, scheduledDate != nil {
                                                     print("📅 [ContentView] Scheduled drop sent to backend - premiere will show on timeline")
                                                     await MainActor.run {
@@ -712,7 +706,7 @@
                 .frame(height: 85)
                 .padding(.horizontal, 20)
                 
-                // Visibility (or LIVE when streaming) — first row below button
+                // Visibility (or LIVE when streaming) — below record button, above Post Immediately
                 Group {
                     if streamManager.isStreaming {
                         VStack(spacing: 6) {
@@ -742,10 +736,10 @@
                         }
                         .allowsHitTesting(false)
                     } else {
-                        if isPremiumEnabled {
-                            // 3-state toggle: Public -> Private -> Premium -> Public
-                            Button(action: {
-                                withAnimation {
+                        // Public → Private → Premium toggle (icons only when Premium enabled; else Public/Lock only)
+                        Button(action: {
+                            withAnimation {
+                                if isPremiumEnabled {
                                     switch streamMode {
                                     case .public:
                                         streamMode = .private
@@ -757,18 +751,16 @@
                                         streamMode = .public
                                         streamModeIsPrivate = false
                                     }
+                                } else {
+                                    streamModeIsPrivate.toggle()
+                                    streamMode = streamModeIsPrivate ? .private : .public
                                 }
-                                // Update selectedStreamVisibility when toggle changes
                                 selectedStreamVisibility = streamMode.isPrivateUsername == false
                                 isUsernamePublic = streamMode.isPrivateUsername == false
-                            }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: streamMode.icon)
-                                        .font(.system(size: 14))
-                                    Text(streamMode.rawValue)
-                                        .font(.caption)
-                                        .fontWeight(.medium)
-                                }
+                            }
+                        }) {
+                            Image(systemName: streamMode.icon)
+                                .font(.system(size: 20))
                                 .foregroundColor(.white)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
@@ -779,43 +771,15 @@
                                 )
                                 .cornerRadius(10)
                                 .shadow(color: (streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.35), radius: 6, x: 0, y: 2)
-                            }
-                        } else {
-                            Button(action: {
-                                withAnimation {
-                                    streamModeIsPrivate.toggle()
-                                    streamMode = streamModeIsPrivate ? .private : .public
-                                }
-                                // Update selectedStreamVisibility when toggle changes
-                                selectedStreamVisibility = !streamModeIsPrivate // true = public, false = private
-                                isUsernamePublic = !streamModeIsPrivate
-                            }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: streamModeIsPrivate ? "lock.fill" : "lock.open.fill")
-                                        .font(.system(size: 14))
-                                    Text(streamModeIsPrivate ? "Private" : "Public")
-                                        .font(.caption)
-                                        .fontWeight(.medium)
-                                }
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background((streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.55))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .strokeBorder((streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.95), lineWidth: 1.5)
-                                )
-                                .cornerRadius(10)
-                                .shadow(color: (streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.35), radius: 6, x: 0, y: 2)
-                            }
                         }
+                        .buttonStyle(.plain)
                     }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 20)
                 .padding(.top, 4)
                 
-                // Post Immediately / Schedule Drop — below visibility (stacked, no .position)
+                // Post Immediately / Schedule Drop
                 if !streamManager.isStreaming {
                     VStack(spacing: 6) {
                         Button(action: {
@@ -862,9 +826,15 @@
                             DatePicker(
                                 "Air time",
                                 selection: Binding(
-                                    get: { scheduledDropDate ?? Date() },
-                                    set: { newDate in scheduledDropDate = newDate; saveSchedulePreference() }
+                                    get: { scheduledDropDate ?? Date().addingTimeInterval(5 * 60) },
+                                    set: { newDate in
+                                        // Only allow scheduling 5 minutes or more from now
+                                        let minimumScheduleDate = Date().addingTimeInterval(5 * 60)
+                                        scheduledDropDate = newDate < minimumScheduleDate ? minimumScheduleDate : newDate
+                                        saveSchedulePreference()
+                                    }
                                 ),
+                                in: Date().addingTimeInterval(5 * 60)...,
                                 displayedComponents: [.date, .hourAndMinute]
                             )
                             .datePickerStyle(.compact)
@@ -904,7 +874,7 @@
                     .padding(.horizontal, 20)
                 }
                 
-                // Swipe indicator at bottom (same position as old working version)
+                // Swipe indicator
                 swipeIndicator
                     .padding(.top, 8)
                     .padding(.bottom, 12)
@@ -1552,6 +1522,16 @@
                 .shadow(color: shadowColor.opacity(0.8), radius: 20, x: 0, y: 0)
                 .shadow(color: shadowColor.opacity(0.6), radius: 30, x: 0, y: 0)
                 .shadow(color: shadowColor.opacity(0.4), radius: 40, x: 0, y: 0)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(countdownBackgroundColor.opacity(0.85))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 20)
+                                .stroke(countdownStrokeColor.opacity(0.6), lineWidth: 1)
+                        )
+                )
                 .onAppear {
                     runner.onTimeExpired = onTimeExpired
                     if timeRemaining <= 0 {
@@ -1575,23 +1555,29 @@
         
         private var displaySeconds: TimeInterval { runner.displaySeconds }
         
+        /// Last 5 seconds: use urgent red/flash; otherwise normal gradient
         private var countdownColors: [Color] {
+            if displaySeconds <= 5 && displaySeconds > 0 {
+                return [Color.red, Color.orange]
+            }
+            if displaySeconds <= 0 {
+                return [Color.red, Color.red.opacity(0.8)]
+            }
             if displaySeconds < 60 {
-                // Less than 1 minute remaining - red/orange warning
                 return [Color.red, Color.orange]
             } else if streamMode == .premium {
-                // Premium mode - yellow gradient (matches stream button)
                 return [Color.yellow.opacity(0.9), Color.yellow]
             } else if isPrivate {
-                // Private mode - orange gradient (matches stream button)
                 return [Color.orange.opacity(0.9), Color.orange]
             } else {
-                // Public mode - teal/cyan gradient (matches stream button)
                 return [Color.twillyTeal, Color.twillyCyan]
             }
         }
         
         private var shadowColor: Color {
+            if displaySeconds <= 5 {
+                return Color.red
+            }
             if displaySeconds < 60 {
                 return Color.red
             } else if streamMode == .premium {
@@ -1601,6 +1587,21 @@
             } else {
                 return Color.twillyCyan
             }
+        }
+        
+        /// Background so countdown stands out; last 5 sec = red tint
+        private var countdownBackgroundColor: Color {
+            if displaySeconds <= 5 && displaySeconds > 0 {
+                return Color.black.opacity(0.75)
+            }
+            return Color.black.opacity(0.6)
+        }
+        
+        private var countdownStrokeColor: Color {
+            if displaySeconds <= 5 {
+                return Color.red
+            }
+            return Color.white.opacity(0.4)
         }
         
         private var countdownText: String {
