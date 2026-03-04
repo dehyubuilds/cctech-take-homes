@@ -90,6 +90,14 @@ lambda/*.zip
 !public/images/*.jpeg
 !public/images/*.gif
 !public/images/*.webp
+# Allow assets imported by Vue (required for build)
+!assets/
+!assets/*.png
+!assets/*.jpg
+!assets/*.jpeg
+!assets/*.gif
+!assets/*.webp
+!assets/*.svg
 
 # Executable files
 *.exe
