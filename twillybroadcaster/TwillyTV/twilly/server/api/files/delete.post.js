@@ -8,6 +8,7 @@ export default defineEventHandler(async (event) => {
         console.log('Request body:', body);
         
         const { userId, fileId, fileName, folderName } = body;
+        let actualSK = fileId; // may be resolved from timeline SK to FILE#id
 
         if (!userId || !fileId || !fileName) {
             console.error('Missing required parameters:', { userId, fileId, fileName });
@@ -74,32 +75,45 @@ export default defineEventHandler(async (event) => {
         }
 
         if (!fileResult.Item) {
-            // File already deleted or doesn't exist - return success (idempotent delete)
-            // This prevents errors when deleting files that were already removed (race conditions)
-            console.log('⚠️ File not found in database (may have already been deleted):', { userId, fileId, checkedAdminAccount: true });
-            console.log('   Returning success - delete operation is idempotent');
-            
-            // Still try to clean up S3 files if they exist (best effort)
-            // Extract owner email from userId
-            const ownerEmail = userId;
-            const s3DeletionPromises = [];
-            
-            // Try common S3 paths for this file
-            const possibleS3Paths = [
-                `clips/${fileId}`,
-                `clips/${fileId.replace('.m3u8', '')}`,
-                `public/videos/${ownerEmail}/${fileId}`,
-                `public/videos/${ownerEmail}/${fileId.replace('.m3u8', '')}`
-            ];
-            
-            // Note: We don't have the exact S3 path, so we'll just return success
-            // The file is already gone from DynamoDB, which is what matters
-            
-            return {
-                success: true,
-                message: 'File not found (may have already been deleted)',
-                alreadyDeleted: true
-            };
+            // Client may have sent a timeline SK (e.g. PUBLIC#timestamp#fileId#email) from older get-content response.
+            // Resolve to actual FILE#fileId and retry; always remove timeline entries so deleted items don't reappear.
+            let resolvedFileId = fileId;
+            const skParts = (fileId || '').split('#');
+            if (skParts.length >= 3 && ['PUBLIC', 'PRIVATE', 'PREMIUM'].includes((skParts[0] || '').toUpperCase())) {
+                const shortId = skParts[2];
+                resolvedFileId = shortId.startsWith('FILE#') ? shortId : `FILE#${shortId}`;
+                console.log('🔄 [delete] Resolving timeline SK to FILE id:', { original: fileId, resolved: resolvedFileId });
+                const retryUser = await dynamodb.get({
+                    TableName: 'Twilly',
+                    Key: { PK: `USER#${userId}`, SK: resolvedFileId }
+                }).promise();
+                const retryAdmin = !retryUser.Item ? await dynamodb.get({
+                    TableName: 'Twilly',
+                    Key: { PK: 'USER#dehyu.sinyan@gmail.com', SK: resolvedFileId }
+                }).promise() : { Item: null };
+                if (retryUser.Item || retryAdmin.Item) {
+                    fileResult = { Item: retryUser.Item || retryAdmin.Item };
+                    actualPK = retryUser.Item ? `USER#${userId}` : 'USER#dehyu.sinyan@gmail.com';
+                    actualSK = resolvedFileId;
+                }
+            }
+            if (!fileResult.Item) {
+                // Still not found - remove timeline entries so item stops reappearing; then return idempotent success
+                try {
+                    const { removeTimelineEntriesForFile } = await import('../channels/timeline-utils.js');
+                    const idForTimeline = (resolvedFileId || fileId).replace(/^FILE#/, '');
+                    await removeTimelineEntriesForFile(idForTimeline);
+                    await removeTimelineEntriesForFile(fileId);
+                } catch (timelineErr) {
+                    console.warn(`⚠️ [delete] Timeline cleanup on not-found: ${timelineErr.message}`);
+                }
+                console.log('⚠️ File not found in database (may have already been deleted):', { userId, fileId, checkedAdminAccount: true });
+                return {
+                    success: true,
+                    message: 'File not found (may have already been deleted)',
+                    alreadyDeleted: true
+                };
+            }
         }
 
         const fileData = fileResult.Item;
@@ -224,17 +238,17 @@ export default defineEventHandler(async (event) => {
             TableName: 'Twilly',
             Key: {
                 PK: actualPK,
-                SK: fileId
+                SK: actualSK
             }
         }).promise();
         
-        console.log(`✅ Deleted file from DynamoDB: PK=${actualPK}, SK=${fileId}`);
+        console.log(`✅ Deleted file from DynamoDB: PK=${actualPK}, SK=${actualSK}`);
 
         // CRITICAL: Remove ALL timeline entries (PUBLIC#, PRIVATE#, PREMIUM#) for this file across ALL users.
         // Otherwise the video can reappear in any timeline after delete.
         try {
             const { removeTimelineEntriesForFile } = await import('../channels/timeline-utils.js');
-            await removeTimelineEntriesForFile(fileId);
+            await removeTimelineEntriesForFile(actualSK);
         } catch (timelineErr) {
             console.warn(`⚠️ [delete] Timeline cleanup failed (non-blocking): ${timelineErr.message}`);
         }

@@ -789,9 +789,9 @@ export default defineEventHandler(async (event) => {
             const entryCreatorEmail = skParts.length > 3 ? skParts[3] : timelineEntry.creatorEmail;
             const creatorEmailForFile = entryCreatorEmail || timelineEntry.creatorEmail || creatorEmail;
             const timelineType = (timelineEntry.timelineType || (skParts[0] || 'PUBLIC')).toUpperCase();
+            // CRITICAL: Put PK/SK after spread so client receives normalized FILE#fileId (not timeline SK).
+            // Client uses SK as fileId for delete; backend expects FILE SK, not PUBLIC#timestamp#fileId#email.
             return {
-              PK: `USER#${creatorEmailForFile}`,
-              SK: `FILE#${fileId}`,
               ...timelineEntry,
               fileName: timelineEntry.fileName,
               folderName: timelineEntry.folderName || channelName,
@@ -802,13 +802,17 @@ export default defineEventHandler(async (event) => {
               streamerEmail: timelineEntry.streamerEmail || creatorEmailForFile,
               isTimelineEntry: true,
               timelineCreatorEmail: creatorEmailForFile,
-              timelineType
+              timelineType,
+              PK: `USER#${creatorEmailForFile}`,
+              SK: `FILE#${fileId}`
             };
           });
           console.log(`✅ [get-content] Isolated timeline query: ${allFiles.length} entries (${prefixes.join(', ')})`);
           }
         }
-        // Merge viewer's own FILEs (HELD/scheduled) that match current view - they may not be in timeline yet
+        // Merge viewer's own FILEs (HELD/scheduled) that match current view - they may not be in timeline yet.
+        // If a timeline entry already exists for the same SK, refresh it from the FILE so hlsUrl/thumbnailUrl
+        // are up to date (timeline entries are created at convert time and not updated when processing completes).
         if (viewerEmail) {
           try {
             const viewerFilesParams = {
@@ -824,18 +828,31 @@ export default defineEventHandler(async (event) => {
             const viewerFiles = viewerFilesResult.Items || [];
             const existingSKs = new Set(allFiles.map(f => f.SK));
             for (const file of viewerFiles) {
-              if (existingSKs.has(file.SK)) continue;
               const isPriv = isItemPrivate(file);
               const isPrem = file.isPremium === true || file.isPremium === 'true' || file.isPremium === 1;
               const fileTimelineType = isPrem ? 'PREMIUM' : (isPriv ? 'PRIVATE' : 'PUBLIC');
-              if (prefixes.includes(fileTimelineType)) {
-                allFiles.push({
-                  ...file,
-                  timelineType: fileTimelineType,
-                  isTimelineEntry: false
-                });
-                existingSKs.add(file.SK);
+              if (!prefixes.includes(fileTimelineType)) continue;
+              const fileSK = file.SK || `FILE#${(file.fileId || '').replace(/^FILE#/, '')}`;
+              if (existingSKs.has(fileSK)) {
+                // Refresh existing timeline entry with latest FILE data so processed streams show hlsUrl/thumbnailUrl
+                const idx = allFiles.findIndex(f => f.SK === fileSK);
+                if (idx !== -1) {
+                  allFiles[idx] = {
+                    ...allFiles[idx],
+                    hlsUrl: file.hlsUrl ?? allFiles[idx].hlsUrl,
+                    thumbnailUrl: file.thumbnailUrl ?? allFiles[idx].thumbnailUrl,
+                    isVisible: file.isVisible !== undefined ? file.isVisible : allFiles[idx].isVisible,
+                    fileName: file.fileName || allFiles[idx].fileName
+                  };
+                }
+                continue;
               }
+              allFiles.push({
+                ...file,
+                timelineType: fileTimelineType,
+                isTimelineEntry: false
+              });
+              existingSKs.add(fileSK);
             }
           } catch (e) {
             console.log(`⚠️ [get-content] Could not merge viewer FILEs: ${e.message}`);
