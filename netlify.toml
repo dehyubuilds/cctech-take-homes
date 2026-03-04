@@ -2,5 +2,4 @@
 [build]
   base = "twillybroadcaster/TwillyTV/twilly"
   command = "npm run build"
-  # Publish path from repo root so deploy finds build output
-  publish = "twillybroadcaster/TwillyTV/twilly/.output/public"
+  publish = ".output/public"
