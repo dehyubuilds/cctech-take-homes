@@ -108,7 +108,7 @@ struct ChannelDetailView: View {
     @State private var contentToDelete: ChannelContent? = nil // Content item to delete
     @State private var showingDeleteConfirmation = false // Show delete confirmation alert
     @State private var isDeleting = false // Whether delete is in progress
-    /// SKs of content deleted this session — never show again in any timeline (public/private/premium)
+    /// SKs of content deleted this session (used when removing from local caches; backend deletes FILE + timeline entries, cache is invalidated so next load is fresh)
     @State private var deletedContentSKs: Set<String> = []
     @State private var showingEditModal = false // Show edit modal
     @State private var editingContent: ChannelContent? = nil // Content being edited
@@ -1064,19 +1064,29 @@ struct ChannelDetailView: View {
             // NOT all videos in a channel owned by the viewer
             // Use class-level helper functions for consistency
             if isTwillyTV {
-                // CRITICAL: Filter from existing arrays directly (same logic as public view)
+                // CRITICAL: Filter from the correct timeline array — Public → owner's public; Private → owner's private; Premium → owner's premium
                 // Filter by creator username matching viewer username (normalized)
-                // This preserves order and is instant - no server refresh needed
-                if showPrivateContent {
-                    // Filter from privateContent array - preserve original order
-                    // Only include videos where creatorUsername (normalized) matches viewer username
+                if showPremiumContent {
+                    // Premium tab + My: only account owner's premium videos
+                    content = premiumContent.filter { item in
+                        let normalizedViewerUsername = normalizeViewerUsername(authService.username)
+                        let normalizedCreatorUsername = normalizeUsername(item.creatorUsername)
+                        if let viewerUsername = normalizedViewerUsername,
+                           let creatorUsername = normalizedCreatorUsername {
+                            return creatorUsername == viewerUsername
+                        }
+                        return false
+                    }
+                    nextToken = premiumNextToken
+                    hasMoreContent = premiumHasMore
+                } else if showPrivateContent {
+                    // Private tab + My: only account owner's private videos
                     let viewerUsernameRaw = authService.username
                     let normalizedViewerUsername = normalizeViewerUsername(viewerUsernameRaw)
                     
                     content = privateContent.filter { item in
                         let creatorUsernameRaw = item.creatorUsername
                         let normalizedCreatorUsername = normalizeUsername(creatorUsernameRaw)
-                        
                         let isMatch: Bool
                         if let viewerUsername = normalizedViewerUsername,
                            let creatorUsername = normalizedCreatorUsername {
@@ -1084,42 +1094,28 @@ struct ChannelDetailView: View {
                         } else {
                             isMatch = false
                         }
-                        
-                        // Debug logging for videos that should match but don't
                         if !isMatch && creatorUsernameRaw != nil {
                             let viewerLower = viewerUsernameRaw?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                             let creatorLower = creatorUsernameRaw?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                             if viewerLower.contains("twilly") && creatorLower.contains("twilly") {
-                                print("⚠️ [ChannelDetailView] My filter (handleFilterToggle): Video NOT matched")
-                                print("   Viewer username (raw): '\(viewerUsernameRaw ?? "nil")'")
-                                print("   Viewer username (normalized): '\(normalizedViewerUsername ?? "nil")'")
-                                print("   Creator username (raw): '\(creatorUsernameRaw ?? "nil")'")
-                                print("   Creator username (normalized): '\(normalizedCreatorUsername ?? "nil")'")
-                                print("   FileName: \(item.fileName)")
-                                print("   Category: \(item.category ?? "nil")")
-                                print("   isPrivateUsername: \(item.isPrivateUsername ?? false)")
+                                print("⚠️ [ChannelDetailView] My filter (handleFilterToggle): Video NOT matched (private)")
                             }
                         }
-                        
                         return isMatch
                     }
-                    // Keep same pagination tokens (filtered content uses same tokens)
                     nextToken = privateNextToken
                     hasMoreContent = privateHasMore
-                    } else {
-                    // Filter from publicContent array - preserve original order
-                    // Only include videos where creatorUsername (normalized) matches viewer username
+                } else {
+                    // Public tab + My: only account owner's public videos
                     content = publicContent.filter { item in
                         let normalizedViewerUsername = normalizeViewerUsername(authService.username)
                         let normalizedCreatorUsername = normalizeUsername(item.creatorUsername)
-                        
                         if let viewerUsername = normalizedViewerUsername,
                            let creatorUsername = normalizedCreatorUsername {
                             return creatorUsername == viewerUsername
                         }
                         return false
                     }
-                    // Keep same pagination tokens (filtered content uses same tokens)
                     nextToken = publicNextToken
                     hasMoreContent = publicHasMore
                 }
@@ -1131,7 +1127,8 @@ struct ChannelDetailView: View {
                     }
                 }
                 
-                print("⚡ [ChannelDetailView] Filtered to own content from \(showPrivateContent ? "private" : "public") array: \(content.count) items (preserved order, same as public view)")
+                let timelineName = showPremiumContent ? "premium" : (showPrivateContent ? "private" : "public")
+                print("⚡ [ChannelDetailView] Filtered to own content from \(timelineName) array: \(content.count) items (preserved order)")
             } else {
                 // For non-Twilly TV channels, filter from existing content
                 // Only include videos where creatorUsername (normalized) matches viewer username
@@ -1174,51 +1171,45 @@ struct ChannelDetailView: View {
             let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
             
             if isTwillyTV {
-                // INSTANT: Use cached arrays directly (like public view) - no filtering needed
-                // This preserves order and is instant
-                if showPrivateContent {
-                    // Use privateContent directly - same logic as public view
+                // INSTANT: Restore from the correct timeline cache — Public / Private / Premium
+                if showPremiumContent {
+                    if !premiumContent.isEmpty {
+                        content = premiumContent
+                        nextToken = premiumNextToken
+                        hasMoreContent = premiumHasMore
+                        if showFavoritesOnly {
+                            content = content.filter { favoriteContentIds.contains($0.SK) }
+                        }
+                        print("⚡ [ChannelDetailView] Instantly restored ALL premium content from cache: \(content.count) items")
+                    } else {
+                        print("⚠️ [ChannelDetailView] Premium cache empty, loading premium feed")
+                        loadPremiumContent()
+                    }
+                } else if showPrivateContent {
                     if !privateContent.isEmpty {
                         content = privateContent
                         nextToken = privateNextToken
                         hasMoreContent = privateHasMore
-                        
-                        // Apply favorites filter if active
                         if showFavoritesOnly {
-                            content = content.filter { item in
-                                favoriteContentIds.contains(item.SK)
-                            }
+                            content = content.filter { favoriteContentIds.contains($0.SK) }
                         }
-                        
-                        print("⚡ [ChannelDetailView] Instantly restored ALL private content from cache: \(content.count) items (preserved order)")
+                        print("⚡ [ChannelDetailView] Instantly restored ALL private content from cache: \(content.count) items")
                     } else {
-                        // Fallback: reload if cache is empty
                         print("⚠️ [ChannelDetailView] Private cache empty, reloading from server")
-                        Task {
-                            try? await refreshChannelContent()
-                        }
+                        Task { try? await refreshChannelContent() }
                     }
                 } else {
-                    // Use publicContent directly - already filtered and sorted
                     if !publicContent.isEmpty {
                         content = publicContent
                         nextToken = publicNextToken
                         hasMoreContent = publicHasMore
-                        
-                        // Apply favorites filter if active
                         if showFavoritesOnly {
-                            content = content.filter { item in
-                                favoriteContentIds.contains(item.SK)
-                            }
+                            content = content.filter { favoriteContentIds.contains($0.SK) }
                         }
-                        
-                        print("⚡ [ChannelDetailView] Instantly restored ALL public content from cache: \(content.count) items (preserved order)")
+                        print("⚡ [ChannelDetailView] Instantly restored ALL public content from cache: \(content.count) items")
                     } else {
-                        // Fallback: reload if cache is empty
                         print("⚠️ [ChannelDetailView] Public cache empty, reloading from server")
-                        Task {
-                            try? await refreshChannelContent()
-                        }
+                        Task { try? await refreshChannelContent() }
                     }
                 }
             } else {
@@ -1332,8 +1323,7 @@ struct ChannelDetailView: View {
                     forceRefresh: true
                 )
                 await MainActor.run {
-                    let filtered = result.content.filter { !deletedContentSKs.contains($0.SK) }
-                    premiumContent = filtered
+                    premiumContent = result.content
                     premiumNextToken = result.nextToken
                     premiumHasMore = result.hasMore
                     premiumLoaded = true
@@ -1370,13 +1360,17 @@ struct ChannelDetailView: View {
     
     private func applyFavoritesFilter() {
         if showFavoritesOnly {
-            // Filter to show only favorites based on current view (public or private)
+            // Filter to show only favorites from current timeline (public / private / premium)
             let sourceContent: [ChannelContent]
             if bothViewsLoaded && currentChannel.channelName.lowercased() == "twilly tv" {
-                // Use cached content for instant filtering
-                sourceContent = showPrivateContent ? privateContent : publicContent
+                if showPremiumContent {
+                    sourceContent = premiumContent
+                } else if showPrivateContent {
+                    sourceContent = privateContent
+                } else {
+                    sourceContent = publicContent
+                }
             } else {
-                // Fallback to current content
                 sourceContent = content
             }
             
@@ -1396,8 +1390,11 @@ struct ChannelDetailView: View {
         } else {
             // Restore content based on current filters
             if bothViewsLoaded && currentChannel.channelName.lowercased() == "twilly tv" {
-                // Use cached content
-                if showPrivateContent {
+                if showPremiumContent {
+                    content = premiumContent
+                    nextToken = premiumNextToken
+                    hasMoreContent = premiumHasMore
+                } else if showPrivateContent {
                     content = privateContent
                     nextToken = privateNextToken
                     hasMoreContent = privateHasMore
@@ -1406,15 +1403,10 @@ struct ChannelDetailView: View {
                     nextToken = publicNextToken
                     hasMoreContent = publicHasMore
                 }
-                
-                // Apply "my content" filter if active
                 if showOnlyOwnContent {
-                    content = content.filter { item in
-                        isOwnerVideo(item)
-                    }
+                    content = content.filter { isOwnerVideo($0) }
                 }
             } else {
-                // Fallback: reload if cache not available
                 Task {
                     try? await refreshChannelContent()
                 }
@@ -6674,6 +6666,7 @@ struct ChannelDetailView: View {
                 toggleFavorite(for: item)
             },
             showPrivateContent: showPrivateContent,
+            showPremiumContent: showPremiumContent,
             onRemindMe: (item.status == "HELD" && item.scheduledDropDate != nil) ? {
                 Task {
                     await optInReminderFor(item)
@@ -7169,48 +7162,53 @@ struct ChannelDetailView: View {
             print("💾 [ChannelDetailView] Cached unfiltered content for instant filter: \(cachedUnfilteredContent.count) items")
         }
         
-        // Filter from cached unfiltered content (or current content if cache is empty)
-        // BUT: For Twilly TV, use the correct source arrays (privateContent/publicContent)
+        // Filter from the correct timeline: Public / Private / Premium (owner filter per timeline)
         let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
         let sourceContent: [ChannelContent]
-        if isTwillyTV && bothViewsLoaded {
-            // Use the correct source array based on current view
-            sourceContent = showPrivateContent ? privateContent : publicContent
+        if isTwillyTV && (bothViewsLoaded || showPremiumContent) {
+            if showPremiumContent {
+                sourceContent = premiumContent
+            } else if showPrivateContent {
+                sourceContent = privateContent
+            } else {
+                sourceContent = publicContent
+            }
         } else {
             sourceContent = cachedUnfilteredContent.isEmpty ? content : cachedUnfilteredContent
         }
         
-        var filtered = sourceContent.filter { item in
-            let isPrivate = item.isPrivateUsername == true
-            let isOwner = isOwnerVideo(item)
-            if showPrivateContent {
-                // PRIVATE VIEW: Only actually-private videos (no owner public videos)
-                if !isPrivate {
-                    print("🚫 [ChannelDetailView] SECURITY: Blocking public item from private view in instant filter: \(item.fileName)")
+        var filtered: [ChannelContent]
+        if isTwillyTV && showPremiumContent {
+            // Premium tab: no visibility filter (already premium-only); just apply "My" if active
+            filtered = sourceContent
+        } else {
+            filtered = sourceContent.filter { item in
+                let isPrivate = item.isPrivateUsername == true
+                let isOwner = isOwnerVideo(item)
+                if showPrivateContent {
+                    if !isPrivate {
+                        print("🚫 [ChannelDetailView] SECURITY: Blocking public item from private view in instant filter: \(item.fileName)")
+                    }
+                    return isPrivate
+                } else {
+                    if isPrivate && !isOwner {
+                        print("🚫 [ChannelDetailView] SECURITY: Blocking private item from public view in instant filter: \(item.fileName)")
+                    }
+                    return !isPrivate || isOwner
                 }
-                return isPrivate
-            } else {
-                // PUBLIC VIEW: Include non-private items OR owner videos
-                if isPrivate && !isOwner {
-                    print("🚫 [ChannelDetailView] SECURITY: Blocking private item from public view in instant filter: \(item.fileName)")
-                }
-                return !isPrivate || isOwner
             }
         }
         
-        // Also apply "own content" filter if active
         if showOnlyOwnContent {
-            filtered = filtered.filter { item in
-                isOwnerVideo(item)
-            }
+            filtered = filtered.filter { isOwnerVideo($0) }
         }
         
-        // Only update content if we have results, otherwise keep previous content visible
         if !filtered.isEmpty {
             content = filtered
-            previousContentBeforeFilter = [] // Clear previous since we have new content
+            previousContentBeforeFilter = []
             hasConfirmedNoContent = false
-            print("⚡ [ChannelDetailView] Instantly filtered content by visibility: \(showPrivateContent ? "private" : "public")\(showOnlyOwnContent ? " + own" : "") - \(filtered.count) items")
+            let timelineName = showPremiumContent ? "premium" : (showPrivateContent ? "private" : "public")
+            print("⚡ [ChannelDetailView] Instantly filtered content: \(timelineName)\(showOnlyOwnContent ? " + own" : "") - \(filtered.count) items")
         } else {
             // Keep previous content visible while we check for more
             print("⚡ [ChannelDetailView] Filter resulted in empty, keeping previous content visible while checking...")
@@ -8001,9 +7999,6 @@ struct ChannelDetailView: View {
         // CRITICAL: Optimize for speed - process efficiently, update UI immediately
         let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
         
-        // CRITICAL: Never re-add deleted items (they must stay removed from all timelines)
-        let withoutDeleted = fetchedContent.filter { !deletedContentSKs.contains($0.SK) }
-        
         // CRITICAL: For Twilly TV, private and public are completely separate arrays
         // This function updates the arrays but only updates displayed content if it matches current view
         
@@ -8013,14 +8008,14 @@ struct ChannelDetailView: View {
             // Process filtering efficiently in one pass
             var publicItems: [ChannelContent] = []
             var privateItems: [ChannelContent] = []
-            publicItems.reserveCapacity(withoutDeleted.count)
-            privateItems.reserveCapacity(withoutDeleted.count)
+            publicItems.reserveCapacity(fetchedContent.count)
+            privateItems.reserveCapacity(fetchedContent.count)
             
             // CRITICAL: Deduplicate fetchedContent FIRST before splitting to prevent duplicates
             // Deduplicate by both SK and fileName (backend may return same fileName with different SKs)
             var seenSKs = Set<String>()
             var seenFileNames = Set<String>()
-            let deduplicatedFetchedContent = withoutDeleted.filter { item in
+            let deduplicatedFetchedContent = fetchedContent.filter { item in
                 // First check SK (most reliable)
                 if seenSKs.contains(item.SK) {
                     print("⚠️ [ChannelDetailView] Removing duplicate item before split (by SK): \(item.SK)")
@@ -8200,7 +8195,7 @@ struct ChannelDetailView: View {
         // This ensures the cache is always available for instant filtering
         if cachedUnfilteredContent.isEmpty || replaceLocal {
             // Merge all content (from API + existing) to build complete cache
-            var allContent = replaceLocal ? withoutDeleted : (cachedUnfilteredContent + withoutDeleted)
+            var allContent = replaceLocal ? fetchedContent : (cachedUnfilteredContent + fetchedContent)
             // Remove duplicates by SK
             var seenSKs = Set<String>()
             allContent = allContent.filter { item in
@@ -8220,7 +8215,7 @@ struct ChannelDetailView: View {
         // Check for duplicates (silently, only log if found)
         var seenIds = Set<String>()
         var duplicateIds: [String] = []
-        for item in withoutDeleted {
+        for item in fetchedContent {
             if seenIds.contains(item.id) {
                 duplicateIds.append(item.id)
             } else {
@@ -8234,7 +8229,7 @@ struct ChannelDetailView: View {
         // Check for duplicate fileNames
         var seenFileNames = Set<String>()
         var duplicateFileNames: [String] = []
-        for item in withoutDeleted {
+        for item in fetchedContent {
             if seenFileNames.contains(item.fileName) {
                 duplicateFileNames.append(item.fileName)
             } else {
@@ -8247,13 +8242,13 @@ struct ChannelDetailView: View {
         
         
         // Filter out duplicates and incomplete videos if we have a local video
-        var filteredFetchedContent = withoutDeleted
+        var filteredFetchedContent = fetchedContent
         
         if let localContent = localVideoContent {
             // CRITICAL: When we have a local video, hide ALL incomplete server videos (missing thumbnail OR HLS)
             // This prevents showing "gray loading" videos alongside the local video
             // Only show server videos that are FULLY processed (have both thumbnail AND HLS)
-            filteredFetchedContent = withoutDeleted.filter { serverItem in
+            filteredFetchedContent = fetchedContent.filter { serverItem in
                 // Check if this is a video
                 let isVideo = serverItem.category == "Videos"
                 
@@ -8293,8 +8288,8 @@ struct ChannelDetailView: View {
                 return true
             }
             
-            if withoutDeleted.count != filteredFetchedContent.count {
-                print("🔄 [ChannelDetailView] Filtered out \(withoutDeleted.count - filteredFetchedContent.count) incomplete/duplicate video(s) from server content")
+            if fetchedContent.count != filteredFetchedContent.count {
+                print("🔄 [ChannelDetailView] Filtered out \(fetchedContent.count - filteredFetchedContent.count) incomplete/duplicate video(s) from server content")
             }
         }
         
@@ -9165,7 +9160,14 @@ struct ChannelDetailView: View {
                             print("✅ [ChannelDetailView] Successfully deleted content: \(fileName)")
                         }
                         
-                        // CRITICAL: Track deleted SK so this item never reappears in any timeline (public/private/premium)
+                        // Backend deleted FILE + timeline entries; invalidate cache so next load gets fresh data
+                        if currentChannel.channelName.lowercased() == "twilly tv", let viewer = authService.userEmail {
+                            ChannelService.shared.clearBothViewsCache(
+                                channelName: currentChannel.channelName,
+                                creatorEmail: currentChannel.creatorEmail,
+                                viewerEmail: viewer
+                            )
+                        }
                         deletedContentSKs.insert(itemSK)
                         
                         // Remove from displayed content
@@ -9194,6 +9196,13 @@ struct ChannelDetailView: View {
                         
                         if isFileNotFound {
                             print("ℹ️ [ChannelDetailView] File not found (already deleted): \(fileName) - treating as success")
+                            if currentChannel.channelName.lowercased() == "twilly tv", let viewer = authService.userEmail {
+                                ChannelService.shared.clearBothViewsCache(
+                                    channelName: currentChannel.channelName,
+                                    creatorEmail: currentChannel.creatorEmail,
+                                    viewerEmail: viewer
+                                )
+                            }
                             deletedContentSKs.insert(itemSK)
                             content.removeAll { $0.id == itemId }
                             publicContent.removeAll { $0.SK == itemSK }
@@ -9225,6 +9234,13 @@ struct ChannelDetailView: View {
                     
                     if isFileNotFound {
                         print("ℹ️ [ChannelDetailView] File not found during delete (already deleted): \(fileName) - treating as success")
+                        if currentChannel.channelName.lowercased() == "twilly tv", let viewer = authService.userEmail {
+                            ChannelService.shared.clearBothViewsCache(
+                                channelName: currentChannel.channelName,
+                                creatorEmail: currentChannel.creatorEmail,
+                                viewerEmail: viewer
+                            )
+                        }
                         deletedContentSKs.insert(itemSK)
                         content.removeAll { $0.id == itemId }
                         publicContent.removeAll { $0.SK == itemSK }
@@ -10279,6 +10295,7 @@ struct ContentCard: View {
     let isFavorite: Bool // Whether this content is favorited
     let onFavorite: (() -> Void)? // Favorite toggle callback
     let showPrivateContent: Bool // Whether we're in private view (to show lock icon for all private videos)
+    let showPremiumContent: Bool // Whether we're in premium tab (premium timeline only; no private logic)
     let onRemindMe: (() -> Void)? // Remind me for scheduled Drop (blueprint)
     let onUnschedule: (() -> Void)? // Tap airtime to exit schedule (release now) — same as toggling off Schedule Drop
     
@@ -10357,7 +10374,7 @@ struct ContentCard: View {
         return formatter.date(from: dateString)
     }
     
-    init(content: ChannelContent, onTap: @escaping () -> Void, onPlay: (() -> Void)? = nil, isLocalVideo: Bool = false, isUploadComplete: Bool = false, isPollingForThumbnail: Bool = false, channelCreatorUsername: String = "", channelCreatorEmail: String = "", isLatestContent: Bool = false, airScheduleLabel: String? = nil, showDeleteButton: Bool = false, onDelete: (() -> Void)? = nil, showEditButton: Bool = false, onEdit: (() -> Void)? = nil, isOwnContent: Bool = false, isFavorite: Bool = false, onFavorite: (() -> Void)? = nil, showPrivateContent: Bool = false, onRemindMe: (() -> Void)? = nil, onUnschedule: (() -> Void)? = nil) {
+    init(content: ChannelContent, onTap: @escaping () -> Void, onPlay: (() -> Void)? = nil, isLocalVideo: Bool = false, isUploadComplete: Bool = false, isPollingForThumbnail: Bool = false, channelCreatorUsername: String = "", channelCreatorEmail: String = "", isLatestContent: Bool = false, airScheduleLabel: String? = nil, showDeleteButton: Bool = false, onDelete: (() -> Void)? = nil, showEditButton: Bool = false, onEdit: (() -> Void)? = nil, isOwnContent: Bool = false, isFavorite: Bool = false, onFavorite: (() -> Void)? = nil, showPrivateContent: Bool = false, showPremiumContent: Bool = false, onRemindMe: (() -> Void)? = nil, onUnschedule: (() -> Void)? = nil) {
         self.content = content
         self.onTap = onTap
         self.onPlay = onPlay
@@ -10376,6 +10393,7 @@ struct ContentCard: View {
         self.isFavorite = isFavorite
         self.onFavorite = onFavorite
         self.showPrivateContent = showPrivateContent
+        self.showPremiumContent = showPremiumContent
         self.onRemindMe = onRemindMe
         self.onUnschedule = onUnschedule
     }

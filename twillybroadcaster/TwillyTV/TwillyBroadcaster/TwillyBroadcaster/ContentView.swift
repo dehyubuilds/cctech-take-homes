@@ -732,71 +732,94 @@
                         .allowsHitTesting(false)
                     } else {
                         if isPremiumEnabled {
-                            // 3-state toggle: Public -> Private -> Premium -> Public
-                            Button(action: {
+                            // 3-state: Public -> Private -> Premium -> Public. Tap or swipe (left/right) to change.
+                            HStack(spacing: 4) {
+                                Image(systemName: streamMode.icon)
+                                    .font(.system(size: 14))
+                                Text(streamMode.rawValue)
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background((streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.55))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .strokeBorder((streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.95), lineWidth: 1.5)
+                            )
+                            .cornerRadius(10)
+                            .shadow(color: (streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.35), radius: 6, x: 0, y: 2)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
                                 withAnimation {
                                     switch streamMode {
-                                    case .public:
-                                        streamMode = .private
-                                        streamModeIsPrivate = true
-                                    case .private:
-                                        streamMode = .premium
-                                        streamModeIsPrivate = true
-                                    case .premium:
-                                        streamMode = .public
-                                        streamModeIsPrivate = false
+                                    case .public: streamMode = .private; streamModeIsPrivate = true
+                                    case .private: streamMode = .premium; streamModeIsPrivate = true
+                                    case .premium: streamMode = .public; streamModeIsPrivate = false
                                     }
+                                    selectedStreamVisibility = streamMode.isPrivateUsername == false
+                                    isUsernamePublic = streamMode.isPrivateUsername == false
                                 }
-                                // Update selectedStreamVisibility when toggle changes
-                                selectedStreamVisibility = streamMode.isPrivateUsername == false
-                                isUsernamePublic = streamMode.isPrivateUsername == false
-                            }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: streamMode.icon)
-                                        .font(.system(size: 14))
-                                    Text(streamMode.rawValue)
-                                        .font(.caption)
-                                        .fontWeight(.medium)
-                                }
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background((streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.55))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .strokeBorder((streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.95), lineWidth: 1.5)
-                                )
-                                .cornerRadius(10)
-                                .shadow(color: (streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.35), radius: 6, x: 0, y: 2)
                             }
+                            .gesture(
+                                DragGesture(minimumDistance: 25)
+                                    .onEnded { value in
+                                        let dx = value.translation.width
+                                        withAnimation {
+                                            if dx > 30 {
+                                                switch streamMode {
+                                                case .public: streamMode = .private; streamModeIsPrivate = true
+                                                case .private: streamMode = .premium; streamModeIsPrivate = true
+                                                case .premium: streamMode = .public; streamModeIsPrivate = false
+                                                }
+                                            } else if dx < -30 {
+                                                switch streamMode {
+                                                case .public: streamMode = .premium; streamModeIsPrivate = true
+                                                case .private: streamMode = .public; streamModeIsPrivate = false
+                                                case .premium: streamMode = .private; streamModeIsPrivate = true
+                                                }
+                                            }
+                                            selectedStreamVisibility = streamMode.isPrivateUsername == false
+                                            isUsernamePublic = streamMode.isPrivateUsername == false
+                                        }
+                                    }
+                            )
                         } else {
-                            Button(action: {
+                            // 2-state: Public <-> Private. Tap or swipe to toggle.
+                            HStack(spacing: 4) {
+                                Image(systemName: streamModeIsPrivate ? "lock.fill" : "lock.open.fill")
+                                    .font(.system(size: 14))
+                                Text(streamModeIsPrivate ? "Private" : "Public")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background((streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.55))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .strokeBorder((streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.95), lineWidth: 1.5)
+                            )
+                            .cornerRadius(10)
+                            .shadow(color: (streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.35), radius: 6, x: 0, y: 2)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
                                 withAnimation {
                                     streamModeIsPrivate.toggle()
                                     streamMode = streamModeIsPrivate ? .private : .public
+                                    selectedStreamVisibility = !streamModeIsPrivate
+                                    isUsernamePublic = !streamModeIsPrivate
                                 }
-                                // Update selectedStreamVisibility when toggle changes
-                                selectedStreamVisibility = !streamModeIsPrivate // true = public, false = private
-                                isUsernamePublic = !streamModeIsPrivate
-                            }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: streamModeIsPrivate ? "lock.fill" : "lock.open.fill")
-                                        .font(.system(size: 14))
-                                    Text(streamModeIsPrivate ? "Private" : "Public")
-                                        .font(.caption)
-                                        .fontWeight(.medium)
-                                }
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background((streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.55))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .strokeBorder((streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.95), lineWidth: 1.5)
-                                )
-                                .cornerRadius(10)
-                                .shadow(color: (streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.35), radius: 6, x: 0, y: 2)
                             }
+                            .gesture(
+                                DragGesture(minimumDistance: 25)
+                                    .onEnded { value in
+                                        if value.translation.width > 30 { if streamModeIsPrivate { withAnimation { streamModeIsPrivate = false; streamMode = .public; selectedStreamVisibility = true; isUsernamePublic = true } } }
+                                        else if value.translation.width < -30 { if !streamModeIsPrivate { withAnimation { streamModeIsPrivate = true; streamMode = .private; selectedStreamVisibility = false; isUsernamePublic = false } } }
+                                    }
+                            )
                         }
                     }
                 }
@@ -804,16 +827,32 @@
                 .padding(.horizontal, 20)
                 .padding(.top, 4)
                 
-                // Post Immediately / Schedule Drop — always visible (before and during stream) so user can set/change choice
+                // Post Immediately / Schedule Drop — tap or swipe to toggle
                 VStack(spacing: 6) {
-                    Button(action: {
+                    HStack(spacing: 6) {
+                        Image(systemName: postImmediately ? "paperplane.fill" : "calendar")
+                            .font(.system(size: 14, weight: .semibold))
+                        Text(postImmediately ? "Post Immediately" : "Schedule Drop")
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background((streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(postImmediately ? 0.5 : 0.65))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder((streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.95), lineWidth: 1.5)
+                    )
+                    .cornerRadius(10)
+                    .shadow(color: (streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.35), radius: 6, x: 0, y: 2)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
                         withAnimation {
                             postImmediately.toggle()
                             if postImmediately {
                                 scheduledDropDate = nil
                                 showingDatePicker = false
                             } else {
-                                // Switch to Schedule Drop: default to 1 hour from now so user can pick a clear air time
                                 if scheduledDropDate == nil {
                                     scheduledDropDate = Calendar.current.date(byAdding: .hour, value: 1, to: Date()) ?? Date()
                                 }
@@ -821,24 +860,27 @@
                             }
                             saveSchedulePreference()
                         }
-                    }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: postImmediately ? "paperplane.fill" : "calendar")
-                                .font(.system(size: 14, weight: .semibold))
-                            Text(postImmediately ? "Post Immediately" : "Schedule Drop")
-                                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background((streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(postImmediately ? 0.5 : 0.65))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10)
-                                .strokeBorder((streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.95), lineWidth: 1.5)
-                        )
-                        .cornerRadius(10)
-                        .shadow(color: (streamMode == .premium ? Color.yellow : streamModeIsPrivate ? Color.orange : Color.twillyCyan).opacity(0.35), radius: 6, x: 0, y: 2)
                     }
+                    .gesture(
+                        DragGesture(minimumDistance: 25)
+                            .onEnded { value in
+                                if abs(value.translation.width) > 30 {
+                                    withAnimation {
+                                        postImmediately.toggle()
+                                        if postImmediately {
+                                            scheduledDropDate = nil
+                                            showingDatePicker = false
+                                        } else {
+                                            if scheduledDropDate == nil {
+                                                scheduledDropDate = Calendar.current.date(byAdding: .hour, value: 1, to: Date()) ?? Date()
+                                            }
+                                            showingDatePicker = true
+                                        }
+                                        saveSchedulePreference()
+                                    }
+                                }
+                            }
+                    )
                     if !postImmediately, let date = scheduledDropDate {
                         Button(action: {
                             withAnimation { showingDatePicker = true }
@@ -1178,25 +1220,23 @@
                 }
                 
                 // CRITICAL: Set username type for this stream DURING COUNTDOWN (BEFORE stream starts)
-                // This ensures the global map is set BEFORE the RTMP connection is established
-                // Use the stream mode toggle (streamModeIsPrivate) - this is the primary source
-                let isPrivate = await MainActor.run { streamModeIsPrivate }
-                let streamIsPublic = !isPrivate
+                // Single source of truth: streamMode (Public / Private / Premium each have distinct backend flags)
+                let mode = await MainActor.run { streamMode }
+                let isPrivate = mode.isPrivateUsername
+                let isPremium = mode.isPremium
                 
                 // Get the actual username (e.g., "myusername" or "myusername🔒")
                 let baseUsername = authService.username ?? String(userEmail.split(separator: "@")[0])
                 let streamUsername = isPrivate ? "\(baseUsername)🔒" : baseUsername
                 
                 print("🔍 [ContentView] Setting stream privacy DURING COUNTDOWN (BEFORE stream starts)")
-                print("   StreamKey: \(streamKey)")
-                print("   isPrivateUsername: \(isPrivate)")
-                print("   StreamUsername: \(streamUsername)") // Log the actual username being used
+                print("   StreamKey: \(streamKey) mode=\(mode.rawValue) isPrivate=\(isPrivate) isPremium=\(isPremium)")
+                print("   StreamUsername: \(streamUsername)")
                 print("   This MUST complete before stream starts!")
                 
                 do {
                     // CRITICAL: This is BLOCKING - it will complete BEFORE the countdown continues
                     // The EC2 immediate endpoint call inside is also blocking, so global map is set instantly
-                    let isPremium = streamMode.isPremium
                     try await ChannelService.shared.setStreamUsernameType(
                         streamKey: streamKey,
                         isPrivateUsername: isPrivate,
@@ -1204,9 +1244,7 @@
                         isPremium: isPremium
                     )
                     print("✅ [ContentView] CRITICAL: Stream privacy set DURING COUNTDOWN - global map is ready!")
-                    print("   StreamKey: \(streamKey)")
-                    print("   isPrivateUsername: \(isPrivate)")
-                    print("   isPremium: \(isPremium)")
+                    print("   StreamKey: \(streamKey) mode=\(mode.rawValue) isPrivate=\(isPrivate) isPremium=\(isPremium)")
                     print("   StreamUsername: \(streamUsername)")
                     print("   Stream will start with correct privacy setting ✅")
                 } catch {
@@ -3001,15 +3039,16 @@
                 }
                 
                 // CRITICAL: Set username type for this stream BEFORE stream starts
-                // Use the stream mode toggle (streamModeIsPrivate)
-                let isPrivate = await MainActor.run { streamModeIsPrivate }
+                // Single source of truth: streamMode (Public / Private / Premium)
+                let mode = await MainActor.run { streamMode }
+                let isPrivate = mode.isPrivateUsername
+                let isPremium = mode.isPremium
                 let baseUsername = authService.username ?? String(userEmail.split(separator: "@")[0])
                 let streamUsername = isPrivate ? "\(baseUsername)🔒" : baseUsername
                 
                 do {
-                    let isPremium = streamMode.isPremium
                     try await ChannelService.shared.setStreamUsernameType(streamKey: streamKey, isPrivateUsername: isPrivate, streamUsername: streamUsername, isPremium: isPremium)
-                    print("✅ [ContentView] Stream privacy set for channel stream: isPrivate=\(isPrivate), isPremium=\(isPremium)")
+                    print("✅ [ContentView] Stream privacy set for channel stream: mode=\(mode.rawValue) isPrivate=\(isPrivate) isPremium=\(isPremium)")
                 } catch {
                     print("⚠️ [ContentView] Failed to set stream username type: \(error.localizedDescription)")
                 }
