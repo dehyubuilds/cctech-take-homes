@@ -1,0 +1,5 @@
+# Twilly.app: Nuxt app lives in twillybroadcaster/TwillyTV/twilly (repo root has no package.json)
+[build]
+  base = "twillybroadcaster/TwillyTV/twilly"
+  command = "npm run build"
+  publish = ".output/public"
