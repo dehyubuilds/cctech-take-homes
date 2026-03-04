@@ -83,6 +83,13 @@ lambda/*.zip
 *.bmp
 *.tiff
 *.webp
+# Allow public app assets (required for build, e.g. checkout page)
+!public/images/
+!public/images/*.png
+!public/images/*.jpg
+!public/images/*.jpeg
+!public/images/*.gif
+!public/images/*.webp
 
 # Executable files
 *.exe
