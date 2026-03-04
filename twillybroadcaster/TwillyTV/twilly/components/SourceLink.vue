@@ -97,7 +97,7 @@
 
 <script setup>
 import { Auth, Storage, Amplify } from "aws-amplify";
-import awsmobile from "../aws-exports";
+import awsmobile from "~/aws-exports";
 
 // Define reactive variables
 const messageContent = ref('');

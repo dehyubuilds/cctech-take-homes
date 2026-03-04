@@ -107,7 +107,7 @@
 <script setup>
 import { ref, watch } from "vue";
 import { Auth, Storage, Amplify } from "aws-amplify";
-import awsmobile from "../aws-exports";
+import awsmobile from "~/aws-exports";
 import { useTaskStore } from "~/stores/TaskStore";
 const taskStore = useTaskStore();
 

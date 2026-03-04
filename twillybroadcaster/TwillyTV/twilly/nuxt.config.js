@@ -1,4 +1,12 @@
 // nuxt.config.ts
+import { existsSync } from 'fs';
+import { resolve } from 'path';
+
+// Use env-based default when aws-exports.js is missing (e.g. Netlify); otherwise use Amplify-generated file
+const awsExportsPath = resolve(process.cwd(), 'aws-exports.js');
+const awsExportsDefaultPath = resolve(process.cwd(), 'aws-exports.default.js');
+const awsExportsResolve = existsSync(awsExportsPath) ? awsExportsPath : awsExportsDefaultPath;
+
 export default defineNuxtConfig({
     app: {
         head: {
@@ -17,7 +25,8 @@ export default defineNuxtConfig({
     },
     
     alias: {
-        "./runtimeConfig": "./runtimeConfig.browser"
+        "./runtimeConfig": "./runtimeConfig.browser",
+        "~/aws-exports": awsExportsResolve
     },
     vite: {
         define: {

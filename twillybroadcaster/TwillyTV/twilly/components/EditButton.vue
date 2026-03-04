@@ -45,7 +45,7 @@
 <script setup>
 import { ref, onMounted, watchEffect } from "vue";
 import { Auth, Storage, Amplify } from "aws-amplify";
-import awsmobile from "../aws-exports";
+import awsmobile from "~/aws-exports";
 
 Amplify.configure(awsmobile);
 
