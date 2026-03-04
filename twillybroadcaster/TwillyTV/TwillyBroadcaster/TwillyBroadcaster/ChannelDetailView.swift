@@ -82,7 +82,7 @@ struct ChannelDetailView: View {
     @State private var userPostAutomatically = false // Whether current user has post automatically enabled
     @State private var showOnlyOwnContent = false // Filter to show only user's own content
     @State private var showPrivateContent = false // Filter to show private content (default: show public)
-    @State private var showPremiumContent = false // Filter to show premium tab (Twilly TV)
+    @State private var showPremiumContent = false // Premium tab = premium timeline only (videos streamed to premium). No private logic.
     @State private var showFavoritesOnly = false // Filter to show only favorited content
     @State private var favoriteContentIds: Set<String> = [] // Set of favorited content SK IDs
     @State private var isFilteringContent = false // Loading state when filtering content
@@ -108,6 +108,8 @@ struct ChannelDetailView: View {
     @State private var contentToDelete: ChannelContent? = nil // Content item to delete
     @State private var showingDeleteConfirmation = false // Show delete confirmation alert
     @State private var isDeleting = false // Whether delete is in progress
+    /// SKs of content deleted this session — never show again in any timeline (public/private/premium)
+    @State private var deletedContentSKs: Set<String> = []
     @State private var showingEditModal = false // Show edit modal
     @State private var editingContent: ChannelContent? = nil // Content being edited
     @State private var editingTitle: String = "" // Title being edited
@@ -566,10 +568,9 @@ struct ChannelDetailView: View {
                                         if isPremium { return false }
                                         return !isPrivate || isOwner
                                     }
-                                    // Private tab: owner's private videos only (isPrivateUsername true); for others same (exclude premium)
+                                    // Private tab: only actually-private videos (no owner public videos), exclude premium
                                     let strictlyPrivate = bothViews.privateContent.filter { item in
                                         let isPrivate = item.isPrivateUsername == true
-                                        if isOwnerVideo(item) { return isPrivate }
                                         return isPrivate && item.isPremium != true
                                     }
                                     
@@ -1275,21 +1276,13 @@ struct ChannelDetailView: View {
         // Twilly TV: Public, Private, Premium — avoid no-op
         if toPremium == showPremiumContent && toPrivate == showPrivateContent { return }
         
-        // CRITICAL: Set tab state FIRST so any async load (loadContent/loadPremiumContent) sees correct tab
-        var transaction = Transaction(animation: .none)
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            showPrivateContent = toPrivate
-            showPremiumContent = toPremium
-        }
-        
-        // Set content from the correct source: Premium = dedicated API feed, Public/Private = cached arrays
+        // Set content from the correct source: Premium = dedicated API feed (Dynamo isPremium only), Public/Private = cached arrays
         if toPremium {
             content = premiumContent
             nextToken = premiumNextToken
             hasMoreContent = premiumHasMore
             if premiumContent.isEmpty && !premiumLoaded {
-                loadPremiumContent()  // Premium tab: load premium-only API, do NOT call loadContent (both views)
+                loadPremiumContent()
             }
         } else if toPrivate {
             content = privateContent
@@ -1309,9 +1302,13 @@ struct ChannelDetailView: View {
         hasLoadedOnce = true
         isLoading = false
         hasConfirmedNoContent = content.isEmpty
-        // Only call loadContent when NOT on Premium (loadContent fetches both views; Premium uses loadPremiumContent)
-        if content.isEmpty && !toPremium {
-            loadContent()
+        if content.isEmpty { loadContent() }
+        
+        var transaction = Transaction(animation: .none)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            showPrivateContent = toPrivate
+            showPremiumContent = toPremium
         }
         scrollToTopTrigger = UUID()
     }
@@ -1335,8 +1332,8 @@ struct ChannelDetailView: View {
                     forceRefresh: true
                 )
                 await MainActor.run {
-                    // Premium tab: only show items that are actually premium (never public/private)
-                    premiumContent = result.content.filter { $0.isPremium == true }
+                    let filtered = result.content.filter { !deletedContentSKs.contains($0.SK) }
+                    premiumContent = filtered
                     premiumNextToken = result.nextToken
                     premiumHasMore = result.hasMore
                     premiumLoaded = true
@@ -1345,9 +1342,6 @@ struct ChannelDetailView: View {
                         nextToken = premiumNextToken
                         hasMoreContent = premiumHasMore
                         hasConfirmedNoContent = false
-                    }
-                    if result.content.count != premiumContent.count {
-                        print("⚠️ [ChannelDetailView] Premium feed filtered out \(result.content.count - premiumContent.count) non-premium item(s)")
                     }
                     print("✅ [ChannelDetailView] Premium feed loaded from API: \(premiumContent.count) items")
                 }
@@ -1376,15 +1370,13 @@ struct ChannelDetailView: View {
     
     private func applyFavoritesFilter() {
         if showFavoritesOnly {
-            // Filter to show only favorites based on current view (public, private, or premium)
+            // Filter to show only favorites based on current view (public or private)
             let sourceContent: [ChannelContent]
             if bothViewsLoaded && currentChannel.channelName.lowercased() == "twilly tv" {
-                if showPremiumContent {
-                    sourceContent = premiumContent
-                } else {
-                    sourceContent = showPrivateContent ? privateContent : publicContent
-                }
+                // Use cached content for instant filtering
+                sourceContent = showPrivateContent ? privateContent : publicContent
             } else {
+                // Fallback to current content
                 sourceContent = content
             }
             
@@ -1402,13 +1394,10 @@ struct ChannelDetailView: View {
             content = filtered
             print("⭐ [ChannelDetailView] Filtered to favorites\(showOnlyOwnContent ? " + own" : ""): \(filtered.count) items")
         } else {
-            // Restore content based on current tab (public / private / premium)
+            // Restore content based on current filters
             if bothViewsLoaded && currentChannel.channelName.lowercased() == "twilly tv" {
-                if showPremiumContent {
-                    content = premiumContent
-                    nextToken = premiumNextToken
-                    hasMoreContent = premiumHasMore
-                } else if showPrivateContent {
+                // Use cached content
+                if showPrivateContent {
                     content = privateContent
                     nextToken = privateNextToken
                     hasMoreContent = privateHasMore
@@ -7054,11 +7043,10 @@ struct ChannelDetailView: View {
                     }
                 }.value
                 
-                // Private tab: owner's private videos only (isPrivateUsername true); for others only actually-private (exclude premium)
+                // Private tab: only actually-private videos (exclude premium; do not include owner's public videos)
                 let strictlyPrivate = await Task.detached(priority: .userInitiated) {
                     bothViews.privateContent.filter { item in
                         let isPrivate = item.isPrivateUsername == true
-                        if isOwnerVideo(item) { return isPrivate }
                         return isPrivate && item.isPremium != true
                     }
                 }.value
@@ -7676,10 +7664,9 @@ struct ChannelDetailView: View {
                                         if isPrivate { print("🚫 [ChannelDetailView] Filtering private from public: \(item.fileName)") }
                                         return !isPrivate
                                     }
-                                    // Private tab: owner's private videos only (isPrivateUsername true); for others only actually-private (exclude premium)
+                                    // Private tab: only actually-private, exclude premium
                                     let strictlyPrivate = bothViews.privateContent.filter { item in
                                         let isPrivate = item.isPrivateUsername == true
-                                        if isOwnerVideo(item) { return isPrivate }
                                         if !isPrivate { print("🚫 [ChannelDetailView] Filtering public from private: \(item.fileName)") }
                                         return isPrivate && item.isPremium != true
                                     }
@@ -7875,11 +7862,10 @@ struct ChannelDetailView: View {
                                 }
                             }.value
                             
-                            // Private tab: owner's private videos only (isPrivateUsername true); for others only actually-private (exclude premium)
+                            // Private tab: only actually-private videos (exclude premium; do not include owner's public videos)
                             let strictlyPrivate = await Task.detached(priority: .userInitiated) {
                                 bothViews.privateContent.filter { item in
                                     let isPrivate = item.isPrivateUsername == true
-                                    if isOwnerVideo(item) { return isPrivate }
                                     return isPrivate && item.isPremium != true
                                 }
                             }.value
@@ -8015,6 +8001,9 @@ struct ChannelDetailView: View {
         // CRITICAL: Optimize for speed - process efficiently, update UI immediately
         let isTwillyTV = currentChannel.channelName.lowercased() == "twilly tv"
         
+        // CRITICAL: Never re-add deleted items (they must stay removed from all timelines)
+        let withoutDeleted = fetchedContent.filter { !deletedContentSKs.contains($0.SK) }
+        
         // CRITICAL: For Twilly TV, private and public are completely separate arrays
         // This function updates the arrays but only updates displayed content if it matches current view
         
@@ -8024,14 +8013,14 @@ struct ChannelDetailView: View {
             // Process filtering efficiently in one pass
             var publicItems: [ChannelContent] = []
             var privateItems: [ChannelContent] = []
-            publicItems.reserveCapacity(fetchedContent.count)
-            privateItems.reserveCapacity(fetchedContent.count)
+            publicItems.reserveCapacity(withoutDeleted.count)
+            privateItems.reserveCapacity(withoutDeleted.count)
             
             // CRITICAL: Deduplicate fetchedContent FIRST before splitting to prevent duplicates
             // Deduplicate by both SK and fileName (backend may return same fileName with different SKs)
             var seenSKs = Set<String>()
             var seenFileNames = Set<String>()
-            let deduplicatedFetchedContent = fetchedContent.filter { item in
+            let deduplicatedFetchedContent = withoutDeleted.filter { item in
                 // First check SK (most reliable)
                 if seenSKs.contains(item.SK) {
                     print("⚠️ [ChannelDetailView] Removing duplicate item before split (by SK): \(item.SK)")
@@ -8211,7 +8200,7 @@ struct ChannelDetailView: View {
         // This ensures the cache is always available for instant filtering
         if cachedUnfilteredContent.isEmpty || replaceLocal {
             // Merge all content (from API + existing) to build complete cache
-            var allContent = replaceLocal ? fetchedContent : (cachedUnfilteredContent + fetchedContent)
+            var allContent = replaceLocal ? withoutDeleted : (cachedUnfilteredContent + withoutDeleted)
             // Remove duplicates by SK
             var seenSKs = Set<String>()
             allContent = allContent.filter { item in
@@ -8231,7 +8220,7 @@ struct ChannelDetailView: View {
         // Check for duplicates (silently, only log if found)
         var seenIds = Set<String>()
         var duplicateIds: [String] = []
-        for item in fetchedContent {
+        for item in withoutDeleted {
             if seenIds.contains(item.id) {
                 duplicateIds.append(item.id)
             } else {
@@ -8245,7 +8234,7 @@ struct ChannelDetailView: View {
         // Check for duplicate fileNames
         var seenFileNames = Set<String>()
         var duplicateFileNames: [String] = []
-        for item in fetchedContent {
+        for item in withoutDeleted {
             if seenFileNames.contains(item.fileName) {
                 duplicateFileNames.append(item.fileName)
             } else {
@@ -8258,13 +8247,13 @@ struct ChannelDetailView: View {
         
         
         // Filter out duplicates and incomplete videos if we have a local video
-        var filteredFetchedContent = fetchedContent
+        var filteredFetchedContent = withoutDeleted
         
         if let localContent = localVideoContent {
             // CRITICAL: When we have a local video, hide ALL incomplete server videos (missing thumbnail OR HLS)
             // This prevents showing "gray loading" videos alongside the local video
             // Only show server videos that are FULLY processed (have both thumbnail AND HLS)
-            filteredFetchedContent = fetchedContent.filter { serverItem in
+            filteredFetchedContent = withoutDeleted.filter { serverItem in
                 // Check if this is a video
                 let isVideo = serverItem.category == "Videos"
                 
@@ -8304,8 +8293,8 @@ struct ChannelDetailView: View {
                 return true
             }
             
-            if fetchedContent.count != filteredFetchedContent.count {
-                print("🔄 [ChannelDetailView] Filtered out \(fetchedContent.count - filteredFetchedContent.count) incomplete/duplicate video(s) from server content")
+            if withoutDeleted.count != filteredFetchedContent.count {
+                print("🔄 [ChannelDetailView] Filtered out \(withoutDeleted.count - filteredFetchedContent.count) incomplete/duplicate video(s) from server content")
             }
         }
         
@@ -8449,19 +8438,19 @@ struct ChannelDetailView: View {
         // Match managefiles.vue: Show ALL videos (not just latest)
         // managefiles.vue returns all filtered videos sorted by createdAt (newest first)
         
-        // CRITICAL: For Twilly TV, filter from the CORRECT source arrays (privateContent/publicContent)
-        // NOT from sortedContent - this ensures we filter from the complete arrays that include all owner videos
-        // Public and private filter from completely different places
+        // CRITICAL: For Twilly TV, use the correct source per timeline. Premium is separate from private.
+        // Premium timeline = only premiumContent (videos streamed/dropped as premium). No private logic.
         var filteredSortedContent = sortedContent
         
         if isTwillyTV {
-            // CRITICAL: Use the correct source array based on current view
-            // Premium tab = premiumContent only; Private = privateContent; Public = publicContent
+            // PREMIUM = premiumContent only. PRIVATE = privateContent. PUBLIC = publicContent. No mixing.
             let sourceArray: [ChannelContent]
             if showPremiumContent {
                 sourceArray = premiumContent
+            } else if showPrivateContent {
+                sourceArray = privateContent
             } else {
-                sourceArray = showPrivateContent ? privateContent : publicContent
+                sourceArray = publicContent
             }
             
             // Sort the source array the same way as sortedContent
@@ -8540,20 +8529,18 @@ struct ChannelDetailView: View {
                     
                     return isMatch
                 }
-                print("🔍 [ChannelDetailView] Filtering to own content from \(showPrivateContent ? "private" : "public") array: \(filteredSortedContent.count) items (from \(sortedSource.count) total)")
+                let timelineName = showPremiumContent ? "premium" : (showPrivateContent ? "private" : "public")
+                print("🔍 [ChannelDetailView] Filtering to own content from \(timelineName) array: \(filteredSortedContent.count) items (from \(sortedSource.count) total)")
             }
             
-            // 2. Filter for public/private/premium content (already done when populating arrays, but ensure strict separation)
+            // 2. Visibility filter: Premium timeline has NO private logic. Only Public/Private tabs filter by visibility.
             if showPremiumContent {
-                // PREMIUM VIEW: Only show items that are actually premium (source is already premiumContent; filter again to be safe)
-                filteredSortedContent = filteredSortedContent.filter { $0.isPremium == true }
-                print("👑 [ChannelDetailView] PREMIUM VIEW: \(filteredSortedContent.count) items (strictly filtered)")
+                // PREMIUM TIMELINE: No filter. Content is already premium-only (streamed/dropped as premium). Period.
             } else if showPrivateContent {
-                // PRIVATE VIEW: Owner's private videos only (isPrivateUsername true); for others only actually-private (no premium)
+                // PRIVATE TAB: only actually-private videos (no premium, no owner public videos)
                 filteredSortedContent = filteredSortedContent.filter { item in
                     let isPrivate = item.isPrivateUsername == true
                     let isPremium = item.isPremium == true
-                    if isOwnerVideo(item) { return isPrivate }
                     if !isPrivate || isPremium {
                         print("🚫 [ChannelDetailView] SECURITY: Blocking non-private or premium item from private view: \(item.fileName)")
                     }
@@ -8561,7 +8548,7 @@ struct ChannelDetailView: View {
                 }
                 print("🔒 [ChannelDetailView] PRIVATE VIEW: \(filteredSortedContent.count) items (strictly filtered)")
             } else {
-                // PUBLIC VIEW: ONLY show items where isPrivateUsername is NOT true AND isPremium is NOT true (unless owner video)
+                // PUBLIC TAB: only non-private, non-premium (unless owner)
                 filteredSortedContent = filteredSortedContent.filter { item in
                     let isPrivate = item.isPrivateUsername == true
                     let isPremium = item.isPremium == true
@@ -8569,7 +8556,7 @@ struct ChannelDetailView: View {
                     if (isPrivate || isPremium) && !isOwner {
                         print("🚫 [ChannelDetailView] SECURITY: Blocking private/premium item from public view: \(item.fileName) (isPrivateUsername: \(isPrivate), isPremium: \(isPremium))")
                     }
-                    return (!isPrivate && !isPremium) || isOwner // Include non-private/non-premium items OR owner videos
+                    return (!isPrivate && !isPremium) || isOwner
                 }
                 print("🌐 [ChannelDetailView] PUBLIC VIEW: \(filteredSortedContent.count) items (strictly filtered)")
             }
@@ -9149,8 +9136,9 @@ struct ChannelDetailView: View {
         let fileId = item.SK
         let fileName = item.fileName
         let itemId = item.id // Store unique ID to ensure we only remove the exact item
+        let itemSK = item.SK // Stable server id — track so item never reappears in any timeline
         
-        print("🗑️ [ChannelDetailView] Starting delete for: \(fileName) (ID: \(itemId), fileId: \(fileId))")
+        print("🗑️ [ChannelDetailView] Starting delete for: \(fileName) (ID: \(itemId), SK: \(itemSK))")
         
         isDeleting = true
         contentToDelete = item // Set this to prevent UI from allowing another delete
@@ -9173,38 +9161,25 @@ struct ChannelDetailView: View {
                         
                         if wasAlreadyDeleted {
                             print("ℹ️ [ChannelDetailView] File was already deleted (idempotent delete): \(fileName)")
-                            // Still remove from UI even if already deleted on server
                         } else {
                             print("✅ [ChannelDetailView] Successfully deleted content: \(fileName)")
                         }
                         
-                        // Remove from currently displayed content array
+                        // CRITICAL: Track deleted SK so this item never reappears in any timeline (public/private/premium)
+                        deletedContentSKs.insert(itemSK)
+                        
+                        // Remove from displayed content
                         content.removeAll { $0.id == itemId }
                         
-                        // CRITICAL: Remove from ALL caches so item never comes back (no refresh after delete)
-                        privateContent.removeAll { $0.id == itemId }
-                        publicContent.removeAll { $0.id == itemId }
-                        premiumContent.removeAll { $0.id == itemId }
+                        // CRITICAL: Remove from ALL three caches so item never shows in another tab
+                        publicContent.removeAll { $0.SK == itemSK }
+                        privateContent.removeAll { $0.SK == itemSK }
+                        premiumContent.removeAll { $0.SK == itemSK }
                         
                         contentToDelete = nil
                         
-                        // Sync displayed content with current tab's source (no server refresh - prevents item reappearing)
-                        if currentChannel.channelName.lowercased() == "twilly tv" {
-                            if showPremiumContent {
-                                content = premiumContent
-                                nextToken = premiumNextToken
-                                hasMoreContent = premiumHasMore
-                            } else if showPrivateContent {
-                                content = privateContent
-                                nextToken = privateNextToken
-                                hasMoreContent = privateHasMore
-                            } else {
-                                content = publicContent
-                                nextToken = publicNextToken
-                                hasMoreContent = publicHasMore
-                            }
-                        }
-                        
+                        // Do NOT call refreshChannelContent() after delete — backend removes timeline entries;
+                        // display stays from current caches so deleted item cannot reappear
                         if content.isEmpty && publicContent.isEmpty && privateContent.isEmpty && premiumContent.isEmpty {
                             isLoading = false
                             hasLoadedOnce = true
@@ -9218,18 +9193,13 @@ struct ChannelDetailView: View {
                         let isFileNotFound = errorMsg.lowercased().contains("not found") || errorMsg.lowercased().contains("file not found")
                         
                         if isFileNotFound {
-                            // File not found - treat as success (already deleted) - NO ERROR MESSAGE
                             print("ℹ️ [ChannelDetailView] File not found (already deleted): \(fileName) - treating as success")
+                            deletedContentSKs.insert(itemSK)
                             content.removeAll { $0.id == itemId }
-                            privateContent.removeAll { $0.id == itemId }
-                            publicContent.removeAll { $0.id == itemId }
-                            premiumContent.removeAll { $0.id == itemId }
+                            publicContent.removeAll { $0.SK == itemSK }
+                            privateContent.removeAll { $0.SK == itemSK }
+                            premiumContent.removeAll { $0.SK == itemSK }
                             contentToDelete = nil
-                            if currentChannel.channelName.lowercased() == "twilly tv" {
-                                if showPremiumContent { content = premiumContent; nextToken = premiumNextToken; hasMoreContent = premiumHasMore }
-                                else if showPrivateContent { content = privateContent; nextToken = privateNextToken; hasMoreContent = privateHasMore }
-                                else { content = publicContent; nextToken = publicNextToken; hasMoreContent = publicHasMore }
-                            }
                             if content.isEmpty && publicContent.isEmpty && privateContent.isEmpty && premiumContent.isEmpty {
                                 isLoading = false
                                 hasLoadedOnce = true
@@ -9255,16 +9225,12 @@ struct ChannelDetailView: View {
                     
                     if isFileNotFound {
                         print("ℹ️ [ChannelDetailView] File not found during delete (already deleted): \(fileName) - treating as success")
+                        deletedContentSKs.insert(itemSK)
                         content.removeAll { $0.id == itemId }
-                        privateContent.removeAll { $0.id == itemId }
-                        publicContent.removeAll { $0.id == itemId }
-                        premiumContent.removeAll { $0.id == itemId }
+                        publicContent.removeAll { $0.SK == itemSK }
+                        privateContent.removeAll { $0.SK == itemSK }
+                        premiumContent.removeAll { $0.SK == itemSK }
                         contentToDelete = nil
-                        if currentChannel.channelName.lowercased() == "twilly tv" {
-                            if showPremiumContent { content = premiumContent; nextToken = premiumNextToken; hasMoreContent = premiumHasMore }
-                            else if showPrivateContent { content = privateContent; nextToken = privateNextToken; hasMoreContent = privateHasMore }
-                            else { content = publicContent; nextToken = publicNextToken; hasMoreContent = publicHasMore }
-                        }
                         if content.isEmpty && publicContent.isEmpty && privateContent.isEmpty && premiumContent.isEmpty {
                             isLoading = false
                             hasLoadedOnce = true
@@ -10582,30 +10548,32 @@ struct ContentCard: View {
                                         .minimumScaleFactor(0.8) // Scale down if needed
                                         .fixedSize(horizontal: true, vertical: false) // Allow horizontal expansion, prevent wrapping
                                     
-                                    // Icon based on view mode - IMMEDIATE UPDATE, NO FLASH
-                                    // Use transaction to disable animation for instant icon switch
+                                    // Icon: Premium timeline = premium icon only (no private logic). Private tab = lock/dollar. Public = globe.
                                     Group {
-                                        if showPrivateContent {
-                                            // PRIVATE VIEW: Show premium or private icon
-                                            if let isPremium = content.isPremium, isPremium == true {
-                                                // Premium content - yellow dollar sign icon
+                                        if showPremiumContent || (content.isPremium == true) {
+                                            // PREMIUM timeline / item: yellow dollar (videos streamed to premium land here; no private)
+                                            Image(systemName: "dollarsign.circle.fill")
+                                                .font(.system(size: 12))
+                                                .foregroundColor(.yellow)
+                                        } else if showPrivateContent {
+                                            // PRIVATE tab only: lock or dollar per item
+                                            if content.isPremium == true {
                                                 Image(systemName: "dollarsign.circle.fill")
                                                     .font(.system(size: 12))
                                                     .foregroundColor(.yellow)
                                             } else {
-                                                // Private content - orange lock icon
                                                 Image(systemName: "lock.fill")
                                                     .font(.system(size: 12))
                                                     .foregroundColor(.orange)
                                             }
                                         } else {
-                                            // PUBLIC VIEW: Always show blue globe icon
+                                            // PUBLIC VIEW: blue globe icon
                                             Image(systemName: "globe")
                                                 .font(.system(size: 12))
                                                 .foregroundColor(.blue)
                                         }
                                     }
-                                    .id("icon-\(showPrivateContent ? "private" : "public")-\(content.isPremium == true ? "premium" : "regular")-\(content.SK)") // Include content.SK for stability
+                                    .id("icon-\(showPremiumContent ? "premium" : (showPrivateContent ? "private" : "public"))-\(content.isPremium == true ? "premium" : "regular")-\(content.SK)") // Include content.SK for stability
                                     .transaction { transaction in
                                         // CRITICAL: Disable animation on icon to prevent flash
                                         transaction.animation = nil

@@ -106,12 +106,10 @@ struct ChannelContent: Identifiable, Codable {
     let fileId: String?  // File ID for easier matching
     let airdate: String?  // Scheduled airdate (ISO8601 format)
     let creatorUsername: String?  // Username of the person who posted this video
-    let creatorEmail: String?     // Creator email (for premium subscribe; set by backend when available)
     let isPrivateUsername: Bool?  // Whether this was streamed as private (username 🔒)
     let isPremium: Bool?  // Whether this is premium content (requires payment)
     let status: String?  // e.g. "PUBLISHED", "HELD" (scheduled)
     let scheduledDropDate: String?  // ISO8601 when drop will air (if HELD)
-    let durationSeconds: Double?  // Video length in seconds (when available from backend; e.g. after processing or for premiere)
     // Local file URL for immediate display (before server processing)
     // Not part of Codable - only used for local display
     var localFileURL: URL? {
@@ -121,7 +119,7 @@ struct ChannelContent: Identifiable, Codable {
     private var _localFileURL: URL?
     var id: String { SK }
     // Custom init to support local files
-    init(SK: String, fileName: String, title: String? = nil, description: String? = nil, hlsUrl: String? = nil, thumbnailUrl: String? = nil, createdAt: String? = nil, isVisible: Bool? = nil, price: Double? = nil, category: String? = nil, uploadId: String? = nil, fileId: String? = nil, airdate: String? = nil, creatorUsername: String? = nil, creatorEmail: String? = nil, isPrivateUsername: Bool? = nil, isPremium: Bool? = nil, status: String? = nil, scheduledDropDate: String? = nil, durationSeconds: Double? = nil, localFileURL: URL? = nil) {
+    init(SK: String, fileName: String, title: String? = nil, description: String? = nil, hlsUrl: String? = nil, thumbnailUrl: String? = nil, createdAt: String? = nil, isVisible: Bool? = nil, price: Double? = nil, category: String? = nil, uploadId: String? = nil, fileId: String? = nil, airdate: String? = nil, creatorUsername: String? = nil, isPrivateUsername: Bool? = nil, isPremium: Bool? = nil, status: String? = nil, scheduledDropDate: String? = nil, localFileURL: URL? = nil) {
         self.SK = SK
         self.fileName = fileName
         self.title = title
@@ -136,17 +134,15 @@ struct ChannelContent: Identifiable, Codable {
         self.uploadId = uploadId
         self.fileId = fileId
         self.creatorUsername = creatorUsername
-        self.creatorEmail = creatorEmail
         self.isPrivateUsername = isPrivateUsername
         self.isPremium = isPremium
         self.status = status
         self.scheduledDropDate = scheduledDropDate
-        self.durationSeconds = durationSeconds
         self._localFileURL = localFileURL
     }
     // Custom Codable implementation to exclude localFileURL
     enum CodingKeys: String, CodingKey {
-        case SK, fileName, title, description, hlsUrl, thumbnailUrl, createdAt, isVisible, price, category, uploadId, fileId, airdate, creatorUsername, creatorEmail, isPrivateUsername, isPremium, status, scheduledDropDate, durationSeconds
+        case SK, fileName, title, description, hlsUrl, thumbnailUrl, createdAt, isVisible, price, category, uploadId, fileId, airdate, creatorUsername, isPrivateUsername, isPremium, status, scheduledDropDate
     }
 }
 
@@ -1106,12 +1102,11 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         limit: Int = 20,
         nextToken: String? = nil,
         forceRefresh: Bool = false,
-        showPrivateContent: Bool = false,
-        showPremiumContent: Bool = false
+        showPrivateContent: Bool = false
     ) async throws -> PaginatedContent {
         // FAST PATH: Check cache first (only for first page, no nextToken)
         if !forceRefresh && nextToken == nil {
-            let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")_\(showPrivateContent)_\(showPremiumContent)"
+            let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")_\(showPrivateContent)"
             // Check in-memory cache first (instant)
             if let cached = cachedContent[cacheKey] {
                 let age = Date().timeIntervalSince(cached.timestamp)
@@ -1127,8 +1122,7 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                                 limit: limit,
                                 nextToken: nil,
                                 forceRefresh: true,
-                                showPrivateContent: showPrivateContent,
-                                showPremiumContent: showPremiumContent
+                                showPrivateContent: showPrivateContent
                             )
                         }
                     }
@@ -1218,9 +1212,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         // Add showPrivateContent for server-side filtering (CRITICAL for privacy)
         // When false, server will NEVER return private videos (except viewer's own)
         body["showPrivateContent"] = showPrivateContent
-        if showPremiumContent {
-            body["showPremiumContent"] = true
-        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         // OPTIMIZATION: Use reasonable timeout - don't make it too long
         let session = forceRefresh ? {
@@ -1360,7 +1351,7 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     description: description,
                     hlsUrl: itemDict["hlsUrl"] as? String,
                     thumbnailUrl: thumbnailUrl,
-                    createdAt: itemDict["createdAt"] as? String ?? itemDict["timestamp"] as? String,
+                    createdAt: itemDict["createdAt"] as? String,
                     isVisible: itemDict["isVisible"] as? Bool,
                     price: price,
                     category: itemDict["category"] as? String,
@@ -1368,12 +1359,10 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     fileId: itemDict["fileId"] as? String,
                     airdate: itemDict["airdate"] as? String,
                     creatorUsername: creatorUsername,
-                    creatorEmail: itemDict["creatorEmail"] as? String,
                     isPrivateUsername: isPrivateUsername,
                     isPremium: isPremium,
                     status: itemDict["status"] as? String,
-                    scheduledDropDate: itemDict["scheduledDropDate"] as? String,
-                    durationSeconds: (itemDict["durationSeconds"] as? NSNumber)?.doubleValue ?? (itemDict["duration"] as? NSNumber)?.doubleValue
+                    scheduledDropDate: itemDict["scheduledDropDate"] as? String
                 )
             }
             print("📦 Parsed \(contents.count) content items")
@@ -1392,7 +1381,7 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             )
             // OPTIMIZATION: Cache result (only for first page, no nextToken)
             if nextToken == nil {
-                let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")_\(showPrivateContent)_\(showPremiumContent)"
+                let cacheKey = "\(channelName)_\(creatorEmail)_\(viewerEmail ?? "")_\(showPrivateContent)"
                 let timestamp = Date()
                 // Update in-memory cache
                 cachedContent[cacheKey] = (content: result, timestamp: timestamp)
@@ -1417,6 +1406,100 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         }
         return PaginatedContent(content: [], nextToken: nil, hasMore: false)
     }
+    /// Fetch premium-only content for Twilly TV (items with isPremium === true in Dynamo).
+    /// Backend filters by isPremium and returns only premium drops; use this for Premium tab, not public+private filter.
+    func fetchPremiumContent(
+        channelName: String,
+        creatorEmail: String,
+        viewerEmail: String?,
+        limit: Int = 20,
+        nextToken: String? = nil,
+        forceRefresh: Bool = false
+    ) async throws -> PaginatedContent {
+        guard let viewerEmail = viewerEmail, !viewerEmail.isEmpty else {
+            return PaginatedContent(content: [], nextToken: nil, hasMore: false)
+        }
+        guard let url = URL(string: "\(baseURL)/channels/get-content") else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if forceRefresh { request.cachePolicy = .reloadIgnoringLocalCacheData }
+        var body: [String: Any] = [
+            "channelName": channelName,
+            "creatorEmail": creatorEmail,
+            "limit": limit,
+            "showPremiumContent": true
+        ]
+        body["viewerEmail"] = viewerEmail
+        if let nextToken = nextToken { body["nextToken"] = nextToken }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        print("📡 [ChannelService] Fetching premium-only content for \(channelName) (viewer: \(viewerEmail))")
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let success = json["success"] as? Bool, success else {
+            return PaginatedContent(content: [], nextToken: nil, hasMore: false)
+        }
+        let contentArray = json["content"] as? [[String: Any]] ?? []
+        let nextTokenResult = json["nextToken"] as? String
+        let hasMore = (json["hasMore"] as? Bool) ?? (nextTokenResult != nil)
+        let contents = contentArray.compactMap { itemDict -> ChannelContent? in
+            guard let sk = itemDict["SK"] as? String else { return nil }
+            return parseContentItem(itemDict, sk: sk)
+        }
+        print("✅ [ChannelService] Fetched premium-only: \(contents.count) items from Dynamo")
+        return PaginatedContent(content: contents, nextToken: nextTokenResult, hasMore: hasMore)
+    }
+    
+    private func parseContentItem(_ itemDict: [String: Any], sk: String) -> ChannelContent? {
+        var isPrivateUsername: Bool? = nil
+        if let v = itemDict["isPrivateUsername"] {
+            if let b = v as? Bool { isPrivateUsername = b }
+            else if let s = v as? String { isPrivateUsername = s.lowercased() == "true" || s == "1" }
+            else if let n = v as? NSNumber { isPrivateUsername = n.boolValue }
+        }
+        var isPremium: Bool? = nil
+        if let v = itemDict["isPremium"] {
+            if let b = v as? Bool { isPremium = b }
+            else if let s = v as? String { isPremium = s.lowercased() == "true" || s == "1" }
+            else if let n = v as? NSNumber { isPremium = n.boolValue }
+        }
+        var price: Double? = nil
+        if let p = itemDict["price"] {
+            if let d = p as? Double { price = d }
+            else if let n = p as? NSNumber { price = n.doubleValue }
+            else if let s = p as? String { price = Double(s) }
+        }
+        let title = (itemDict["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let t = title?.isEmpty == true ? nil : title
+        let creatorUsername = itemDict["creatorUsername"] as? String ?? itemDict["username"] as? String
+        return ChannelContent(
+            SK: sk,
+            fileName: itemDict["fileName"] as? String ?? "",
+            title: t,
+            description: (itemDict["description"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+            hlsUrl: itemDict["hlsUrl"] as? String,
+            thumbnailUrl: itemDict["thumbnailUrl"] as? String,
+            createdAt: itemDict["createdAt"] as? String,
+            isVisible: itemDict["isVisible"] as? Bool,
+            price: price,
+            category: itemDict["category"] as? String,
+            uploadId: itemDict["uploadId"] as? String,
+            fileId: itemDict["fileId"] as? String,
+            airdate: itemDict["airdate"] as? String,
+            creatorUsername: creatorUsername,
+            isPrivateUsername: isPrivateUsername,
+            isPremium: isPremium,
+            status: itemDict["status"] as? String,
+            scheduledDropDate: itemDict["scheduledDropDate"] as? String,
+            localFileURL: nil
+        )
+    }
+    
     // Fetch both public and private content in a single request for instant toggle
     // OPTIMIZATION: Returns cached data immediately if available, then refreshes in background
     func fetchBothViewsContent(
@@ -1586,7 +1669,7 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     description: description,
                     hlsUrl: itemDict["hlsUrl"] as? String,
                     thumbnailUrl: thumbnailUrl,
-                    createdAt: itemDict["createdAt"] as? String ?? itemDict["timestamp"] as? String,
+                    createdAt: itemDict["createdAt"] as? String,
                     isVisible: itemDict["isVisible"] as? Bool,
                     price: price,
                     category: itemDict["category"] as? String,
@@ -1594,12 +1677,10 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                     fileId: itemDict["fileId"] as? String,
                     airdate: itemDict["airdate"] as? String,
                     creatorUsername: creatorUsername,
-                    creatorEmail: itemDict["creatorEmail"] as? String,
                     isPrivateUsername: isPrivateUsername,
                     isPremium: isPremium,
                     status: itemDict["status"] as? String,
-                    scheduledDropDate: itemDict["scheduledDropDate"] as? String,
-                    durationSeconds: (itemDict["durationSeconds"] as? NSNumber)?.doubleValue ?? (itemDict["duration"] as? NSNumber)?.doubleValue
+                    scheduledDropDate: itemDict["scheduledDropDate"] as? String
                 )
             }
         }
@@ -1612,6 +1693,12 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         let publicHasMore = json["publicHasMore"] as? Bool ?? (publicNextToken != nil)
         let privateHasMore = json["privateHasMore"] as? Bool ?? (privateNextToken != nil)
         print("✅ [ChannelService] Fetched both views - public: \(publicContent.count), private: \(privateContent.count)")
+        if let p = publicContent.first {
+            print("   [Backend Public] first: \(p.fileName) isPrivateUsername=\(p.isPrivateUsername?.description ?? "nil") isPremium=\(p.isPremium?.description ?? "nil")")
+        }
+        if let p = privateContent.first {
+            print("   [Backend Private] first: \(p.fileName) isPrivateUsername=\(p.isPrivateUsername?.description ?? "nil") isPremium=\(p.isPremium?.description ?? "nil")")
+        }
         let result = BothViewsContent(
             publicContent: publicContent,
             privateContent: privateContent,
@@ -1762,7 +1849,7 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 description: description,
                 hlsUrl: itemDict["hlsUrl"] as? String,
                 thumbnailUrl: itemDict["thumbnailUrl"] as? String,
-                createdAt: itemDict["createdAt"] as? String ?? itemDict["timestamp"] as? String,
+                createdAt: itemDict["createdAt"] as? String,
                 isVisible: itemDict["isVisible"] as? Bool,
                 price: price,
                 category: itemDict["category"] as? String,
@@ -1770,12 +1857,10 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
                 fileId: itemDict["fileId"] as? String,
                 airdate: itemDict["airdate"] as? String,
                 creatorUsername: creatorUsername,
-                creatorEmail: itemDict["creatorEmail"] as? String,
                 isPrivateUsername: itemDict["isPrivateUsername"] as? Bool,
                 isPremium: itemDict["isPremium"] as? Bool,
                 status: itemDict["status"] as? String,
-                scheduledDropDate: itemDict["scheduledDropDate"] as? String,
-                durationSeconds: (itemDict["durationSeconds"] as? NSNumber)?.doubleValue ?? (itemDict["duration"] as? NSNumber)?.doubleValue
+                scheduledDropDate: itemDict["scheduledDropDate"] as? String
             )
         }
         print("📦 [ChannelService] GraphQL fetched \(contents.count) content items, nextToken: \(nextToken ?? "nil")")
@@ -2325,8 +2410,7 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
     // Convert recorded RTMP stream to channel post
     // Returns fileId if successful (for moving file to selected channel)
     // scheduledDropDate: when set (Schedule Drop), backend stores status=HELD so premiere shows on timeline as "Airs [date]"
-    // durationSeconds: stream length in seconds so premiere cards show video length
-    func convertStreamToPost(channelName: String, streamKey: String, title: String? = nil, description: String? = nil, price: Double? = nil, userEmail: String, postImmediately: Bool = true, scheduledDropDate: Date? = nil, durationSeconds: Double? = nil) async throws -> String? {
+    func convertStreamToPost(channelName: String, streamKey: String, title: String? = nil, description: String? = nil, price: Double? = nil, userEmail: String, postImmediately: Bool = true, scheduledDropDate: Date? = nil) async throws -> String? {
         guard let url = URL(string: "\(baseURL)/streams/convert-to-post") else {
             throw URLError(.badURL)
         }
@@ -2353,9 +2437,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             body["scheduledDropDate"] = formatter.string(from: date)
         }
-        if let durationSeconds = durationSeconds, durationSeconds > 0 {
-            body["durationSeconds"] = durationSeconds
-        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await urlSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -2378,113 +2459,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
             throw NSError(domain: "ChannelService", code: 1, userInfo: [NSLocalizedDescriptionKey: convertResponse.message ?? "Failed to convert stream to post"])
         }
     }
-
-    // MARK: - Trailer / Clip (9:16 shareable clip from a drop)
-    struct CreateTrailerResponse: Codable {
-        let success: Bool
-        let trailerId: String?
-        let status: String?
-        let message: String?
-        let outputUrl: String?
-    }
-    struct TrailerItem: Codable {
-        let trailerId: String
-        let status: String
-        let startTimeSec: Double?
-        let endTimeSec: Double?
-        let durationSec: Double?
-        let outputUrl: String?
-        let outputWidth: Int?
-        let outputHeight: Int?
-        let fileSizeBytes: Int?
-        let createdAt: String?
-        let readyAt: String?
-        let errorMessage: String?
-    }
-    struct ListTrailersResponse: Codable {
-        let success: Bool
-        let trailers: [TrailerItem]?
-    }
-    struct GetTrailerResponse: Codable {
-        let success: Bool
-        let trailerId: String?
-        let status: String?
-        let outputUrl: String?
-        let outputWidth: Int?
-        let outputHeight: Int?
-        let fileSizeBytes: Int?
-        let errorMessage: String?
-    }
-
-    /// Create a trailer (clip) from a drop. Queues job; use getTrailer to poll until READY.
-    func createTrailer(dropId: String, ownerEmail: String, startTimeSec: Double, endTimeSec: Double? = nil, durationSec: Double = 10, creatorUsername: String? = nil, scheduledDropDate: String? = nil) async throws -> (trailerId: String, status: String, outputUrl: String?) {
-        let dropIdNorm = dropId.hasPrefix("FILE#") ? String(dropId.dropFirst(5)) : dropId
-        guard let url = URL(string: "\(baseURL)/drops/\(dropIdNorm)/trailers") else {
-            throw URLError(.badURL)
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var body: [String: Any] = [
-            "ownerEmail": ownerEmail,
-            "startTimeSec": startTimeSec,
-            "durationSec": durationSec
-        ]
-        if let end = endTimeSec { body["endTimeSec"] = end }
-        if let u = creatorUsername { body["creatorUsername"] = u }
-        if let d = scheduledDropDate { body["scheduledDropDate"] = d }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await urlSession.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        if httpResponse.statusCode != 200 {
-            let message = (json["message"] as? String) ?? "Failed to create trailer"
-            throw NSError(domain: "ChannelService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: message])
-        }
-        guard let success = json["success"] as? Bool, success,
-              let trailerId = json["trailerId"] as? String,
-              let status = json["status"] as? String else {
-            throw NSError(domain: "ChannelService", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid create trailer response"])
-        }
-        let outputUrl = json["outputUrl"] as? String
-        return (trailerId, status, outputUrl)
-    }
-
-    /// List trailers for a drop.
-    func listTrailers(dropId: String, ownerEmail: String) async throws -> [TrailerItem] {
-        let dropIdNorm = dropId.hasPrefix("FILE#") ? String(dropId.dropFirst(5)) : dropId
-        guard let url = URL(string: "\(baseURL)/drops/\(dropIdNorm)/trailers?ownerEmail=\(ownerEmail.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")") else {
-            throw URLError(.badURL)
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        let (data, response) = try await urlSession.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-        if httpResponse.statusCode != 200 {
-            throw NSError(domain: "ChannelService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "Failed to list trailers"])
-        }
-        let decoded = try JSONDecoder().decode(ListTrailersResponse.self, from: data)
-        return decoded.trailers ?? []
-    }
-
-    /// Get trailer status and output URL (poll until status is READY or FAILED).
-    func getTrailer(trailerId: String, ownerEmail: String) async throws -> GetTrailerResponse {
-        guard let url = URL(string: "\(baseURL)/trailers/\(trailerId)?ownerEmail=\(ownerEmail.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")") else {
-            throw URLError(.badURL)
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        let (data, response) = try await urlSession.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-        if httpResponse.statusCode == 404 {
-            throw NSError(domain: "ChannelService", code: 404, userInfo: [NSLocalizedDescriptionKey: "Trailer not found"])
-        }
-        if httpResponse.statusCode != 200 {
-            throw NSError(domain: "ChannelService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "Failed to get trailer"])
-        }
-        return try JSONDecoder().decode(GetTrailerResponse.self, from: data)
-    }
-
     // Move file to a different channel/folder (same as managefiles move function)
     func moveFile(userEmail: String, fileId: String, targetChannel: String) async throws {
         guard let url = URL(string: "\(baseURL)/files/move") else {
@@ -3178,31 +3152,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         }
         return try JSONDecoder().decode(DeleteFileResponse.self, from: data)
     }
-
-    /// Delete multiple FILE items by SK (e.g. short-video cleanup). Uses POST /files/delete-batch.
-    func deleteBatch(userId: String, fileIds: [String]) async throws -> DeleteBatchResponse {
-        guard let url = URL(string: "\(baseURL)/files/delete-batch") else {
-            throw ChannelServiceError.invalidURL
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = ["userId": userId, "fileIds": fileIds]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await urlSession.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw ChannelServiceError.invalidResponse
-        }
-        if httpResponse.statusCode != 200 {
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let message = json["message"] as? String {
-                throw ChannelServiceError.serverError(message)
-            }
-            throw ChannelServiceError.serverError("Server error: HTTP \(httpResponse.statusCode)")
-        }
-        return try JSONDecoder().decode(DeleteBatchResponse.self, from: data)
-    }
-
     func getUsernameVisibility(userEmail: String) async throws -> UsernameVisibilityResponse {
         guard let url = URL(string: "\(baseURL)/users/get-visibility") else {
             throw ChannelServiceError.invalidURL
@@ -3855,78 +3804,6 @@ class ChannelService: NSObject, ObservableObject, URLSessionDelegate {
         }
         return try JSONDecoder().decode(CreatePremiumSubscriptionResponse.self, from: data)
     }
-
-    /// Mock subscribe to a creator (for testing Premium tab without Stripe). Premium tab will then show that creator's premium posts.
-    func mockSubscribeToCreator(subscriberEmail: String, creatorEmail: String, creatorUsername: String? = nil) async throws -> MockSubscribeResponse {
-        guard let url = URL(string: "\(baseURL)/users/mock-subscribe-creator") else {
-            throw ChannelServiceError.invalidURL
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var body: [String: Any] = [
-            "subscriberEmail": subscriberEmail,
-            "creatorEmail": creatorEmail
-        ]
-        if let u = creatorUsername { body["creatorUsername"] = u }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await urlSession.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            let msg = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw ChannelServiceError.serverError(msg)
-        }
-        return try JSONDecoder().decode(MockSubscribeResponse.self, from: data)
-    }
-
-    /// Whether the user has Twilly TV Premium platform subscription ($3.99) – gates Premium tab and add-creator flow.
-    func getPlatformPremiumStatus(userEmail: String) async throws -> PlatformPremiumStatusResponse {
-        guard let url = URL(string: "\(baseURL)/users/get-platform-premium-status") else { throw ChannelServiceError.invalidURL }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["userEmail": userEmail])
-        let (data, response) = try await urlSession.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw ChannelServiceError.serverError(String(data: data, encoding: .utf8) ?? "Unknown error")
-        }
-        return try JSONDecoder().decode(PlatformPremiumStatusResponse.self, from: data)
-    }
-
-    /// Mock Twilly TV Premium access for testing (no Stripe).
-    func mockPlatformPremium(userEmail: String) async throws -> MockPlatformPremiumResponse {
-        guard let url = URL(string: "\(baseURL)/users/mock-platform-premium") else { throw ChannelServiceError.invalidURL }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["userEmail": userEmail])
-        let (data, response) = try await urlSession.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw ChannelServiceError.serverError(String(data: data, encoding: .utf8) ?? "Unknown error")
-        }
-        return try JSONDecoder().decode(MockPlatformPremiumResponse.self, from: data)
-    }
-
-    /// Add a creator to the viewer's premium feed (requires Twilly TV Premium). Their premium posts appear in the Premium tab.
-    func addPremiumCreator(subscriberEmail: String, creatorEmail: String, creatorUsername: String? = nil) async throws -> AddPremiumCreatorResponse {
-        guard let url = URL(string: "\(baseURL)/users/add-premium-creator") else { throw ChannelServiceError.invalidURL }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var body: [String: Any] = ["subscriberEmail": subscriberEmail, "creatorEmail": creatorEmail]
-        if let u = creatorUsername { body["creatorUsername"] = u }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await urlSession.data(for: request)
-        let httpResponse = response as? HTTPURLResponse
-        let decoded = try JSONDecoder().decode(AddPremiumCreatorResponse.self, from: data)
-        if httpResponse?.statusCode != 200, decoded.requiresPlatformPremium == true {
-            return decoded
-        }
-        guard httpResponse?.statusCode == 200 else {
-            throw ChannelServiceError.serverError(String(data: data, encoding: .utf8) ?? "Unknown error")
-        }
-        return decoded
-    }
-
     // MARK: - Updated getContent to include viewerEmail for filtering
 }
 
@@ -4008,14 +3885,6 @@ struct DeleteFileResponse: Codable {
     let alreadyDeleted: Bool?
     let success: Bool
     let message: String?
-}
-
-struct DeleteBatchResponse: Codable {
-    let success: Bool
-    let deleted: Int
-    let failed: Int
-    let totalRequested: Int
-    let errors: [String]?
 }
 
 struct UsernameVisibilityResponse: Codable {
@@ -4188,34 +4057,6 @@ struct CreatePremiumSubscriptionResponse: Codable {
     let platformFee: Double?
     let creatorAmount: Double?
     let isSubscribed: Bool?
-}
-
-struct MockSubscribeResponse: Codable {
-    let success: Bool
-    let message: String?
-    let subscriberEmail: String?
-    let creatorEmail: String?
-}
-
-struct PlatformPremiumStatusResponse: Codable {
-    let success: Bool
-    let hasTwillyTVPremium: Bool
-    let status: String?
-    let expiresAt: String?
-}
-
-struct MockPlatformPremiumResponse: Codable {
-    let success: Bool
-    let message: String?
-    let userEmail: String?
-}
-
-struct AddPremiumCreatorResponse: Codable {
-    let success: Bool
-    let message: String?
-    let requiresPlatformPremium: Bool?
-    let subscriberEmail: String?
-    let creatorEmail: String?
 }
 
 // Helper to handle AnyCodable for JSON decoding
