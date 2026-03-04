@@ -1,0 +1,19 @@
+{
+  "name": "twilly-video-upload",
+  "steps": {
+    "import": {
+      "robot": "/upload/handle"
+    },
+    "s3": {
+      "robot": "/s3/store",
+      "use": "import",
+      "credentials": "twillyimages",
+      "path": "collaborator-requests/${fields.creatorUsername}/${fields.requestId}/${fields.filename}",
+      "headers": {
+        "x-amz-meta-creator-username": "${fields.creatorUsername}",
+        "x-amz-meta-request-id": "${fields.requestId}",
+        "x-amz-meta-upload-date": "${date}"
+      }
+    }
+  }
+} 

@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Redirecting...</title>
+    <script>
+        // Get the short ID from the URL path
+        const pathParts = window.location.pathname.split('/');
+        const shortId = pathParts[pathParts.length - 1];
+        
+        if (shortId) {
+            // Call the API to get the redirect URL
+            fetch(`https://5lrxyv80kg.execute-api.us-east-1.amazonaws.com/Prod/${shortId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.redirectUrl) {
+                        // Redirect to the target URL
+                        window.location.href = data.redirectUrl;
+                    } else {
+                        document.body.innerHTML = '<h1>URL not found</h1>';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    document.body.innerHTML = '<h1>Error loading URL</h1>';
+                });
+        } else {
+            document.body.innerHTML = '<h1>Invalid URL</h1>';
+        }
+    </script>
+</head>
+<body>
+    <h1>Redirecting...</h1>
+    <p>Please wait while we redirect you to the correct page.</p>
+</body>
+</html> 

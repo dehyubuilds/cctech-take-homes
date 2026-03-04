@@ -1,0 +1,107 @@
+<svg width="1920" height="1080" viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background gradient - modern dark theme -->
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0e27;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#1a1f3a;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0f1629;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="accentGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#00d4ff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00ffaa;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="glowGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#00d4ff;stop-opacity:0.8" />
+      <stop offset="50%" style="stop-color:#00ffaa;stop-opacity:0.6" />
+      <stop offset="100%" style="stop-color:#00d4ff;stop-opacity:0.8" />
+    </linearGradient>
+    
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="1920" height="1080" fill="url(#bgGradient)"/>
+  
+  <!-- Subtle grid pattern for tech aesthetic -->
+  <g opacity="0.1">
+    <defs>
+      <pattern id="grid" width="80" height="80" patternUnits="userSpaceOnUse">
+        <path d="M 80 0 L 0 0 0 80" fill="none" stroke="#00d4ff" stroke-width="1"/>
+      </pattern>
+    </defs>
+    <rect width="1920" height="1080" fill="url(#grid)"/>
+  </g>
+  
+  <!-- Central logo area -->
+  <g transform="translate(960, 540)">
+    <!-- Glow effect behind logo -->
+    <ellipse cx="0" cy="0" rx="400" ry="200" fill="url(#glowGradient)" opacity="0.3" filter="url(#glow)"/>
+    
+    <!-- Main "TWILLY" text -->
+    <text x="0" y="0" font-family="Arial, sans-serif" font-size="180" font-weight="900" 
+          text-anchor="middle" dominant-baseline="central" fill="url(#accentGradient)" 
+          letter-spacing="20" filter="url(#glow)">
+      TWILLY
+    </text>
+    
+    <!-- "TV" badge -->
+    <g transform="translate(0, 120)">
+      <rect x="-80" y="-35" width="160" height="70" rx="35" fill="url(#accentGradient)" opacity="0.2"/>
+      <rect x="-80" y="-35" width="160" height="70" rx="35" fill="none" stroke="url(#accentGradient)" stroke-width="3"/>
+      <text x="0" y="0" font-family="Arial, sans-serif" font-size="48" font-weight="700" 
+            text-anchor="middle" dominant-baseline="central" fill="url(#accentGradient)" 
+            letter-spacing="8">
+        TV
+      </text>
+    </g>
+    
+    <!-- Streaming indicator dots -->
+    <g transform="translate(0, 220)" opacity="0.8">
+      <circle cx="-40" cy="0" r="8" fill="#00d4ff">
+        <animate attributeName="opacity" values="0.3;1;0.3" dur="1.5s" repeatCount="indefinite" begin="0s"/>
+      </circle>
+      <circle cx="0" cy="0" r="8" fill="#00ffaa">
+        <animate attributeName="opacity" values="0.3;1;0.3" dur="1.5s" repeatCount="indefinite" begin="0.5s"/>
+      </circle>
+      <circle cx="40" cy="0" r="8" fill="#00d4ff">
+        <animate attributeName="opacity" values="0.3;1;0.3" dur="1.5s" repeatCount="indefinite" begin="1s"/>
+      </circle>
+    </g>
+  </g>
+  
+  <!-- Tagline -->
+  <text x="960" y="800" font-family="Arial, sans-serif" font-size="42" font-weight="300" 
+        text-anchor="middle" fill="#ffffff" opacity="0.7" letter-spacing="4">
+    STREAMER-FIRST NETWORK
+  </text>
+  
+  <!-- Decorative elements - corner accents -->
+  <g opacity="0.3">
+    <!-- Top left -->
+    <path d="M 0 0 L 200 0 L 0 200 Z" fill="url(#accentGradient)"/>
+    <!-- Top right -->
+    <path d="M 1920 0 L 1720 0 L 1920 200 Z" fill="url(#accentGradient)"/>
+    <!-- Bottom left -->
+    <path d="M 0 1080 L 0 880 L 200 1080 Z" fill="url(#accentGradient)"/>
+    <!-- Bottom right -->
+    <path d="M 1920 1080 L 1920 880 L 1720 1080 Z" fill="url(#accentGradient)"/>
+  </g>
+  
+  <!-- Subtle scan lines for TV aesthetic -->
+  <g opacity="0.05">
+    <defs>
+      <pattern id="scanlines" width="1" height="4" patternUnits="userSpaceOnUse">
+        <rect width="1" height="2" fill="#00d4ff"/>
+      </pattern>
+    </defs>
+    <rect width="1920" height="1080" fill="url(#scanlines)"/>
+  </g>
+</svg>

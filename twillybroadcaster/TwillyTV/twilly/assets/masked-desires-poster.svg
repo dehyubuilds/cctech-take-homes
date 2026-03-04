@@ -1,0 +1,83 @@
+
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Gradients for dramatic lighting -->
+    <linearGradient id="backgroundGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0f23;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#1a0f2e;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#2d0f3a;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Neon purple gradient -->
+    <linearGradient id="neonPurple" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#8b5cf6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#c084fc;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Neon red gradient -->
+    <linearGradient id="neonRed" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#dc2626;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#ef4444;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Glow filter -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge> 
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="1024" height="1024" fill="url(#backgroundGradient)"/>
+  
+  <!-- City skyline silhouette -->
+  <path d="M 0 800 L 100 750 L 150 780 L 200 720 L 250 760 L 300 700 L 350 740 L 400 680 L 450 720 L 500 660 L 550 700 L 600 640 L 650 680 L 700 620 L 750 660 L 800 600 L 850 640 L 900 580 L 950 620 L 1024 560 L 1024 1024 L 0 1024 Z" fill="#000000" opacity="0.3"/>
+  
+  <!-- Neon lighting effects -->
+  <rect x="0" y="200" width="1024" height="4" fill="url(#neonPurple)" filter="url(#glow)" opacity="0.8"/>
+  <rect x="0" y="400" width="1024" height="4" fill="url(#neonRed)" filter="url(#glow)" opacity="0.8"/>
+  <rect x="0" y="600" width="1024" height="4" fill="url(#neonPurple)" filter="url(#glow)" opacity="0.8"/>
+  
+  <!-- Five masked women silhouettes -->
+  <!-- Villain (left) -->
+  <ellipse cx="150" cy="300" rx="40" ry="60" fill="#000000" opacity="0.8"/>
+  <path d="M 130 280 Q 150 260 170 280 Q 150 300 130 280" fill="url(#neonRed)" filter="url(#glow)"/>
+  <text x="150" y="380" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="14" font-weight="bold">VILLAIN</text>
+  
+  <!-- Hero (center-left) -->
+  <ellipse cx="300" cy="280" rx="45" ry="65" fill="#000000" opacity="0.8"/>
+  <path d="M 280 260 Q 300 240 320 260 Q 300 280 280 260" fill="url(#neonPurple)" filter="url(#glow)"/>
+  <text x="300" y="360" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="14" font-weight="bold">HERO</text>
+  
+  <!-- Temptress (center) -->
+  <ellipse cx="512" cy="250" rx="50" ry="70" fill="#000000" opacity="0.8"/>
+  <path d="M 492 230 Q 512 210 532 230 Q 512 250 492 230" fill="url(#neonRed)" filter="url(#glow)"/>
+  <text x="512" y="330" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="14" font-weight="bold">TEMPTRESS</text>
+  
+  <!-- Rebel (center-right) -->
+  <ellipse cx="724" cy="280" rx="45" ry="65" fill="#000000" opacity="0.8"/>
+  <path d="M 704 260 Q 724 240 744 260 Q 724 280 704 260" fill="url(#neonPurple)" filter="url(#glow)"/>
+  <text x="724" y="360" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="14" font-weight="bold">REBEL</text>
+  
+  <!-- Spy (right) -->
+  <ellipse cx="874" cy="300" rx="40" ry="60" fill="#000000" opacity="0.8"/>
+  <path d="M 854 280 Q 874 260 894 280 Q 874 300 854 280" fill="url(#neonRed)" filter="url(#glow)"/>
+  <text x="874" y="380" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="14" font-weight="bold">SPY</text>
+  
+  <!-- Title -->
+  <text x="512" y="900" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="48" font-weight="bold" filter="url(#glow)">
+    MASKED DESIRES
+  </text>
+  <text x="512" y="950" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="32" font-weight="bold" filter="url(#glow)">
+    MISSION UNCUT
+  </text>
+  
+  <!-- Subtitle -->
+  <text x="512" y="980" text-anchor="middle" fill="#c084fc" font-family="Arial, sans-serif" font-size="18" font-weight="bold">
+    A CINEMATIC EXPERIENCE
+  </text>
+</svg>
+  

@@ -1,0 +1,15 @@
+{
+  "staging": {
+    "awscloudformation": {
+      "AuthRoleName": "amplify-twillyauth-staging-200157-authRole",
+      "UnauthRoleArn": "arn:aws:iam::142770202579:role/amplify-twillyauth-staging-200157-unauthRole",
+      "AuthRoleArn": "arn:aws:iam::142770202579:role/amplify-twillyauth-staging-200157-authRole",
+      "Region": "us-east-1",
+      "DeploymentBucketName": "amplify-twillyauth-staging-200157-deployment",
+      "UnauthRoleName": "amplify-twillyauth-staging-200157-unauthRole",
+      "StackName": "amplify-twillyauth-staging-200157",
+      "StackId": "arn:aws:cloudformation:us-east-1:142770202579:stack/amplify-twillyauth-staging-200157/5ba1d910-6eba-11ee-9361-0e70218fdb3d",
+      "AmplifyAppId": "d18ty0d2uo8v1u"
+    }
+  }
+}

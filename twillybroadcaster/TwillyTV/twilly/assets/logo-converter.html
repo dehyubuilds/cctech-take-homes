@@ -1,0 +1,85 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Twilly Logo Converter</title>
+  <style>
+    body { margin: 0; padding: 20px; background: white; }
+    .logo-container { text-align: center; }
+    svg { max-width: 100%; height: auto; }
+  </style>
+</head>
+<body>
+  <div class="logo-container">
+    
+<svg width="400" height="400" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Softer blue gradient -->
+    <linearGradient id="blueGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1e40af;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Simple drop shadow -->
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="2" dy="3" stdDeviation="2" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  
+  <!-- Main circle background with softer blue -->
+  <circle cx="200" cy="200" r="180" fill="url(#blueGradient)" filter="url(#shadow)"/>
+  
+  <!-- Background waves (behind sound waves) -->
+  <path d="M 80 120 Q 100 100 120 120 Q 140 100 160 120 Q 180 100 200 120 Q 220 100 240 120 Q 260 100 280 120 Q 300 100 320 120" stroke="rgba(255,255,255,0.1)" stroke-width="4" fill="none"/>
+  <path d="M 80 140 Q 100 120 120 140 Q 140 120 160 140 Q 180 120 200 140 Q 220 120 240 140 Q 260 120 280 140 Q 300 120 320 140" stroke="rgba(255,255,255,0.1)" stroke-width="4" fill="none"/>
+  <path d="M 80 160 Q 100 140 120 160 Q 140 140 160 160 Q 180 140 200 160 Q 220 140 240 160 Q 260 140 280 160 Q 300 140 320 160" stroke="rgba(255,255,255,0.1)" stroke-width="4" fill="none"/>
+  <path d="M 80 180 Q 100 160 120 180 Q 140 160 160 180 Q 180 160 200 180 Q 220 160 240 180 Q 260 160 280 180 Q 300 160 320 180" stroke="rgba(255,255,255,0.1)" stroke-width="4" fill="none"/>
+  <path d="M 80 200 Q 100 180 120 200 Q 140 180 160 200 Q 180 180 200 200 Q 220 180 240 200 Q 260 180 280 200 Q 300 180 320 200" stroke="rgba(255,255,255,0.1)" stroke-width="4" fill="none"/>
+  <path d="M 80 220 Q 100 200 120 220 Q 140 200 160 220 Q 180 200 200 220 Q 220 200 240 220 Q 260 200 280 220 Q 300 200 320 220" stroke="rgba(255,255,255,0.1)" stroke-width="4" fill="none"/>
+  <path d="M 80 240 Q 100 220 120 240 Q 140 220 160 240 Q 180 220 200 240 Q 220 220 240 240 Q 260 220 280 240 Q 300 220 320 240" stroke="rgba(255,255,255,0.1)" stroke-width="4" fill="none"/>
+  <path d="M 80 260 Q 100 240 120 260 Q 140 240 160 260 Q 180 240 200 260 Q 220 240 240 260 Q 260 240 280 260 Q 300 240 320 260" stroke="rgba(255,255,255,0.1)" stroke-width="4" fill="none"/>
+  <path d="M 80 280 Q 100 260 120 280 Q 140 260 160 280 Q 180 260 200 280 Q 220 260 240 280 Q 260 260 280 280 Q 300 260 320 280" stroke="rgba(255,255,255,0.1)" stroke-width="4" fill="none"/>
+  
+  <!-- Central play button -->
+  <polygon points="175,160 175,240 255,200" fill="white" filter="url(#shadow)"/>
+  
+  <!-- Wavy lines on left side (sound waves) -->
+  <path d="M 120 140 Q 110 150 120 160 Q 110 170 120 180 Q 110 190 120 200" stroke="white" stroke-width="2" fill="none"/>
+  <path d="M 130 150 Q 120 160 130 170 Q 120 180 130 190 Q 120 200 130 210" stroke="white" stroke-width="2" fill="none"/>
+  <path d="M 140 160 Q 130 170 140 180 Q 130 190 140 200 Q 130 210 140 220" stroke="white" stroke-width="2" fill="none"/>
+  
+  <!-- Wavy lines on right side (sound waves) -->
+  <path d="M 280 140 Q 290 150 280 160 Q 290 170 280 180 Q 290 190 280 200" stroke="white" stroke-width="2" fill="none"/>
+  <path d="M 270 150 Q 280 160 270 170 Q 280 180 270 190 Q 280 200 270 210" stroke="white" stroke-width="2" fill="none"/>
+  <path d="M 260 160 Q 270 170 260 180 Q 270 190 260 200 Q 270 210 260 220" stroke="white" stroke-width="2" fill="none"/>
+  
+  <!-- PREMIUM button at top -->
+  <rect x="140" y="70" width="120" height="30" rx="15" fill="#ff8c00" filter="url(#shadow)"/>
+  <text x="200" y="90" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-size="16" font-weight="bold">PREMIUM</text>
+  
+  <!-- STREAMING NETWORK button at bottom - narrower bubble -->
+  <rect x="100" y="290" width="200" height="30" rx="15" fill="white" filter="url(#shadow)"/>
+  <text x="200" y="310" text-anchor="middle" fill="#000000" font-family="Arial, sans-serif" font-size="16" font-weight="bold">STREAMING NETWORK</text>
+  
+  <!-- Orange dots with numbers -->
+  <circle cx="200" cy="110" r="6" fill="#ff8c00" filter="url(#shadow)"/>
+  
+  <circle cx="270" cy="150" r="6" fill="#ff8c00" filter="url(#shadow)"/>
+  <text x="280" y="155" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-size="12" font-weight="bold">2</text>
+  
+  <circle cx="300" cy="200" r="6" fill="#ff8c00" filter="url(#shadow)"/>
+  <text x="310" y="205" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-size="12" font-weight="bold">3</text>
+  
+  <circle cx="270" cy="250" r="6" fill="#ff8c00" filter="url(#shadow)"/>
+  <text x="280" y="255" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-size="12" font-weight="bold">4</text>
+  
+  <circle cx="130" cy="200" r="6" fill="#ff8c00" filter="url(#shadow)"/>
+</svg>
+  
+  </div>
+  <script>
+    // This HTML file can be opened in a browser and the logo can be right-clicked to save as PNG
+    console.log('Logo loaded. Right-click on the logo and select "Save image as..." to save as PNG');
+  </script>
+</body>
+</html>

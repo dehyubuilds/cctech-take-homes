@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Twilly Logo Generator</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .logo-container {
+            width: 512px;
+            height: 512px;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+        .play-icon {
+            width: 120px;
+            height: 120px;
+            background: linear-gradient(135deg, #14B8A6, #06B6A6);
+            border-radius: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 40px;
+        }
+        .play-triangle {
+            width: 0;
+            height: 0;
+            border-left: 30px solid #000;
+            border-top: 20px solid transparent;
+            border-bottom: 20px solid transparent;
+            margin-left: 8px;
+        }
+        .text-container {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+        }
+        .main-text {
+            font-family: Arial, sans-serif;
+            font-size: 56px;
+            font-weight: bold;
+            background: linear-gradient(135deg, #14B8A6, #06B6A6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin: 0;
+            line-height: 1;
+        }
+        .sub-text {
+            font-family: Arial, sans-serif;
+            font-size: 28px;
+            color: #14B8A6;
+            margin: 8px 0 0 0;
+            font-weight: normal;
+        }
+    </style>
+</head>
+<body>
+    <div class="logo-container">
+        <div class="play-icon">
+            <div class="play-triangle"></div>
+        </div>
+        <div class="text-container">
+            <h1 class="main-text">Twilly</h1>
+            <p class="sub-text">Streaming Network</p>
+        </div>
+    </div>
+</body>
+</html>

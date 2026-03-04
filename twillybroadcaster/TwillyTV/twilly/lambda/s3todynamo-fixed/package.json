@@ -1,0 +1,16 @@
+{
+  "name": "s3todynamo-fixed",
+  "version": "1.0.0",
+  "description": "Lambda function to process S3 events and write to DynamoDB",
+  "main": "index.mjs",
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.0.0"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+} 

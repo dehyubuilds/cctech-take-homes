@@ -1,0 +1,396 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+console.log('🎨 Generating Logo-Style "Masked Desires: Mission Uncut"...');
+console.log('');
+
+// Create a logo-style SVG version
+const createLogoStylePoster = () => {
+  const svg = `
+<svg width="800" height="400" viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Modern gradient background -->
+    <linearGradient id="logoBackground" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1e1b4b;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#312e81;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1e1b4b;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Accent gradient -->
+    <linearGradient id="accentGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#a855f7;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#ec4899;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Glow effect -->
+    <filter id="logoGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge> 
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="800" height="400" fill="url(#logoBackground)" rx="20"/>
+  
+  <!-- Left side: Five iconic mask symbols -->
+  <g transform="translate(50, 100)">
+    <!-- Villain mask -->
+    <circle cx="40" cy="40" r="35" fill="none" stroke="url(#accentGradient)" stroke-width="3" opacity="0.8"/>
+    <path d="M 25 35 Q 40 25 55 35 Q 40 45 25 35" fill="url(#accentGradient)" opacity="0.9"/>
+    <text x="40" y="80" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="10" font-weight="bold">VILLAIN</text>
+    
+    <!-- Hero mask -->
+    <circle cx="120" cy="40" r="35" fill="none" stroke="url(#accentGradient)" stroke-width="3" opacity="0.8"/>
+    <path d="M 105 35 Q 120 25 135 35 Q 120 45 105 35" fill="url(#accentGradient)" opacity="0.9"/>
+    <text x="120" y="80" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="10" font-weight="bold">HERO</text>
+    
+    <!-- Temptress mask -->
+    <circle cx="200" cy="40" r="35" fill="none" stroke="url(#accentGradient)" stroke-width="3" opacity="0.8"/>
+    <path d="M 185 35 Q 200 25 215 35 Q 200 45 185 35" fill="url(#accentGradient)" opacity="0.9"/>
+    <text x="200" y="80" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="10" font-weight="bold">TEMPTRESS</text>
+    
+    <!-- Rebel mask -->
+    <circle cx="280" cy="40" r="35" fill="none" stroke="url(#accentGradient)" stroke-width="3" opacity="0.8"/>
+    <path d="M 265 35 Q 280 25 295 35 Q 280 45 265 35" fill="url(#accentGradient)" opacity="0.9"/>
+    <text x="280" y="80" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="10" font-weight="bold">REBEL</text>
+    
+    <!-- Spy mask -->
+    <circle cx="360" cy="40" r="35" fill="none" stroke="url(#accentGradient)" stroke-width="3" opacity="0.8"/>
+    <path d="M 345 35 Q 360 25 375 35 Q 360 45 345 35" fill="url(#accentGradient)" opacity="0.9"/>
+    <text x="360" y="80" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="10" font-weight="bold">SPY</text>
+  </g>
+  
+  <!-- Right side: Main title and branding -->
+  <g transform="translate(450, 80)">
+    <!-- Main title -->
+    <text x="0" y="0" text-anchor="start" fill="#ffffff" font-family="Arial, sans-serif" font-size="32" font-weight="bold" filter="url(#logoGlow)">
+      MASKED DESIRES
+    </text>
+    <text x="0" y="45" text-anchor="start" fill="url(#accentGradient)" font-family="Arial, sans-serif" font-size="28" font-weight="bold" filter="url(#logoGlow)">
+      MISSION UNCUT
+    </text>
+    
+    <!-- Subtitle -->
+    <text x="0" y="80" text-anchor="start" fill="#cbd5e1" font-family="Arial, sans-serif" font-size="16" font-weight="normal">
+      A CINEMATIC EXPERIENCE
+    </text>
+    
+    <!-- Decorative line -->
+    <line x1="0" y1="100" x2="200" y2="100" stroke="url(#accentGradient)" stroke-width="2" opacity="0.7"/>
+    
+    <!-- Tagline -->
+    <text x="0" y="130" text-anchor="start" fill="#94a3b8" font-family="Arial, sans-serif" font-size="14" font-weight="normal" font-style="italic">
+      "Where masks reveal truth"
+    </text>
+  </g>
+  
+  <!-- Bottom accent bar -->
+  <rect x="0" y="350" width="800" height="50" fill="url(#accentGradient)" opacity="0.3" rx="0 0 20 20"/>
+  
+  <!-- Bottom text -->
+  <text x="400" y="380" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="12" font-weight="bold">
+    PREMIUM STREAMING NETWORK
+  </text>
+</svg>
+  `;
+
+  const outputPath = path.join(__dirname, '../assets/masked-desires-logo.svg');
+  fs.writeFileSync(outputPath, svg);
+  console.log('✅ Logo-style SVG created: assets/masked-desires-logo.svg');
+  
+  return outputPath;
+};
+
+// Create a more compact, icon-style version
+const createIconStyle = () => {
+  const svg = `
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="iconBackground" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1e1b4b;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#312e81;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="iconAccent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#a855f7;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#ec4899;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background circle -->
+  <circle cx="100" cy="100" r="90" fill="url(#iconBackground)" stroke="url(#iconAccent)" stroke-width="3"/>
+  
+  <!-- Five small mask icons arranged in a circle -->
+  <!-- Top -->
+  <circle cx="100" cy="30" r="12" fill="none" stroke="url(#iconAccent)" stroke-width="2"/>
+  <path d="M 95 25 Q 100 20 105 25 Q 100 30 95 25" fill="url(#iconAccent)"/>
+  
+  <!-- Top-right -->
+  <circle cx="150" cy="70" r="12" fill="none" stroke="url(#iconAccent)" stroke-width="2"/>
+  <path d="M 145 65 Q 150 60 155 65 Q 150 70 145 65" fill="url(#iconAccent)"/>
+  
+  <!-- Bottom-right -->
+  <circle cx="150" cy="130" r="12" fill="none" stroke="url(#iconAccent)" stroke-width="2"/>
+  <path d="M 145 125 Q 150 120 155 125 Q 150 130 145 125" fill="url(#iconAccent)"/>
+  
+  <!-- Bottom -->
+  <circle cx="100" cy="170" r="12" fill="none" stroke="url(#iconAccent)" stroke-width="2"/>
+  <path d="M 95 165 Q 100 160 105 165 Q 100 170 95 165" fill="url(#iconAccent)"/>
+  
+  <!-- Top-left -->
+  <circle cx="50" cy="130" r="12" fill="none" stroke="url(#iconAccent)" stroke-width="2"/>
+  <path d="M 45 125 Q 50 120 55 125 Q 50 130 45 125" fill="url(#iconAccent)"/>
+  
+  <!-- Center: MD initials -->
+  <text x="100" y="110" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="24" font-weight="bold">
+    MD
+  </text>
+</svg>
+  `;
+
+  const outputPath = path.join(__dirname, '../assets/masked-desires-icon.svg');
+  fs.writeFileSync(outputPath, svg);
+  console.log('✅ Icon-style SVG created: assets/masked-desires-icon.svg');
+  
+  return outputPath;
+};
+
+// Create HTML converter for all versions
+const createHTMLConverter = (logoPath, iconPath) => {
+  const logoContent = fs.readFileSync(logoPath, 'utf8');
+  const iconContent = fs.readFileSync(iconPath, 'utf8');
+  
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Masked Desires: Mission Uncut - Logo Collection</title>
+    <style>
+        body { 
+            margin: 0; 
+            padding: 20px; 
+            background: #0f172a; 
+            color: white; 
+            font-family: Arial, sans-serif; 
+            text-align: center;
+        }
+        .container { 
+            max-width: 1000px; 
+            margin: 0 auto; 
+        }
+        .logo-section { 
+            background: #1e293b; 
+            border-radius: 20px; 
+            padding: 30px; 
+            margin: 20px 0; 
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+            border: 2px solid #334155;
+        }
+        .logo-display { 
+            width: 100%; 
+            max-width: 600px; 
+            height: auto; 
+            border-radius: 15px; 
+            box-shadow: 0 10px 30px rgba(139, 92, 246, 0.3);
+            margin: 20px auto;
+            display: block;
+        }
+        .icon-display {
+            width: 200px;
+            height: 200px;
+            margin: 20px auto;
+            display: block;
+        }
+        .download-info {
+            margin-top: 20px;
+            padding: 20px;
+            background: #334155;
+            border-radius: 15px;
+            border: 2px solid #8b5cf6;
+        }
+        .download-btn {
+            display: inline-block;
+            background: linear-gradient(45deg, #8b5cf6, #ec4899);
+            color: white;
+            padding: 15px 30px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: bold;
+            margin: 10px;
+            transition: all 0.3s;
+            border: none;
+            cursor: pointer;
+        }
+        .download-btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 25px rgba(139, 92, 246, 0.4);
+        }
+        .version-info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .version-card {
+            background: #475569;
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid #64748b;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎭 Masked Desires: Mission Uncut</h1>
+        <h2>Logo Collection</h2>
+        
+        <!-- Main Logo -->
+        <div class="logo-section">
+            <h3>🎨 Main Logo (800x400)</h3>
+            <p>Perfect for headers, banners, and main branding</p>
+            <svg class="logo-display" viewBox="0 0 800 400">
+                ${logoContent}
+            </svg>
+            
+            <div class="download-info">
+                <h4>💾 Download Main Logo</h4>
+                <button onclick="downloadSVG('main-logo', 'masked-desires-logo.svg')" class="download-btn">Download SVG</button>
+                <button onclick="downloadPNG('main-logo', 'masked-desires-logo.png', 800, 400)" class="download-btn">Download PNG</button>
+            </div>
+        </div>
+        
+        <!-- Icon Version -->
+        <div class="logo-section">
+            <h3>🔘 Icon Version (200x200)</h3>
+            <p>Perfect for favicons, app icons, and small branding</p>
+            <svg class="icon-display" viewBox="0 0 200 200">
+                ${iconContent}
+            </svg>
+            
+            <div class="download-info">
+                <h4>💾 Download Icon</h4>
+                <button onclick="downloadSVG('icon', 'masked-desires-icon.svg')" class="download-btn">Download SVG</button>
+                <button onclick="downloadPNG('icon', 'masked-desires-icon.png', 200, 200)" class="download-btn">Download PNG</button>
+            </div>
+        </div>
+        
+        <!-- Version Info -->
+        <div class="version-info">
+            <div class="version-card">
+                <h4>🎨 Main Logo Features</h4>
+                <ul style="text-align: left;">
+                    <li>800x400 landscape format</li>
+                    <li>Five mask symbols with labels</li>
+                    <li>Full title and tagline</li>
+                    <li>Professional branding elements</li>
+                    <li>Perfect for headers and banners</li>
+                </ul>
+            </div>
+            <div class="version-card">
+                <h4>🔘 Icon Features</h4>
+                <ul style="text-align: left;">
+                    <li>200x200 square format</li>
+                    <li>Circular design with mask symbols</li>
+                    <li>MD initials in center</li>
+                    <li>Compact and scalable</li>
+                    <li>Perfect for favicons and apps</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div style="margin-top: 30px; color: #94a3b8;">
+            <p><strong>Generated on:</strong> ${new Date().toLocaleDateString()}</p>
+            <p><strong>Both versions are ready for immediate use!</strong></p>
+        </div>
+    </div>
+    
+    <script>
+        function downloadSVG(type, filename) {
+            let svgElement;
+            if (type === 'main-logo') {
+                svgElement = document.querySelector('.logo-display svg');
+            } else {
+                svgElement = document.querySelector('.icon-display svg');
+            }
+            
+            const svgData = new XMLSerializer().serializeToString(svgElement);
+            const svgBlob = new Blob([svgData], {type: 'image/svg+xml;charset=utf-8'});
+            const svgUrl = URL.createObjectURL(svgBlob);
+            const downloadLink = document.createElement('a');
+            downloadLink.href = svgUrl;
+            downloadLink.download = filename;
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            document.body.removeChild(downloadLink);
+        }
+        
+        function downloadPNG(type, filename, width, height) {
+            let svgElement;
+            if (type === 'main-logo') {
+                svgElement = document.querySelector('.logo-display svg');
+            } else {
+                svgElement = document.querySelector('.icon-display svg');
+            }
+            
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const img = new Image();
+            
+            canvas.width = width;
+            canvas.height = height;
+            
+            img.onload = function() {
+                ctx.drawImage(img, 0, 0, width, height);
+                const pngUrl = canvas.toDataURL('image/png');
+                const downloadLink = document.createElement('a');
+                downloadLink.href = pngUrl;
+                downloadLink.download = filename;
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                document.body.removeChild(downloadLink);
+            };
+            
+            const svgData = new XMLSerializer().serializeToString(svgElement);
+            const svgBlob = new Blob([svgData], {type: 'image/svg+xml;charset=utf-8'});
+            img.src = URL.createObjectURL(svgBlob);
+        }
+    </script>
+</body>
+</html>
+  `;
+
+  const htmlPath = path.join(__dirname, '../assets/logo-downloader.html');
+  fs.writeFileSync(htmlPath, html);
+  console.log('🌐 HTML downloader created: assets/logo-downloader.html');
+  
+  return htmlPath;
+};
+
+// Main execution
+console.log('🎨 Creating logo-style versions...');
+const logoPath = createLogoStylePoster();
+const iconPath = createIconStyle();
+const htmlPath = createHTMLConverter(logoPath, iconPath);
+
+console.log('');
+console.log('🎭 Your "Masked Desires: Mission Uncut" logos have been created!');
+console.log('');
+console.log('📁 Files created:');
+console.log(`   • ${logoPath}`);
+console.log(`   • ${iconPath}`);
+console.log(`   • ${htmlPath}`);
+console.log('');
+console.log('🚀 To get your logos:');
+console.log('1. Open logo-downloader.html in your browser');
+console.log('2. Use the download buttons to save as SVG or PNG');
+console.log('3. Choose between main logo (800x400) or icon (200x200)');
+console.log('');
+console.log('✨ Your logo collection is ready for branding!');
+

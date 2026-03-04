@@ -1,0 +1,192 @@
+# GraphQL Schema for Twilly Mobile App
+# Used for fast, cached reads from DynamoDB
+
+type Query {
+  # Get discoverable channels (public/searchable)
+  discoverableChannels(limit: Int, nextToken: String): DiscoverableChannelsResult
+  
+  # Get user's channels
+  myChannels(creatorEmail: String!): [MyChannel!]!
+  
+  # Get content for a specific channel
+  channelContent(
+    channelName: String!
+    creatorEmail: String!
+    limit: Int
+    nextToken: String
+  ): ChannelContentResult
+  
+  # Get a single channel by ID
+  channel(channelId: String!): Channel
+}
+
+type Mutation {
+  # Channel Management Mutations (available to producers and collaborators)
+  
+  # Create a new channel
+  createChannel(
+    channelName: String!
+    description: String
+    visibility: String!
+    category: String
+    subscriptionPrice: Float
+    posterUrl: String
+  ): ChannelMutationResult!
+  
+  # Update channel description
+  updateChannelDescription(
+    channelName: String!
+    description: String!
+  ): ChannelMutationResult!
+  
+  # Update channel poster URL
+  updateChannelPoster(
+    channelName: String!
+    posterUrl: String!
+  ): ChannelMutationResult!
+  
+  # Update channel visibility (public/searchable/private)
+  updateChannelVisibility(
+    channelName: String!
+    visibility: String!
+  ): ChannelMutationResult!
+  
+  # Update channel subscription price
+  updateChannelSubscriptionPrice(
+    channelName: String!
+    subscriptionPrice: Float
+  ): ChannelMutationResult!
+  
+  # Delete a channel (only for channel owner, not collaborators)
+  deleteChannel(
+    channelName: String!
+  ): ChannelMutationResult!
+  
+  # Delete content/item from channel
+  deleteChannelContent(
+    channelName: String!
+    contentId: String!
+  ): ChannelMutationResult!
+  
+  # Add collaborator to channel (only for channel owner)
+  addCollaborator(
+    channelName: String!
+    collaboratorUsername: String!
+  ): CollaboratorMutationResult!
+  
+  # Remove collaborator from channel (only for channel owner)
+  removeCollaborator(
+    channelName: String!
+    collaboratorUserId: String!
+  ): CollaboratorMutationResult!
+}
+
+type Subscription {
+  # Real-time subscription for new videos in a channel
+  onVideoAdded(channelName: String!, creatorEmail: String!): ChannelContent
+}
+
+# Channel types
+type Channel {
+  channelId: String!
+  channelName: String!
+  creatorEmail: String!
+  creatorUsername: String!
+  description: String
+  posterUrl: String
+  visibility: String! # "public", "searchable", or "private"
+  isPublic: Boolean!
+  subscriptionPrice: Float
+  contentType: String
+  createdAt: String
+  updatedAt: String
+}
+
+type DiscoverableChannel {
+  channelId: String!
+  channelName: String!
+  creatorEmail: String!
+  creatorUsername: String!
+  description: String!
+  posterUrl: String!
+  visibility: String!
+  isPublic: Boolean!
+  subscriptionPrice: Float
+  contentType: String
+}
+
+type DiscoverableChannelsResult {
+  channels: [DiscoverableChannel!]!
+  nextToken: String
+}
+
+type MyChannel {
+  channelId: String!
+  channelName: String!
+  visibility: String!
+  subscriptionPrice: Float!
+  description: String!
+  category: String!
+  posterUrl: String
+  createdAt: String
+  updatedAt: String
+  creatorUsername: String!
+}
+
+# Video/Content types
+type ChannelContent {
+  SK: String! # File ID
+  fileName: String!
+  title: String
+  description: String
+  hlsUrl: String
+  thumbnailUrl: String
+  createdAt: String
+  isVisible: Boolean
+  price: Float
+  category: String
+  uploadId: String  # Upload ID for matching during polling
+  fileId: String  # File ID for easier matching
+}
+
+type ChannelContentResult {
+  content: [ChannelContent!]!
+  count: Int!
+  nextToken: String
+}
+
+# Mutation Result Types
+type ChannelMutationResult {
+  success: Boolean!
+  message: String!
+  channel: Channel
+}
+
+type CollaboratorMutationResult {
+  success: Boolean!
+  message: String!
+  collaborator: Collaborator
+  notificationSent: Boolean!
+}
+
+type Collaborator {
+  userId: String!
+  userEmail: String!
+  username: String
+  channelName: String!
+  role: String!
+  joinedAt: String!
+  status: String!
+}
+
+# Notification type for collaborator additions
+type CollaboratorNotification {
+  notificationId: String!
+  userId: String!
+  channelName: String!
+  channelOwnerEmail: String!
+  message: String!
+  createdAt: String!
+  read: Boolean!
+}
+

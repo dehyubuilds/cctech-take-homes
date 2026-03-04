@@ -1,0 +1,79 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Cognito User Pool for username/password authentication with Twilio 2FA'
+
+Resources:
+  Twilly2FAUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: twilly-2fa-users
+      UsernameAttributes: 
+        - email
+      AutoVerifiedAttributes: []
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+      Schema:
+        - Name: custom:username
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+      MfaConfiguration: "OFF"
+      UserPoolAddOns:
+        AdvancedSecurityMode: "OFF"
+      AutoVerifiedAttributes: []
+
+  Twilly2FAUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: twilly-2fa-client
+      UserPoolId: !Ref Twilly2FAUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+      ReadAttributes: []
+      WriteAttributes: []
+
+  Twilly2FAIdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName: twilly-2fa-identity-pool
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref Twilly2FAUserPoolClient
+          ProviderName: !GetAtt Twilly2FAUserPool.ProviderName
+
+  Twilly2FAIdentityPoolRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: twilly-2fa-identity-pool-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                cognito-identity.amazonaws.com:aud: !Ref Twilly2FAIdentityPool
+              ForAnyValue:StringLike:
+                cognito-identity.amazonaws.com:amr: authenticated
+
+Outputs:
+  UserPoolId:
+    Description: ID of the 2FA User Pool
+    Value: !Ref Twilly2FAUserPool
+  UserPoolClientId:
+    Description: ID of the 2FA User Pool Client
+    Value: !Ref Twilly2FAUserPoolClient
+  IdentityPoolId:
+    Description: ID of the 2FA Identity Pool
+    Value: !Ref Twilly2FAIdentityPool

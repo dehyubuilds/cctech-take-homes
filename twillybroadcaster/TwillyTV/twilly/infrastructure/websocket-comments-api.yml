@@ -1,0 +1,198 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS API Gateway WebSocket API for real-time comment notifications'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    Description: Environment name
+  
+  DynamoDBTableName:
+    Type: String
+    Default: Twilly
+    Description: DynamoDB table name
+
+Resources:
+  # WebSocket API
+  WebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${Environment}-comments-websocket-api'
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: '$request.body.action'
+      Description: 'WebSocket API for real-time comment notifications'
+
+  # WebSocket API Stage
+  WebSocketApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref WebSocketApi
+      StageName: !Sub '${Environment}'
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+
+  # Lambda execution role
+  WebSocketLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-websocket-comments-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:DeleteItem
+                  - dynamodb:Scan
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}'
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}/*'
+        - PolicyName: ApiGatewayManagementApiAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - execute-api:ManageConnections
+                Resource:
+                  - !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/*'
+
+  # Connect Lambda
+  WebSocketConnectFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-websocket-comments-connect'
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt WebSocketLambdaRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref DynamoDBTableName
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            return { statusCode: 200, body: 'Connect handler' };
+          };
+
+  # Disconnect Lambda
+  WebSocketDisconnectFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-websocket-comments-disconnect'
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt WebSocketLambdaRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref DynamoDBTableName
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            return { statusCode: 200, body: 'Disconnect handler' };
+          };
+
+  # Send Lambda (for sending messages)
+  WebSocketSendFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: websocket-comments-send
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt WebSocketLambdaRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref DynamoDBTableName
+          WEBSOCKET_API_ENDPOINT: !Sub 'https://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            return { success: true };
+          };
+      Timeout: 30
+
+  # $connect route
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: '$connect'
+      Target: !Sub 'integrations/${ConnectIntegration}'
+
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebSocketConnectFunction.Arn}/invocations'
+
+  # $disconnect route
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: '$disconnect'
+      Target: !Sub 'integrations/${DisconnectIntegration}'
+
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebSocketDisconnectFunction.Arn}/invocations'
+
+  # Lambda permissions
+  ConnectLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebSocketConnectFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/$connect'
+
+  DisconnectLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebSocketDisconnectFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/$disconnect'
+
+Outputs:
+  WebSocketApiId:
+    Description: 'WebSocket API ID'
+    Value: !Ref WebSocketApi
+    Export:
+      Name: !Sub '${Environment}-websocket-comments-api-id'
+
+  WebSocketApiEndpoint:
+    Description: 'WebSocket API Endpoint'
+    Value: !Sub 'wss://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${WebSocketApiStage.StageName}'
+    Export:
+      Name: !Sub '${Environment}-websocket-comments-api-endpoint'
+
+  WebSocketApiEndpointHttp:
+    Description: 'WebSocket API HTTP Endpoint (for Management API)'
+    Value: !Sub 'https://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${WebSocketApiStage.StageName}'
+    Export:
+      Name: !Sub '${Environment}-websocket-comments-api-endpoint-http'
+
+  WebSocketLambdaRoleArn:
+    Description: 'Lambda execution role ARN'
+    Value: !GetAtt WebSocketLambdaRole.Arn
+    Export:
+      Name: !Sub '${Environment}-websocket-comments-lambda-role-arn'

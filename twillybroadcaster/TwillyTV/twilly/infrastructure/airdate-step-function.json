@@ -1,0 +1,36 @@
+{
+  "Comment": "Airdate scheduling workflow",
+  "StartAt": "WaitForAirdate",
+  "States": {
+    "WaitForAirdate": {
+      "Type": "Wait",
+      "TimestampPath": "$.airdate",
+      "Next": "UpdateVisibility"
+    },
+    "UpdateVisibility": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "Twilly",
+        "Key": {
+          "PK": {
+            "S.$": "States.Format('USER#{}', $.userId)"
+          },
+          "SK": {
+            "S.$": "$.episodeId"
+          }
+        },
+        "UpdateExpression": "SET isVisible = :isVisible, airdate = :airdate",
+        "ExpressionAttributeValues": {
+          ":isVisible": {
+            "BOOL": true
+          },
+          ":airdate": {
+            "S.$": "$.airdate"
+          }
+        }
+      },
+      "End": true
+    }
+  }
+}

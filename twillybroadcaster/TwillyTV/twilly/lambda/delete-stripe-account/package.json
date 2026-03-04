@@ -1,0 +1,16 @@
+{
+  "name": "delete-stripe-account",
+  "version": "1.0.0",
+  "description": "Lambda function to delete Stripe Connect accounts",
+  "main": "index.js",
+  "dependencies": {
+    "aws-sdk": "^2.1531.0",
+    "stripe": "^18.4.0"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["stripe", "lambda", "aws"],
+  "author": "",
+  "license": "ISC"
+} 

@@ -1,0 +1,573 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;800&family=VT323&display=swap');
+
+body {
+  background: hwb(0 95% 5% / 0.714);
+  color: #444;
+  margin: 0;
+}
+
+body * {
+  font-family: "Poppins";
+}
+
+
+  .remove-image {
+    margin-left: 8px; /* Adjust margin as needed */
+    cursor: pointer;
+  }
+
+.icon-lg {
+  font-size: 2rem;
+}
+/* header */
+header {
+  text-align: center;
+  background: #fffdf7;
+  padding-top: 20px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+header img {
+  max-width: 60px;
+  transform: rotate(-10deg);
+}
+
+header h1 {
+  margin: 0;
+  font-size: 2em;
+  padding-top: 25px;
+  margin-left: 15px;
+  color: hsl(190, 95%, 30%);
+  transform: rotate(0deg);
+}
+
+/* task list */
+.task-list {
+  max-width: 640px;
+  margin: 20px auto;
+}
+
+.task {
+  padding: 6px 20px;
+  background: #fff;
+  margin-top: 20px;
+  border-radius: 4px;
+  box-shadow: 2px 4px 6px rgba(0, 0, 0, 0.05);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.task h3,
+.task .icons {
+  display: inline-block;
+}
+
+.task .icons {
+  text-align: right;
+}
+
+.flex-container {
+  display: flex;
+  align-items: center;
+  /* Center items vertically */
+}
+
+
+
+.task-text {
+  font-size: 1rem; /* Adjust font size as needed */
+  color: #333; /* Adjust text color as needed */
+ /* Adjust margin as needed */
+}
+
+.button-container {
+  display: flex;
+}
+
+.task-icon-container {
+  display: flex;
+  align-items: center;
+}
+
+.task-text:disabled {
+  background-color: #f5f5f5;
+}
+
+.edit-button {
+  background-color:hsl(190, 95%, 30%); /* Set the background color for the edit button */
+  color: white; /* Set the text color for the edit button */
+  border: none; /* Remove border if needed */
+  padding: 10px; /* Adjust padding as needed */
+  cursor: pointer;
+}
+
+.checkmark-button {
+  background-color: green; /* Set the background color for the checkmark button */
+  color: white; /* Set the text color for the checkmark button */
+  border: none; /* Remove border if needed */
+  padding: 10px; /* Adjust padding as needed */
+  cursor: pointer;
+}
+
+
+
+.submit-button {
+ background-color: #4299e1;
+  /* Adjust the margin as needed */
+}
+
+.edit-checkmark-container {
+  display: flex;
+  align-items: center;
+}
+
+
+.buttonAdd {
+  background-color:hsl(190, 95%, 30%) ;
+  color: rgba(255, 255, 255, 0.718);
+  border: 0;
+  font-family: "Poppins";
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1em;
+  
+}
+
+
+form button {
+  background: hsl(190, 95%, 30%);
+  border: 0;
+  padding: 10px;
+  font-family: "Poppins";
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1em;
+  color: rgba(255, 255, 255, 0.718)
+}
+
+
+.notification-text {
+  color: hsl(190, 95%, 30%);
+  text-align: center;
+
+}
+
+
+
+.buttonEdit {
+  flex: 1;
+  background: hsl(190, 95%, 30%);
+  ;
+  color: rgba(255, 255, 255, 0.344);
+
+  /* Add other styling properties as needed */
+}
+
+
+.below-add {
+  margin-top: auto;
+  /* Adjust this value as needed */
+}
+
+.task i {
+  font-size: 1.4em;
+  margin-left: 6px;
+  cursor: pointer;
+  color: #bbb;
+}
+
+
+.task i.active {
+  color: #ff005d;
+}
+
+/* filter nav */
+.filter {
+  max-width: 640px;
+  /* Set a maximum width */
+  margin: 10px auto;
+  text-align: center;
+}
+
+.task-text {
+  margin-left: 50px;
+}
+
+
+/* Media query for iPhone 12 Pro */
+@media (max-width:  768px) {
+  
+  .translate-date-time-input {
+    border: 0;
+
+    padding: 10px;
+    border-radius: 6px;
+    font-size: 1em; 
+    border: 3px solid hsl(190, 95%, 30%) !important;
+  }
+
+  .translate-date-time-add {
+    box-sizing: border-box; /* Include padding and border in the element's total width and height */
+    border: 3px solid hsl(190, 95%, 30%);
+    border-radius: 6px;
+    font-size: 1em;
+
+    padding: 10px;
+  }
+  .dateandtimepicker {
+    gap: 10px;
+    padding: 10px;
+
+  }
+
+ 
+  
+
+
+  .account__btns {
+    display: flex;
+    flex-direction: column;
+    margin-top: 16px; /* Add margin to create space between buttons */
+  }
+
+  .account__btns div:nth-child(2) {
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .account__btns button {
+    width: 100%;
+  }
+
+  .account__btns-dangerBtn {
+    margin-bottom: 40px;
+  }
+  .filter {
+    width: 100%;
+    /* Use full width for smaller screens */
+  }
+
+  .error-text {
+    color: red;
+    margin-left: 10px;
+   
+  }
+}
+
+.filter button {
+  display: inline-block;
+  margin-left: 10px;
+  background: #fff;
+  border: 2px solid #555;
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 0.8em;
+  font-size: 1em;
+}
+
+.add-form {
+  display: flex;
+  align-items: center;
+}
+
+/* new task form */
+.new-task-form {
+  background: #fffdf7;
+  padding: 20px 0;
+}
+
+.error-message {
+  color: red;
+  margin-top: 5px;
+  /* Adjust the margin as needed */
+  font-size: 14px;
+  /* Adjust the font size as needed */
+}
+
+.edit-input {
+  width: calc(100% - 20px);
+  /* Adjust the padding/margin */
+  height: 40px;
+}
+
+.input-container {
+  position: relative;
+  display: flex;
+}
+
+
+.redo-icon {
+  font-size: 1.4em; /* Adjust the font size as needed */
+  color: #777;
+  margin-top: 9px; /* Adjust the icon color as needed */
+  margin-right: 8px; /* Adjust the spacing between the icon and the input field */
+}
+
+
+.translate-input-add {
+  border: 0;
+  padding: 10px; /* Adjust the padding as needed */
+  border-radius: 6px;
+  font-size: 1em;
+  width: 100%;
+  border: 2px solid hsl(190, 95%, 30%) !important;
+}
+
+
+
+.translate-date-time-add {
+  border: 0;
+  padding: 10px;
+  width: 100%;
+  margin-right: 10px;
+  border-radius: 6px;
+  font-size: 1em; 
+  border: 3px solid hsl(190, 95%, 30%) !important;
+}
+
+
+form {
+  max-width: 400px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 3fr 1fr;
+  gap: 10px;
+  padding: 10px;
+}
+
+
+
+form button {
+  background: hsl(190, 95%, 30%);
+  border: 0;
+  padding: 10px;
+  font-family: "Poppins";
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1em;
+  color: rgba(255, 255, 255, 0.718)
+}
+
+.enterButton {
+  background-color: hsl(190, 95%, 30%);
+  /* Use your preferred shade of green */
+  color: rgba(255, 255, 255, 0.718);
+  border: 0;
+  padding: 10px;
+  font-family: "Poppins";
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1em;
+
+}
+
+
+
+.buttonCheckMark {
+  background: hsl(190, 95%, 30%);
+  border: 0;
+  font-family: "Poppins";
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1em;
+  color: rgba(0, 0, 0, 0.75);
+  
+}
+
+
+.buttonCheckMark:disabled {
+  background: hsl(190, 95%, 30%);
+  border: 0;
+  padding: 5px;
+  font-family: "Poppins";
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1em;
+  width: 80%;
+  color: rgba(0, 0, 0, 0.75);
+  
+}
+
+
+form input {
+  border: 2px solid #4299E1 !important;
+  border: 0;
+  padding: 10px;
+  border-radius: 6px;
+  color: #555;
+  font-size: 1em;
+  width: 100%;
+  outline: none;
+
+
+}
+
+.special-input {
+  border: 0;
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 1em;
+  margin-right: 8px;
+  width: 100%;
+  border: 3px solid hsl(190, 95%, 30%)!important;
+  
+
+  /* Add any other specific styles you want */
+}
+
+.new-task-edit-input {
+  border: 0;
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 1em;
+  width: 100%;
+  border: 3px solid hsl(190, 95%, 30%)!important;  
+}
+
+.translate-input-add {
+  border: 0;
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 1em;
+  width: 100%;
+  border: 2px solid hsl(190, 95%, 30%) !important;
+  /* Add any other specific styles you want */
+}
+
+
+.special-input::placeholder {
+  color: #777;
+  transform: translateX(3px);
+}
+
+
+
+
+.translate-input {
+  border: 0;
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 1em;
+  width: 100%;
+  border: 3px solid hsl(190, 95%, 30%) !important;
+
+  /* Add any other specific styles you want */
+}
+
+.translate-date-time-input {
+    border: 0;
+    width: 100%;
+    padding: 10px;
+    border-radius: 6px;
+    font-size: 1em;
+    border: 3px solid hsl(190, 95%, 30%) !important;
+}
+.translate-date-time-add {
+  border: 0;
+  width: 100%;
+  padding: 10px;
+  margin-right: 10px;
+  border-radius: 6px;
+  font-size: 1em;
+  border: 3px solid hsl(190, 95%, 30%) !important;
+}
+.translate-input-add {
+  border: 0;
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 1em;
+  width: 100%;
+  border: 2px solid #2ecc71 !important;
+  /* Add any other specific styles you want */
+}
+
+.translate-input-add::placeholder {
+  color: #777;
+}
+
+.translate-input-add:disabled {
+  border: 0;
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 1em;
+  width: 100%;
+  border: 2px solid hsl(190, 95%, 30%) !important;
+  /* Add any other specific styles you want */
+}
+
+
+.translate-input::placeholder {
+  color: #777;
+  transform: translateX(3px);
+}
+
+/* loading state */
+.loading {
+  max-width: 640px;
+  border: 1px solid #ffd859;
+  background: #ffe9a0;
+  color: #3a3a3a;
+  padding: 5px 0;
+  text-align: center;
+  margin: 30px auto;
+}
+
+.lds-ring {
+  display: inline-block;
+  position: relative;
+  width: 24px;
+  /* Set the width to match the button's width */
+  height: 24px;
+  /* Set the height to match the button's height */
+  vertical-align: middle;
+  /* Align the spinner vertically in the button */
+}
+
+.lds-ring div {
+  box-sizing: border-box;
+  display: block;
+  position: absolute;
+  width: 18px;
+  /* Set the width to match the button's width minus padding/margin */
+  height: 18px;
+  /* Set the height to match the button's height minus padding/margin */
+  margin: 3px;
+  /* Adjust margin to center the spinner inside the button */
+  border: 3px solid #fff;
+  /* Adjust border width and color as needed */
+  border-radius: 50%;
+  animation: lds-ring 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+  border-color: #444444 transparent transparent transparent;
+}
+
+/* Rest of your CSS remains the same */
+.lds-ring div:nth-child(1) {
+  animation-delay: -0.45s;
+}
+
+.lds-ring div:nth-child(2) {
+  animation-delay: -0.3s;
+}
+
+.lds-ring div:nth-child(3) {
+  animation-delay: -0.15s;
+}
+
+.video-fluid {
+  width: 100%;
+  height: auto;
+}
+
+@keyframes lds-ring {
+  0% {
+    transform: rotate(0deg);
+  }
+
+  100% {
+    transform: rotate(360deg);
+  }
+}

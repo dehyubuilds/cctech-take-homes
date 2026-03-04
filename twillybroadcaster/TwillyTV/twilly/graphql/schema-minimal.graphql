@@ -1,0 +1,47 @@
+type Query {
+  channelContent(channelName: String!, creatorEmail: String!, limit: Int, nextToken: String): ChannelContentResult
+  userAccount(userId: String!): UserAccount
+  myChannels(creatorEmail: String!): [MyChannel!]!
+}
+
+type ChannelContent {
+  SK: String!
+  fileName: String!
+  title: String
+  description: String
+  hlsUrl: String
+  thumbnailUrl: String
+  createdAt: String
+  isVisible: Boolean
+  price: Float
+  category: String
+  uploadId: String
+  fileId: String
+}
+
+type ChannelContentResult {
+  content: [ChannelContent!]!
+  count: Int!
+  nextToken: String
+}
+
+type UserAccount {
+  userId: String!
+  email: String
+  username: String
+  name: String
+}
+
+type MyChannel {
+  channelId: String!
+  channelName: String!
+  visibility: String!
+  subscriptionPrice: Float!
+  description: String!
+  category: String!
+  posterUrl: String
+  createdAt: String
+  updatedAt: String
+  creatorUsername: String!
+}
+

@@ -1,0 +1,10 @@
+{
+  "name": "sync-stripe-status",
+  "version": "1.0.0",
+  "description": "Lambda function to sync Stripe Connect account status",
+  "main": "index.js",
+  "dependencies": {
+    "aws-sdk": "^2.1531.0",
+    "stripe": "^14.12.0"
+  }
+} 

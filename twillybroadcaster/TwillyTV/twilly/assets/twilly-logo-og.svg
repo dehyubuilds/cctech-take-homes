@@ -1,0 +1,27 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Black background -->
+  <rect width="512" height="512" fill="#000000"/>
+  
+  <!-- Main logo container -->
+  <rect x="64" y="64" width="128" height="128" rx="24" fill="url(#gradient)"/>
+  
+  <!-- Play button triangle -->
+  <path d="M104 104L144 124L104 144V104Z" fill="#000000"/>
+  
+  <!-- Twilly text -->
+  <text x="216" y="140" font-family="Arial, sans-serif" font-size="48" font-weight="bold" fill="url(#gradient2)">Twilly</text>
+  
+  <!-- Streaming text -->
+  <text x="216" y="180" font-family="Arial, sans-serif" font-size="24" font-weight="normal" fill="#14B8A6">Streaming Network</text>
+  
+  <defs>
+    <linearGradient id="gradient" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#14B8A6"/>
+      <stop offset="1" stop-color="#06B6A6"/>
+    </linearGradient>
+    <linearGradient id="gradient2" x1="216" y1="100" x2="400" y2="100" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#14B8A6"/>
+      <stop offset="1" stop-color="#06B6A6"/>
+    </linearGradient>
+  </defs>
+</svg>

@@ -1,0 +1,9 @@
+{
+  "name": "stream-processor",
+  "version": "1.0.0",
+  "description": "Lambda function to process FLV files and generate HLS variants + thumbnails",
+  "main": "stream-processor.js",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.490.0"
+  }
+}

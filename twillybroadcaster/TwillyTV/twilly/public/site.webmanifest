@@ -1,0 +1,54 @@
+{
+  "name": "Twilly - Premium Streaming Network",
+  "short_name": "Twilly",
+  "description": "Premium streaming network with 5 exclusive channels. Watch high-quality content anytime, anywhere.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#14b8a6",
+  "orientation": "portrait-primary",
+  "scope": "/",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["entertainment", "lifestyle", "sports", "education"],
+  "prefer_related_applications": false,
+  "related_applications": [],
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "16x16 32x32 48x48 64x64 96x96 128x128 192x192 256x256",
+      "type": "image/x-icon",
+      "purpose": "any maskable"
+    }
+  ],
+
+
+  "edge_side_panel": {
+    "preferred_width": 400
+  },
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  },
+  "protocol_handlers": [
+    {
+      "protocol": "web+twilly",
+      "url": "/?protocol=%s"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Home",
+      "short_name": "Home",
+      "description": "Go to Twilly home page",
+      "url": "/",
+      "icons": [{ "src": "/favicon.ico", "sizes": "96x96" }]
+    },
+    {
+      "name": "Channels",
+      "short_name": "Channels",
+      "description": "Browse Twilly channels",
+      "url": "/",
+      "icons": [{ "src": "/favicon.ico", "sizes": "96x96" }]
+    }
+  ]
+}

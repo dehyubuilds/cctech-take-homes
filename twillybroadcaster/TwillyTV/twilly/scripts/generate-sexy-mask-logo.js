@@ -1,0 +1,328 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+console.log('🎭 Generating Sexy Masked Woman Logo...');
+console.log('');
+
+// Create a sexy, mysterious masked woman logo
+const createSexyMaskLogo = () => {
+  const svg = `
+<svg width="400" height="400" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Dark gradient background -->
+    <linearGradient id="darkBackground" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0f23;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1a0f2e;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Gold accent -->
+    <linearGradient id="goldAccent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#ec4899;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#be185d;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Glow effect -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge> 
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="400" height="400" fill="url(#darkBackground)" rx="20"/>
+  
+  <!-- Woman's face silhouette -->
+  <ellipse cx="200" cy="180" rx="80" ry="100" fill="#8B4513" opacity="0.9"/>
+  
+  <!-- Elegant mask -->
+  <path d="M 140 160 Q 200 140 260 160 Q 200 180 140 160" fill="url(#goldAccent)" filter="url(#glow)"/>
+  <path d="M 140 160 Q 200 140 260 160 Q 200 180 140 160" fill="none" stroke="#fbbf24" stroke-width="2"/>
+  
+  <!-- Mask details -->
+  <path d="M 160 150 Q 200 130 240 150" fill="none" stroke="#fbbf24" stroke-width="1" opacity="0.7"/>
+  <path d="M 170 145 Q 200 125 230 145" fill="none" stroke="#fbbf24" stroke-width="1" opacity="0.5"/>
+  
+  <!-- Eyes (mysterious) -->
+  <ellipse cx="175" cy="170" rx="8" ry="12" fill="#8B4513"/>
+  <ellipse cx="225" cy="170" rx="8" ry="12" fill="#8B4513"/>
+  <ellipse cx="175" cy="170" rx="4" ry="6" fill="#fbbf24" opacity="0.8"/>
+  <ellipse cx="225" cy="170" rx="4" ry="6" fill="#fbbf24" opacity="0.8"/>
+  
+  <!-- Lips (sexy) -->
+  <path d="M 185 200 Q 200 210 215 200 Q 200 205 185 200" fill="#dc2626" opacity="0.8"/>
+  
+  <!-- Hair (flowing and mysterious) -->
+  <path d="M 120 120 Q 140 100 160 120 Q 180 100 200 120 Q 220 100 240 120 Q 260 100 280 120" 
+        fill="none" stroke="#1f2937" stroke-width="8" opacity="0.8"/>
+  <path d="M 130 110 Q 150 90 170 110 Q 190 90 210 110 Q 230 90 250 110 Q 270 90 290 110" 
+        fill="none" stroke="#374151" stroke-width="6" opacity="0.6"/>
+  
+  <!-- Neck and shoulders -->
+  <ellipse cx="200" cy="280" rx="60" ry="40" fill="#8B4513" opacity="0.8"/>
+  
+  <!-- Decorative elements -->
+  <circle cx="200" cy="320" r="15" fill="url(#goldAccent)" opacity="0.6"/>
+  <circle cx="200" cy="340" r="10" fill="url(#goldAccent)" opacity="0.4"/>
+  
+  <!-- Title -->
+  <text x="200" y="380" text-anchor="middle" fill="url(#goldAccent)" font-family="Arial, sans-serif" font-size="18" font-weight="bold" filter="url(#glow)">
+    MASKED DESIRES
+  </text>
+</svg>
+  `;
+
+  const outputPath = path.join(__dirname, '../assets/sexy-mask-logo.svg');
+  fs.writeFileSync(outputPath, svg);
+  console.log('✅ Sexy mask logo created: assets/sexy-mask-logo.svg');
+  
+  return outputPath;
+};
+
+// Create a more stylized, modern version
+const createModernMaskLogo = () => {
+  const svg = `
+<svg width="300" height="300" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Modern dark gradient -->
+    <linearGradient id="modernBackground" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#111827;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1f2937;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Elegant gold -->
+    <linearGradient id="elegantGold" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#ec4899;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#be185d;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#9d174d;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background circle -->
+  <circle cx="150" cy="150" r="140" fill="url(#modernBackground)" stroke="url(#elegantGold)" stroke-width="3"/>
+  
+  <!-- Woman's face -->
+  <ellipse cx="150" cy="140" rx="60" ry="75" fill="#8B4513" opacity="0.9"/>
+  
+  <!-- Sexy mask -->
+  <path d="M 110 125 Q 150 105 190 125 Q 150 145 110 125" fill="url(#elegantGold)" opacity="0.9"/>
+  <path d="M 110 125 Q 150 105 190 125 Q 150 145 110 125" fill="none" stroke="#fbbf24" stroke-width="2"/>
+  
+  <!-- Mysterious eyes -->
+  <ellipse cx="135" cy="135" rx="6" ry="9" fill="#8B4513"/>
+  <ellipse cx="165" cy="135" rx="6" ry="9" fill="#8B4513"/>
+  <ellipse cx="135" cy="135" rx="3" ry="4" fill="#fbbf24" opacity="0.9"/>
+  <ellipse cx="165" cy="135" rx="3" ry="4" fill="#fbbf24" opacity="0.9"/>
+  
+  <!-- Sensual lips -->
+  <path d="M 140 155 Q 150 160 160 155 Q 150 158 140 155" fill="#dc2626" opacity="0.8"/>
+  
+  <!-- Flowing hair -->
+  <path d="M 90 110 Q 110 90 130 110 Q 150 90 170 110 Q 190 90 210 110" 
+        fill="none" stroke="#374151" stroke-width="6" opacity="0.8"/>
+  
+  <!-- Neck -->
+  <ellipse cx="150" cy="200" rx="45" ry="30" fill="#8B4513" opacity="0.8"/>
+  
+  <!-- Decorative accent -->
+  <circle cx="150" cy="240" r="12" fill="url(#elegantGold)" opacity="0.7"/>
+  
+  <!-- MD initials -->
+  <text x="150" y="270" text-anchor="middle" fill="url(#elegantGold)" font-family="Arial, sans-serif" font-size="20" font-weight="bold">
+    MD
+  </text>
+</svg>
+  `;
+
+  const outputPath = path.join(__dirname, '../assets/modern-mask-logo.svg');
+  fs.writeFileSync(outputPath, svg);
+  console.log('✅ Modern mask logo created: assets/modern-mask-logo.svg');
+  
+  return outputPath;
+};
+
+// Create HTML viewer
+const createHTMLViewer = (logo1Path, logo2Path) => {
+  const logo1Content = fs.readFileSync(logo1Path, 'utf8');
+  const logo2Content = fs.readFileSync(logo2Path, 'utf8');
+  
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Sexy Mask Logo Collection</title>
+    <style>
+        body { 
+            margin: 0; 
+            padding: 20px; 
+            background: #0f0f23; 
+            color: white; 
+            font-family: Arial, sans-serif; 
+            text-align: center;
+        }
+        .container { 
+            max-width: 800px; 
+            margin: 0 auto; 
+        }
+        .logo-section { 
+            background: #1a0f2e; 
+            border-radius: 20px; 
+            padding: 30px; 
+            margin: 20px 0; 
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+            border: 2px solid #fbbf24;
+        }
+        .logo-display { 
+            width: 300px;
+            height: 300px;
+            margin: 20px auto;
+            display: block;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(251, 191, 36, 0.3);
+        }
+        .download-btn {
+            display: inline-block;
+            background: linear-gradient(45deg, #fbbf24, #f59e0b);
+            color: #111827;
+            padding: 15px 30px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: bold;
+            margin: 10px;
+            transition: all 0.3s;
+            border: none;
+            cursor: pointer;
+        }
+        .download-btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 25px rgba(251, 191, 36, 0.4);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎭 Sexy Mask Logo Collection</h1>
+        <h2>Mysterious & Desirable</h2>
+        
+        <!-- Main Logo -->
+        <div class="logo-section">
+            <h3>🎨 Main Logo (400x400)</h3>
+            <p>Sexy, mysterious masked woman with elegant styling</p>
+            <svg class="logo-display" viewBox="0 0 400 400">
+                ${logo1Content}
+            </svg>
+            
+            <div>
+                <button onclick="downloadSVG('main-logo', 'sexy-mask-logo.svg')" class="download-btn">Download SVG</button>
+                <button onclick="downloadPNG('main-logo', 'sexy-mask-logo.png', 400, 400)" class="download-btn">Download PNG</button>
+            </div>
+        </div>
+        
+        <!-- Modern Version -->
+        <div class="logo-section">
+            <h3>🔘 Modern Version (300x300)</h3>
+            <p>Clean, circular design perfect for icons</p>
+            <svg class="logo-display" viewBox="0 0 300 300">
+                ${logo2Content}
+            </svg>
+            
+            <div>
+                <button onclick="downloadSVG('modern', 'modern-mask-logo.svg')" class="download-btn">Download SVG</button>
+                <button onclick="downloadPNG('modern', 'modern-mask-logo.png', 300, 300)" class="download-btn">Download PNG</button>
+            </div>
+        </div>
+        
+        <div style="margin-top: 30px; color: #fbbf24;">
+            <p><strong>Generated on:</strong> ${new Date().toLocaleDateString()}</p>
+            <p><strong>Sexy, mysterious, and ready to use!</strong></p>
+        </div>
+    </div>
+    
+    <script>
+        function downloadSVG(type, filename) {
+            let svgElement;
+            if (type === 'main-logo') {
+                svgElement = document.querySelector('.logo-section:first-child svg');
+            } else {
+                svgElement = document.querySelector('.logo-section:last-child svg');
+            }
+            
+            const svgData = new XMLSerializer().serializeToString(svgElement);
+            const svgBlob = new Blob([svgData], {type: 'image/svg+xml;charset=utf-8'});
+            const svgUrl = URL.createObjectURL(svgBlob);
+            const downloadLink = document.createElement('a');
+            downloadLink.href = svgUrl;
+            downloadLink.download = filename;
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            document.body.removeChild(downloadLink);
+        }
+        
+        function downloadPNG(type, filename, width, height) {
+            let svgElement;
+            if (type === 'main-logo') {
+                svgElement = document.querySelector('.logo-section:first-child svg');
+            } else {
+                svgElement = document.querySelector('.logo-section:last-child svg');
+            }
+            
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const img = new Image();
+            
+            canvas.width = width;
+            canvas.height = height;
+            
+            img.onload = function() {
+                ctx.drawImage(img, 0, 0, width, height);
+                const pngUrl = canvas.toDataURL('image/png');
+                const downloadLink = document.createElement('a');
+                downloadLink.href = pngUrl;
+                downloadLink.download = filename;
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                document.body.removeChild(downloadLink);
+            };
+            
+            const svgData = new XMLSerializer().serializeToString(svgElement);
+            const svgBlob = new Blob([svgData], {type: 'image/svg+xml;charset=utf-8'});
+            img.src = URL.createObjectURL(svgBlob);
+        }
+    </script>
+</body>
+</html>
+  `;
+
+  const htmlPath = path.join(__dirname, '../assets/sexy-mask-viewer.html');
+  fs.writeFileSync(htmlPath, html);
+  console.log('🌐 HTML viewer created: assets/sexy-mask-viewer.html');
+  
+  return htmlPath;
+};
+
+// Main execution
+console.log('🎭 Creating sexy mask logos...');
+const logo1Path = createSexyMaskLogo();
+const logo2Path = createModernMaskLogo();
+const htmlPath = createHTMLViewer(logo1Path, logo2Path);
+
+console.log('');
+console.log('🎭 Your sexy mask logos are ready!');
+console.log('');
+console.log('📁 Files created:');
+console.log(`   • ${logo1Path}`);
+console.log(`   • ${logo2Path}`);
+console.log(`   • ${htmlPath}`);
+console.log('');
+console.log('🚀 To view and download:');
+console.log('1. Open sexy-mask-viewer.html in your browser');
+console.log('2. Use the download buttons for SVG or PNG');
+console.log('3. Choose between main logo or modern version');
+console.log('');
+console.log('✨ Sexy, mysterious, and desirable logos ready!');
