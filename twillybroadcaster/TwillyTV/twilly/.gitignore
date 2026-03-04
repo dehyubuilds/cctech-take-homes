@@ -38,7 +38,7 @@ amplify/backend/.temp
 build/
 dist/
 node_modules/
-aws-exports.js
+# aws-exports.js committed (env-based) for CI; Amplify can overwrite locally
 awsconfiguration.json
 amplifyconfiguration.json
 amplifyconfiguration.dart
