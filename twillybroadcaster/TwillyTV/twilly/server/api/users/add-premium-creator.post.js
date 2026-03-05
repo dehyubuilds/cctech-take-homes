@@ -1,7 +1,7 @@
 /**
- * Add a creator to the viewer's premium feed (Twilly TV Premium).
- * Caller must have platform subscription (Twilly TV Premium). Writes SUBSCRIBED_CREATOR#
- * so get-content includes that creator's premium posts in the viewer's premium tab.
+ * Add a premium-enabled creator to the viewer's premium feed (Twilly TV).
+ * Same model as public: ADDED_USERNAME#creatorEmail#premium + STREAMER_FOLLOWERS with streamerVisibility='premium'.
+ * No subscription/payment; premium works like public but for premium-enabled users.
  */
 import AWS from 'aws-sdk';
 import { defineEventHandler, readBody, createError } from 'h3';
@@ -18,41 +18,45 @@ const table = 'Twilly';
 export default defineEventHandler(async (event) => {
   try {
     const body = await readBody(event);
-    const { subscriberEmail, creatorEmail, creatorUsername } = body;
+    const { viewerEmail, creatorEmail, creatorUsername } = body;
 
-    if (!subscriberEmail || !creatorEmail) {
+    if (!viewerEmail || !creatorEmail) {
       throw createError({
         statusCode: 400,
-        statusMessage: 'Missing required fields: subscriberEmail, creatorEmail'
+        statusMessage: 'Missing required fields: viewerEmail, creatorEmail'
       });
     }
 
-    const subEmail = subscriberEmail.toLowerCase().trim();
-    const crEmail = creatorEmail.toLowerCase().trim();
+    const vEmail = viewerEmail.toLowerCase().trim();
+    const cEmail = creatorEmail.toLowerCase().trim();
     const now = new Date().toISOString();
 
-    // Optional: enforce platform sub (has Twilly TV Premium)
-    const platformSub = await dynamodb.get({
+    // Idempotent: if already added for premium, return success
+    const existing = await dynamodb.get({
       TableName: table,
-      Key: { PK: `USER#${subEmail}`, SK: 'TWILLY_TV_PREMIUM_SUB' }
+      Key: {
+        PK: `USER#${vEmail}`,
+        SK: `ADDED_USERNAME#${cEmail}#premium`
+      }
     }).promise();
-    const hasPlatformPremium = platformSub.Item && (platformSub.Item.status === 'active' || platformSub.Item.status === 'trialing');
-    if (!hasPlatformPremium) {
+    if (existing.Item) {
       return {
-        success: false,
-        message: 'Subscribe to Twilly TV Premium first to add creators to your premium feed.',
-        requiresPlatformPremium: true
+        success: true,
+        message: 'Creator already in your premium feed.',
+        viewerEmail: vEmail,
+        creatorEmail: cEmail
       };
     }
 
     await dynamodb.put({
       TableName: table,
       Item: {
-        PK: `USER#${subEmail}`,
-        SK: `SUBSCRIBED_CREATOR#${crEmail}`,
+        PK: `USER#${vEmail}`,
+        SK: `ADDED_USERNAME#${cEmail}#premium`,
         status: 'active',
-        creatorEmail: crEmail,
-        creatorUsername: creatorUsername || null,
+        streamerEmail: cEmail,
+        streamerUsername: creatorUsername || null,
+        streamerVisibility: 'premium',
         addedAt: now
       }
     }).promise();
@@ -60,19 +64,19 @@ export default defineEventHandler(async (event) => {
     await dynamodb.put({
       TableName: table,
       Item: {
-        PK: `USER#${crEmail}`,
-        SK: `SUBSCRIPTION#${subEmail}`,
+        PK: `STREAMER_FOLLOWERS#${cEmail}`,
+        SK: `VIEWER#${vEmail}`,
+        streamerVisibility: 'premium',
         status: 'active',
-        subscriberEmail: subEmail,
-        createdAt: now
+        addedAt: now
       }
     }).promise();
 
     return {
       success: true,
       message: 'Creator added to your premium feed. Their premium posts will appear in the Premium tab.',
-      subscriberEmail: subEmail,
-      creatorEmail: crEmail
+      viewerEmail: vEmail,
+      creatorEmail: cEmail
     };
   } catch (error) {
     console.error('❌ [add-premium-creator] Error:', error);

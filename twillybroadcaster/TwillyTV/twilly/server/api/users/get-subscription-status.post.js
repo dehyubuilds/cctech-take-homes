@@ -21,40 +21,39 @@ export default defineEventHandler(async (event) => {
       });
     }
 
-    console.log(`📋 [get-subscription-status] Checking subscription: ${subscriberEmail} -> ${creatorEmail}`);
+    console.log(`📋 [get-subscription-status] Checking premium add: ${subscriberEmail} -> ${creatorEmail}`);
 
-    // Query for active subscription
-    // Subscription records are stored with PK: USER#creatorEmail, SK: SUBSCRIPTION#subscriberEmail
-    const subscriptionResult = await dynamodb.get({
+    const sub = (subscriberEmail || '').toLowerCase().trim();
+    const cr = (creatorEmail || '').toLowerCase().trim();
+
+    // Premium uses add model: ADDED_USERNAME#creatorEmail#premium under USER#viewer
+    const addedPremium = await dynamodb.get({
       TableName: table,
       Key: {
-        PK: `USER#${creatorEmail}`,
-        SK: `SUBSCRIPTION#${subscriberEmail}`
+        PK: `USER#${sub}`,
+        SK: `ADDED_USERNAME#${cr}#premium`
       }
     }).promise();
 
-    if (!subscriptionResult.Item) {
+    if (addedPremium.Item && addedPremium.Item.status === 'active') {
+      console.log(`✅ [get-subscription-status] Premium add found (active)`);
       return {
         success: true,
-        isSubscribed: false,
-        status: 'none',
-        subscriptionId: null
+        isSubscribed: true,
+        status: 'active',
+        subscriptionId: null,
+        createdAt: addedPremium.Item.addedAt || null,
+        amount: null
       };
     }
 
-    const subscription = subscriptionResult.Item;
-    const isActive = subscription.status === 'active' || subscription.status === 'trialing';
-    const isSubscribed = isActive;
-
-    console.log(`✅ [get-subscription-status] Subscription found: ${isSubscribed ? 'active' : subscription.status}`);
-
     return {
       success: true,
-      isSubscribed,
-      status: subscription.status || 'none',
-      subscriptionId: subscription.subscriptionId || null,
-      createdAt: subscription.createdAt || null,
-      amount: subscription.amount || null
+      isSubscribed: false,
+      status: 'none',
+      subscriptionId: null,
+      createdAt: null,
+      amount: null
     };
 
   } catch (error) {

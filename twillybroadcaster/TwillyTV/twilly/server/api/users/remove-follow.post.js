@@ -35,34 +35,35 @@ export default defineEventHandler(async (event) => {
     // CRITICAL: Handle both ADDED_USERNAME (public) and FOLLOW_REQUEST (private)
     // These are COMPLETELY INDEPENDENT - removing one should NOT affect the other
     
-    // 1. Try to delete ADDED_USERNAME entry (for public accounts - "Add" button)
-    // CRITICAL: SK format includes visibility: ADDED_USERNAME#ownerEmail#public or #private
-    // Try public first (most common)
-    const addedUsernamePublicParams = {
-      TableName: table,
-      Key: {
-        PK: `USER#${requesterEmail}`,
-        SK: `ADDED_USERNAME#${requestedUserEmail}#public`
+    // 1. Try to delete ADDED_USERNAME entry (public, private, or premium)
+    // CRITICAL: SK format includes visibility: ADDED_USERNAME#ownerEmail#public | #private | #premium
+    for (const visibility of ['public', 'private', 'premium']) {
+      const addedParams = {
+        TableName: table,
+        Key: {
+          PK: `USER#${requesterEmail}`,
+          SK: `ADDED_USERNAME#${requestedUserEmail}#${visibility}`
+        }
+      };
+      try {
+        const item = await dynamodb.get(addedParams).promise();
+        if (item.Item) {
+          await dynamodb.delete(addedParams).promise();
+          await dynamodb.delete({
+            TableName: table,
+            Key: {
+              PK: `STREAMER_FOLLOWERS#${requestedUserEmail}`,
+              SK: `VIEWER#${requesterEmail}`
+            }
+          }).promise().catch(() => {});
+          deletedSomething = true;
+          deletedType = deletedType || 'ADDED_USERNAME';
+          console.log(`✅ [remove-follow] Deleted ADDED_USERNAME entry (${visibility})`);
+          break;
+        }
+      } catch (error) {
+        console.log(`ℹ️ [remove-follow] ADDED_USERNAME #${visibility} not found or error: ${error.message}`);
       }
-    };
-
-    try {
-      const addedUsernameItem = await dynamodb.get(addedUsernamePublicParams).promise();
-      if (addedUsernameItem.Item) {
-        await dynamodb.delete(addedUsernamePublicParams).promise();
-        await dynamodb.delete({
-          TableName: table,
-          Key: {
-            PK: `STREAMER_FOLLOWERS#${requestedUserEmail}`,
-            SK: `VIEWER#${requesterEmail}`
-          }
-        }).promise().catch(() => {});
-        deletedSomething = true;
-        deletedType = 'ADDED_USERNAME';
-        console.log(`✅ [remove-follow] Deleted ADDED_USERNAME entry (public account)`);
-      }
-    } catch (error) {
-      console.log(`ℹ️ [remove-follow] ADDED_USERNAME public entry not found or error: ${error.message}`);
     }
     
     // Also try old format (for backward compatibility during migration)

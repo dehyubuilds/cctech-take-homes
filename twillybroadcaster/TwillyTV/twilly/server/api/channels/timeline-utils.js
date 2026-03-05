@@ -76,55 +76,33 @@ export async function createTimelineEntry(viewerEmail, fileData, creatorEmail, t
 
 /**
  * Fan-out: add file to all followers' timelines for the given type (PUBLIC, PRIVATE, or PREMIUM).
- * PUBLIC/PRIVATE: followers from ADDED_USERNAME with matching streamerVisibility.
- * PREMIUM: subscribers from SUBSCRIBED_CREATOR# for this creator.
+ * All three use the same pattern: STREAMER_FOLLOWERS#creator with VIEWER#viewerEmail and streamerVisibility = public | private | premium.
  */
 export async function fanOutToTimelines(creatorEmail, fileData, timelineType = TIMELINE_TYPES.PUBLIC) {
   const typeUpper = (timelineType || TIMELINE_TYPES.PUBLIC).toUpperCase();
   try {
     console.log(`📤 [timeline-utils] Fan-out: creator=${creatorEmail}, timelineType=${typeUpper}`);
 
-    let followers = [];
-
-    // Query reverse indexes (no scans): STREAMER_FOLLOWERS#creator, CREATOR_SUBSCRIBERS#creator
-    if (typeUpper === TIMELINE_TYPES.PREMIUM) {
-      const queryParams = {
-        TableName: table,
-        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
-        FilterExpression: '#status = :active',
-        ExpressionAttributeNames: { '#status': 'status' },
-        ExpressionAttributeValues: {
-          ':pk': `CREATOR_SUBSCRIBERS#${(creatorEmail || '').toLowerCase()}`,
-          ':skPrefix': 'SUBSCRIBER#',
-          ':active': 'active'
-        }
-      };
-      const queryResult = await dynamodb.query(queryParams).promise();
-      followers = (queryResult.Items || []).map(it => {
-        const viewerEmail = (it.SK || '').replace('SUBSCRIBER#', '');
-        return { PK: `USER#${viewerEmail}`, streamerVisibility: 'premium' };
-      });
-    } else {
-      const isPrivate = typeUpper === TIMELINE_TYPES.PRIVATE;
-      const vis = isPrivate ? 'private' : 'public';
-      const queryParams = {
-        TableName: table,
-        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
-        FilterExpression: 'streamerVisibility = :vis AND #status = :active',
-        ExpressionAttributeNames: { '#status': 'status' },
-        ExpressionAttributeValues: {
-          ':pk': `STREAMER_FOLLOWERS#${(creatorEmail || '').toLowerCase()}`,
-          ':skPrefix': 'VIEWER#',
-          ':vis': vis,
-          ':active': 'active'
-        }
-      };
-      const result = await dynamodb.query(queryParams).promise();
-      followers = (result.Items || []).map(it => {
-        const viewerEmail = (it.SK || '').replace('VIEWER#', '');
-        return { PK: `USER#${viewerEmail}`, streamerVisibility: it.streamerVisibility || vis };
-      });
-    }
+    const isPrivate = typeUpper === TIMELINE_TYPES.PRIVATE;
+    const isPremium = typeUpper === TIMELINE_TYPES.PREMIUM;
+    const vis = isPremium ? 'premium' : (isPrivate ? 'private' : 'public');
+    const queryParams = {
+      TableName: table,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
+      FilterExpression: 'streamerVisibility = :vis AND #status = :active',
+      ExpressionAttributeNames: { '#status': 'status' },
+      ExpressionAttributeValues: {
+        ':pk': `STREAMER_FOLLOWERS#${(creatorEmail || '').toLowerCase()}`,
+        ':skPrefix': 'VIEWER#',
+        ':vis': vis,
+        ':active': 'active'
+      }
+    };
+    const result = await dynamodb.query(queryParams).promise();
+    const followers = (result.Items || []).map(it => {
+      const viewerEmail = (it.SK || '').replace('VIEWER#', '');
+      return { PK: `USER#${viewerEmail}`, streamerVisibility: it.streamerVisibility || vis };
+    });
 
     console.log(`📤 [timeline-utils] ${followers.length} followers for ${typeUpper}`);
 
@@ -236,6 +214,22 @@ export async function populateTimelineOnAdd(viewerEmail, addedUserEmail, addedUs
 }
 
 /**
+ * True if this timeline SK references the given fileId (exact match in segment, not substring).
+ * SK format: PUBLIC#ts#fileId#creatorEmail | PRIVATE#ts#fileId#email | PREMIUM#ts#fileId#email
+ * Segment may be "file-upload-123" or "FILE#file-upload-123" (legacy).
+ */
+function skReferencesFile(sk, shortId) {
+  if (!sk || typeof sk !== 'string' || !shortId) return false;
+  const parts = sk.split('#');
+  if (parts.length < 3) return false;
+  const prefix = (parts[0] || '').toUpperCase();
+  if (!['PUBLIC', 'PRIVATE', 'PREMIUM'].includes(prefix)) return false;
+  let segmentFileId = (parts[2] || '').trim();
+  if (segmentFileId.startsWith('FILE#')) segmentFileId = segmentFileId.replace(/^FILE#/, '').trim();
+  return segmentFileId === shortId;
+}
+
+/**
  * Remove ALL timeline entries (PUBLIC#, PRIVATE#, PREMIUM#) that reference a given file, across ALL users.
  * Call this when a FILE is deleted so the video never reappears in any timeline.
  * @param {string} fileId - FILE SK (e.g. "FILE#file-upload-123-abc") or short id ("file-upload-123-abc")
@@ -261,7 +255,9 @@ export async function removeTimelineEntriesForFile(fileId) {
       };
       const result = await dynamodb.scan(scanParams).promise();
       const items = result.Items || [];
-      entriesToRemove = entriesToRemove.concat(items);
+      // Only include items where SK segment (e.g. PREMIUM#ts#fileId#email) has exact fileId match
+      const matched = items.filter(entry => skReferencesFile(entry.SK, shortId));
+      entriesToRemove = entriesToRemove.concat(matched);
       lastKey = result.LastEvaluatedKey || null;
     } while (lastKey);
 
@@ -285,6 +281,47 @@ export async function removeTimelineEntriesForFile(fileId) {
     return true;
   } catch (error) {
     console.error(`❌ [timeline-utils] Error removing timeline entries for file: ${error.message}`);
+    return false;
+  }
+}
+
+/**
+ * Remove timeline entries for a file from a specific user's timeline (targeted, no scan).
+ * Use when deleting so the deleter's own PREMIUM#/PUBLIC#/PRIVATE# entries are removed even if global scan fails.
+ */
+export async function removeTimelineEntriesForFileForUser(userEmail, fileId) {
+  if (!userEmail || !fileId || typeof fileId !== 'string') return;
+  const shortId = fileId.replace(/^FILE#/, '').trim();
+  if (!shortId) return;
+  const pk = `USER#${String(userEmail).toLowerCase().trim()}`;
+  const prefixes = ['PREMIUM#', 'PUBLIC#', 'PRIVATE#'];
+  let removed = 0;
+  try {
+    for (const prefix of prefixes) {
+      const res = await dynamodb.query({
+        TableName: table,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :prefix)',
+        ExpressionAttributeValues: { ':pk': pk, ':prefix': prefix }
+      }).promise();
+      const items = (res.Items || []).filter(entry => skReferencesFile(entry.SK, shortId));
+      if (items.length === 0) continue;
+      const BATCH = 25;
+      for (let i = 0; i < items.length; i += BATCH) {
+        const chunk = items.slice(i, i + BATCH);
+        await dynamodb.batchWrite({
+          RequestItems: {
+            [table]: chunk.map(entry => ({ DeleteRequest: { Key: { PK: entry.PK, SK: entry.SK } } }))
+          }
+        }).promise();
+        removed += chunk.length;
+      }
+    }
+    if (removed > 0) {
+      console.log(`🗑️ [timeline-utils] Removed ${removed} timeline entries for file ${shortId} from ${pk}`);
+    }
+    return true;
+  } catch (err) {
+    console.error(`❌ [timeline-utils] removeTimelineEntriesForFileForUser: ${err.message}`);
     return false;
   }
 }

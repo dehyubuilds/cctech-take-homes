@@ -16,7 +16,9 @@ const MIN_DURATION_SECONDS = 6
 export default defineEventHandler(async (event) => {
   try {
     const body = await readBody(event)
-    const { channelName, streamKey, title, description, price, userEmail, scheduledDropDate, postImmediately, durationSeconds } = body
+    const { channelName, streamKey, title, description, price, userEmail, scheduledDropDate, postImmediately, durationSeconds, isPrivateUsername: bodyIsPrivate, isPremium: bodyIsPremium } = body
+    // Stream drop screen can send current visibility; use when present so Public/Private/Premium go to the right timeline
+    const bodyVisibility = (bodyIsPrivate !== undefined && bodyIsPrivate !== null) || (bodyIsPremium !== undefined && bodyIsPremium !== null)
 
     if (!streamKey) {
       throw createError({
@@ -176,25 +178,45 @@ export default defineEventHandler(async (event) => {
       })
     }
     
-    console.log(`✅ Using creatorEmail: ${creatorEmail}`)
+    // Normalize creator PK for consistent writes and lookups (timelines use lowercase)
+    const creatorPk = (creatorEmail || '').toLowerCase().trim()
+    console.log(`✅ Using creatorEmail: ${creatorEmail} (PK: USER#${creatorPk})`)
 
-    // Query for files (PK = USER#email, SK starts with FILE#)
-    // Filter by streamKey only (files might be saved with different folderName, e.g., "default")
-    // CRITICAL FIX: Find the MOST RECENT file (by timestamp) to prevent overwriting old videos
-    const queryParams = {
-      TableName: TABLE_NAME,
-      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
-      FilterExpression: 'streamKey = :streamKey',
-      ExpressionAttributeValues: {
-        ':pk': `USER#${creatorEmail}`,
-        ':skPrefix': 'FILE#',
-        ':streamKey': streamKey
-      },
-      // Get more items to find the most recent one
-      Limit: 50
+    // Resolve visibility for this drop: prefer body (stream drop screen) over stream key mapping
+    const resolveVisibility = () => {
+      if (bodyVisibility) {
+        const priv = bodyIsPrivate === true || bodyIsPrivate === 'true' || bodyIsPrivate === 1
+        const prem = bodyIsPremium === true || bodyIsPremium === 'true' || bodyIsPremium === 1
+        console.log(`📌 [convert-to-post] Using visibility from request body: isPrivateUsername=${priv}, isPremium=${prem}`)
+        return { isPrivateUsername: priv, isPremium: prem }
+      }
+      const fromMapping = streamKeyMapping && {
+        isPrivateUsername: streamKeyMapping.isPrivateUsername === true || streamKeyMapping.isPrivateUsername === 'true' || streamKeyMapping.isPrivateUsername === 1,
+        isPremium: streamKeyMapping.isPremium === true || streamKeyMapping.isPremium === 'true' || streamKeyMapping.isPremium === 1
+      }
+      return fromMapping || { isPrivateUsername: false, isPremium: false }
     }
 
-    const result = await dynamodb.query(queryParams).promise()
+    // Query for files (PK = USER#email, SK starts with FILE#). Use lowercase first so we find FILEs we wrote.
+    const queryFiles = async (pk) => {
+      const res = await dynamodb.query({
+        TableName: TABLE_NAME,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
+        FilterExpression: 'streamKey = :streamKey',
+        ExpressionAttributeValues: {
+          ':pk': pk,
+          ':skPrefix': 'FILE#',
+          ':streamKey': streamKey
+        },
+        Limit: 50
+      }).promise()
+      return res.Items || []
+    }
+    let items = await queryFiles(`USER#${creatorPk}`)
+    if (items.length === 0 && creatorEmail.trim() !== creatorPk) {
+      items = await queryFiles(`USER#${creatorEmail.trim()}`)
+    }
+    const result = { Items: items }
     
     // Find the MOST RECENT file by timestamp (not the first one!)
     // This prevents overwriting old videos when stream keys are reused
@@ -262,10 +284,10 @@ export default defineEventHandler(async (event) => {
       const fileName = `${streamKey}_placeholder.m3u8`
       const currentTimestamp = new Date().toISOString()
       const isScheduledPlaceholder = isScheduledDropByInput(scheduledDropDate, postImmediately)
-      const isPrivateUsername = streamKeyMapping && (streamKeyMapping.isPrivateUsername === true || streamKeyMapping.isPrivateUsername === 'true' || streamKeyMapping.isPrivateUsername === 1)
-      const isPremium = streamKeyMapping && (streamKeyMapping.isPremium === true || streamKeyMapping.isPremium === 'true' || streamKeyMapping.isPremium === 1)
+      const { isPrivateUsername: isPrivateUsernameRes, isPremium: isPremiumRes } = resolveVisibility()
+      const creatorPk = (creatorEmail || '').toLowerCase().trim()
       const placeholderFile = {
-        PK: `USER#${creatorEmail}`,
+        PK: `USER#${creatorPk}`,
         SK: `FILE#${fileId}`,
         fileName: fileName,
         fileExtension: 'm3u8',
@@ -282,8 +304,8 @@ export default defineEventHandler(async (event) => {
         hlsUrl: null,
         thumbnailUrl: null,
         url: null,
-        isPrivateUsername: !!isPrivateUsername,
-        isPremium: !!isPremium,
+        isPrivateUsername: !!isPrivateUsernameRes,
+        isPremium: !!isPremiumRes,
         ...(isScheduledPlaceholder ? { status: 'HELD', scheduledDropDate, releaseStatus: 'HELD' } : {}),
         ...(durationSeconds != null && Number(durationSeconds) > 0 ? { durationSeconds: Number(durationSeconds) } : {})
       }
@@ -295,7 +317,7 @@ export default defineEventHandler(async (event) => {
       }).promise()
       
       console.log(`✅ Created placeholder file entry: ${fileId}`)
-      console.log(`   Visibility: isPrivateUsername=${!!isPrivateUsername}, isPremium=${!!isPremium}`)
+      console.log(`   Visibility: isPrivateUsername=${!!isPrivateUsernameRes}, isPremium=${!!isPremiumRes}`)
       if (isScheduledPlaceholder) console.log(`   📅 Scheduled drop: status=HELD, scheduledDropDate=${scheduledDropDate}`)
       if (durationSeconds != null && Number(durationSeconds) > 0) console.log(`   📏 durationSeconds: ${durationSeconds}`)
       try {
@@ -394,11 +416,11 @@ export default defineEventHandler(async (event) => {
         const fileName = `${streamKey}_placeholder.m3u8`
         const currentTimestamp = new Date().toISOString()
         const isScheduledPlaceholder = isScheduledDropByInput(scheduledDropDate, postImmediately)
-        const isPrivateUsername = streamKeyMapping && (streamKeyMapping.isPrivateUsername === true || streamKeyMapping.isPrivateUsername === 'true' || streamKeyMapping.isPrivateUsername === 1)
-        const isPremium = streamKeyMapping && (streamKeyMapping.isPremium === true || streamKeyMapping.isPremium === 'true' || streamKeyMapping.isPremium === 1)
+        const vis2 = resolveVisibility()
+        const creatorPkVis = (creatorEmail || '').toLowerCase().trim()
         // Create placeholder file entry (scheduled drop → status HELD for timeline premiere card)
         const placeholderFile = {
-          PK: `USER#${creatorEmail}`,
+          PK: `USER#${creatorPkVis}`,
           SK: `FILE#${fileId}`,
           fileName: fileName,
           fileExtension: 'm3u8',
@@ -415,8 +437,8 @@ export default defineEventHandler(async (event) => {
           hlsUrl: null, // Will be added when EC2 processing completes
           thumbnailUrl: null, // Will be added when EC2 processing completes
           url: null,
-          isPrivateUsername: !!isPrivateUsername,
-          isPremium: !!isPremium,
+          isPrivateUsername: !!vis2.isPrivateUsername,
+          isPremium: !!vis2.isPremium,
           ...(isScheduledPlaceholder ? { status: 'HELD', scheduledDropDate, releaseStatus: 'HELD' } : {}),
           ...(durationSeconds != null && Number(durationSeconds) > 0 ? { durationSeconds: Number(durationSeconds) } : {})
         }
@@ -428,7 +450,7 @@ export default defineEventHandler(async (event) => {
         }).promise()
         
         console.log(`✅ Created placeholder file entry: ${fileId}`)
-        console.log(`   Visibility: isPrivateUsername=${!!isPrivateUsername}, isPremium=${!!isPremium}`)
+        console.log(`   Visibility: isPrivateUsername=${!!vis2.isPrivateUsername}, isPremium=${!!vis2.isPremium}`)
         if (isScheduledPlaceholder) console.log(`   📅 Scheduled drop: status=HELD, scheduledDropDate=${scheduledDropDate}`)
         if (durationSeconds != null && Number(durationSeconds) > 0) console.log(`   📏 durationSeconds: ${durationSeconds}`)
         try {
@@ -443,7 +465,7 @@ export default defineEventHandler(async (event) => {
           isProcessing: true
         }
       }
-      
+
       // Update existing entry with metadata (this is the most recent file)
       console.log(`📝 Updating MOST RECENT file entry with metadata...`)
       console.log(`   File: SK=${matchingFile.SK}, fileName=${matchingFile.fileName}`)
@@ -456,12 +478,11 @@ export default defineEventHandler(async (event) => {
       }
       const status = isScheduledDrop ? 'HELD' : (matchingFile.status || 'PUBLISHED')
       const isVisible = isScheduledDrop ? false : true
-      const isPrivateUsername = streamKeyMapping && (streamKeyMapping.isPrivateUsername === true || streamKeyMapping.isPrivateUsername === 'true' || streamKeyMapping.isPrivateUsername === 1)
-      const isPremium = streamKeyMapping && (streamKeyMapping.isPremium === true || streamKeyMapping.isPremium === 'true' || streamKeyMapping.isPremium === 1)
-      
+      const vis3 = resolveVisibility()
+
       // IMPORTANT: Only update metadata fields, don't overwrite the entire file entry
       // This ensures we don't accidentally overwrite newer processing results
-      // Store this drop's visibility (private vs premium) from stream mapping at convert time so each drop keeps its own.
+      // Store this drop's visibility (private vs premium) from body or stream mapping at convert time so each drop keeps its own.
       const updatedItem = {
         ...matchingFile,
         title: title || matchingFile.title || null,
@@ -469,8 +490,8 @@ export default defineEventHandler(async (event) => {
         price: price !== null && price !== undefined ? price : (matchingFile.price || 0),
         isVisible,
         status,
-        isPrivateUsername: !!isPrivateUsername,
-        isPremium: !!isPremium,
+        isPrivateUsername: !!vis3.isPrivateUsername,
+        isPremium: !!vis3.isPremium,
         ...(isScheduledDrop && scheduledDropDate ? { scheduledDropDate, releaseStatus: 'HELD' } : {}),
         ...(durationSeconds != null && Number(durationSeconds) > 0 ? { durationSeconds: Number(durationSeconds) } : {}),
         // Preserve all other fields (hlsUrl, thumbnailUrl, etc.) in case they were updated during processing

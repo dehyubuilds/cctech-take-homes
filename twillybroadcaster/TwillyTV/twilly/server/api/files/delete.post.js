@@ -1,14 +1,11 @@
 import AWS from "aws-sdk";
 
 export default defineEventHandler(async (event) => {
+    let body;
     try {
-        console.log('Delete file request received');
-        
-        const body = await readBody(event);
-        console.log('Request body:', body);
-        
+        body = await readBody(event);
         const { userId, fileId, fileName, folderName } = body;
-        let actualSK = fileId; // may be resolved from timeline SK to FILE#id
+        console.log('[DELETE] request', { userId: userId || 'MISSING', fileId: fileId || 'MISSING', fileName: fileName || 'MISSING' });
 
         if (!userId || !fileId || !fileName) {
             console.error('Missing required parameters:', { userId, fileId, fileName });
@@ -17,6 +14,15 @@ export default defineEventHandler(async (event) => {
                 message: 'Missing required parameters: userId, fileId, fileName'
             });
         }
+
+        // FILEs are always stored with SK = FILE#<id>. Use that format for lookup (intended behavior, one path).
+        const toFileSK = (id) => {
+            if (!id || typeof id !== 'string') return id;
+            const trimmed = id.trim();
+            if (trimmed.startsWith('FILE#')) return trimmed;
+            return `FILE#${trimmed}`;
+        };
+        let actualSK = toFileSK(fileId);
 
         // Configure AWS SDK
         AWS.config.update({
@@ -39,91 +45,164 @@ export default defineEventHandler(async (event) => {
             region: 'us-east-2'
         });
 
-        // First verify the file exists in DynamoDB
-        // For Twilly TV, files are stored under admin account, so check both user's account and admin account
-        console.log('Checking if file exists in DynamoDB:', { userId, fileId });
-        
-        let fileResult = await dynamodb.get({
-            TableName: 'Twilly',
-            Key: {
-                PK: `USER#${userId}`,
-                SK: fileId
-            }
-        }).promise();
+        // Lookup FILE: PK = USER#creatorEmail, SK = FILE#fileId (same for public, private, premium).
+        // CRITICAL: Normalize PK to lowercase - timeline/get-content use lowercase; FILE may be stored either way.
+        const normalizedUserId = (userId || '').toLowerCase().trim();
+        const userIdTrimmed = (userId || '').trim();
+        console.log('[DELETE] lookup', { normalizedUserId, fileId, actualSK });
 
-        console.log('DynamoDB get result (user account):', fileResult);
+        const tryGet = async (pk) => {
+            const res = await dynamodb.get({
+                TableName: 'Twilly',
+                Key: { PK: pk, SK: actualSK }
+            }).promise();
+            return res.Item;
+        };
+
+        let fileItem = await tryGet(`USER#${normalizedUserId}`);
+        if (!fileItem && normalizedUserId !== userIdTrimmed) {
+            fileItem = await tryGet(`USER#${userIdTrimmed}`);
+        }
+        let fileResult = { Item: fileItem };
+        // actualPK must be the PK where the FILE was found (for delete and permission checks)
+        let actualPK = fileItem ? fileItem.PK : `USER#${normalizedUserId}`;
+        console.log('DynamoDB get result (user account):', fileResult.Item ? 'found' : 'not found');
 
         // If not found under user's account, try admin account for Twilly TV files
-        let actualPK = `USER#${userId}`;
         if (!fileResult.Item) {
             console.log('File not found under user account, checking admin account for Twilly TV files...');
             const adminEmail = 'dehyu.sinyan@gmail.com'; // Twilly TV master account
-            fileResult = await dynamodb.get({
-                TableName: 'Twilly',
-                Key: {
-                    PK: `USER#${adminEmail}`,
-                    SK: fileId
-                }
-            }).promise();
-            
-            console.log('DynamoDB get result (admin account):', fileResult);
-            
+            fileResult = { Item: await tryGet(`USER#${adminEmail}`) };
+            console.log('DynamoDB get result (admin account):', fileResult.Item ? 'found' : 'not found');
             if (fileResult.Item) {
-                actualPK = `USER#${adminEmail}`;
+                actualPK = fileResult.Item.PK;
                 console.log(`✅ File found under admin account: ${adminEmail}`);
             }
         }
 
-        if (!fileResult.Item) {
-            // Client may have sent a timeline SK (e.g. PUBLIC#timestamp#fileId#email) from older get-content response.
-            // Resolve to actual FILE#fileId and retry; always remove timeline entries so deleted items don't reappear.
-            let resolvedFileId = fileId;
-            const skParts = (fileId || '').split('#');
-            if (skParts.length >= 3 && ['PUBLIC', 'PRIVATE', 'PREMIUM'].includes((skParts[0] || '').toUpperCase())) {
-                const shortId = skParts[2];
-                resolvedFileId = shortId.startsWith('FILE#') ? shortId : `FILE#${shortId}`;
-                console.log('🔄 [delete] Resolving timeline SK to FILE id:', { original: fileId, resolved: resolvedFileId });
-                const retryUser = await dynamodb.get({
+        // NORMALIZE: If still not found, search by shortId so we always find the same file that appears on the timeline
+        const shortIdForLookup = (actualSK || fileId).replace(/^FILE#/, '').trim();
+        if (!fileResult.Item && shortIdForLookup) {
+            const pksToSearch = [`USER#${normalizedUserId}`];
+            if (normalizedUserId !== userIdTrimmed) pksToSearch.push(`USER#${userIdTrimmed}`);
+            pksToSearch.push('USER#dehyu.sinyan@gmail.com');
+            for (const pk of pksToSearch) {
+                const q = await dynamodb.query({
                     TableName: 'Twilly',
-                    Key: { PK: `USER#${userId}`, SK: resolvedFileId }
+                    KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+                    ExpressionAttributeValues: { ':pk': pk, ':sk': 'FILE#' },
+                    Limit: 200
                 }).promise();
-                const retryAdmin = !retryUser.Item ? await dynamodb.get({
-                    TableName: 'Twilly',
-                    Key: { PK: 'USER#dehyu.sinyan@gmail.com', SK: resolvedFileId }
-                }).promise() : { Item: null };
-                if (retryUser.Item || retryAdmin.Item) {
-                    fileResult = { Item: retryUser.Item || retryAdmin.Item };
-                    actualPK = retryUser.Item ? `USER#${userId}` : 'USER#dehyu.sinyan@gmail.com';
-                    actualSK = resolvedFileId;
+                const match = (q.Items || []).find(f => {
+                    const skShort = (f.SK || '').replace(/^FILE#/, '').trim();
+                    const fid = (f.fileId || '').trim();
+                    return skShort === shortIdForLookup || fid === shortIdForLookup;
+                });
+                if (match) {
+                    fileResult = { Item: match };
+                    actualPK = match.PK;
+                    actualSK = match.SK;
+                    console.log('[DELETE] normalized find: located FILE by shortId', { actualPK, actualSK });
+                    break;
                 }
-            }
-            if (!fileResult.Item) {
-                // Still not found - remove timeline entries so item stops reappearing; then return idempotent success
-                try {
-                    const { removeTimelineEntriesForFile } = await import('../channels/timeline-utils.js');
-                    const idForTimeline = (resolvedFileId || fileId).replace(/^FILE#/, '');
-                    await removeTimelineEntriesForFile(idForTimeline);
-                    await removeTimelineEntriesForFile(fileId);
-                } catch (timelineErr) {
-                    console.warn(`⚠️ [delete] Timeline cleanup on not-found: ${timelineErr.message}`);
-                }
-                console.log('⚠️ File not found in database (may have already been deleted):', { userId, fileId, checkedAdminAccount: true });
-                return {
-                    success: true,
-                    message: 'File not found (may have already been deleted)',
-                    alreadyDeleted: true
-                };
             }
         }
 
+        if (!fileResult.Item) {
+            // FILE not found (e.g. client sent timeline fileId but DB has different SK for same clip). Remove timeline entries
+            // and delete any OTHER FILE rows for the same stream so the video cannot reappear from "viewer's own FILEs" merge.
+            const shortId = (actualSK || fileId).replace(/^FILE#/, '').trim();
+            let streamKeyFromTimeline = null;
+            if (shortId) {
+                const { removeTimelineEntriesForFile, removeTimelineEntriesForFileForUser } = await import('../channels/timeline-utils.js');
+                // Get streamKey from a timeline entry that references this file (so we can delete duplicate FILE rows)
+                const pk = `USER#${normalizedUserId}`;
+                for (const prefix of ['PUBLIC#', 'PRIVATE#', 'PREMIUM#']) {
+                    const res = await dynamodb.query({
+                        TableName: 'Twilly',
+                        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :prefix)',
+                        ExpressionAttributeValues: { ':pk': pk, ':prefix': prefix },
+                        Limit: 50
+                    }).promise();
+                    const match = (res.Items || []).find(entry => {
+                        const parts = (entry.SK || '').split('#');
+                        if (parts.length < 3) return false;
+                        const seg = (parts[2] || '').trim().replace(/^FILE#/, '');
+                        return seg === shortId;
+                    });
+                    if (match && (match.streamKey || match.folderPath)) {
+                        streamKeyFromTimeline = match.streamKey || match.folderPath;
+                        console.log('[DELETE] got streamKey from timeline entry', { streamKey: streamKeyFromTimeline });
+                        break;
+                    }
+                }
+                try {
+                    await removeTimelineEntriesForFileForUser(normalizedUserId, shortId);
+                    await removeTimelineEntriesForFile(shortId);
+                } catch (timelineErr) {
+                    console.warn(`⚠️ [delete] Timeline cleanup on not-found: ${timelineErr.message}`);
+                }
+                // Delete any FILE rows for the same stream (different SK) so get-content "viewer's own FILEs" merge cannot bring the clip back
+                if (streamKeyFromTimeline) {
+                    const pksToCheck = [`USER#${normalizedUserId}`];
+                    const adminEmail = 'dehyu.sinyan@gmail.com';
+                    if (normalizedUserId !== adminEmail) pksToCheck.push(`USER#${adminEmail}`);
+                    for (const pk of pksToCheck) {
+                        const q = await dynamodb.query({
+                            TableName: 'Twilly',
+                            KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+                            FilterExpression: 'streamKey = :skey',
+                            ExpressionAttributeValues: { ':pk': pk, ':sk': 'FILE#', ':skey': streamKeyFromTimeline }
+                        }).promise();
+                        for (const other of q.Items || []) {
+                            await dynamodb.delete({ TableName: 'Twilly', Key: { PK: other.PK, SK: other.SK } }).promise();
+                            const otherShortId = (other.SK || '').replace(/^FILE#/, '').trim();
+                            await removeTimelineEntriesForFileForUser(normalizedUserId, otherShortId);
+                            await removeTimelineEntriesForFile(otherShortId);
+                            console.log('[DELETE] deleted duplicate FILE (not-found path)', { PK: other.PK, SK: other.SK });
+                        }
+                    }
+                }
+                try {
+                    await dynamodb.put({
+                        TableName: 'Twilly',
+                        Item: {
+                            PK: `USER#${normalizedUserId}`,
+                            SK: `REMOVED_PREMIUM#${shortId}`,
+                            fileId: shortId,
+                            removedAt: new Date().toISOString()
+                        }
+                    }).promise();
+                    await dynamodb.put({
+                        TableName: 'Twilly',
+                        Item: {
+                            PK: `USER#${normalizedUserId}`,
+                            SK: `REMOVED_FILE#${shortId}`,
+                            fileId: shortId,
+                            removedAt: new Date().toISOString()
+                        }
+                    }).promise();
+                } catch (putErr) {
+                    console.warn(`⚠️ [delete] REMOVED write (non-fatal): ${putErr.message}`);
+                }
+            }
+            console.log('[DELETE] FILE not found - timeline + duplicate FILE cleanup done', { shortId, userId, actualSK });
+            return {
+                success: true,
+                message: 'File not found (may have already been deleted)',
+                alreadyDeleted: true
+            };
+        }
+
         const fileData = fileResult.Item;
+        const streamKey = fileData.streamKey || fileData.folderPath;
         
         // Verify user has permission to delete this file
         // User can delete if:
         // 1. File is under their own account, OR
         // 2. File is under admin account but user is the creator (creatorEmail or streamerEmail matches userId), OR
         // 3. File has a streamKey and the streamKey mapping shows the user owns it
-        const isOwnFile = actualPK === `USER#${userId}`;
+        const isOwnFile = actualPK === `USER#${normalizedUserId}` || actualPK === `USER#${userIdTrimmed}`;
         
         // Case-insensitive email comparison
         const userIdLower = userId.toLowerCase().trim();
@@ -195,13 +274,13 @@ export default defineEventHandler(async (event) => {
             }
         }
         
-        // Allow deletion if any of the conditions are met
+        // Allow deletion if any of the conditions are met (compare with normalized userId for isOwnFile)
         const hasPermission = isOwnFile || isCreator || isStreamKeyOwner || isUsernameMatch;
         
         if (!hasPermission) {
-            console.error('❌ User does not have permission to delete this file:', { 
-                userId, 
-                userIdLower,
+            console.error('❌ User does not have permission to delete this file:', {
+                userId: userIdTrimmed,
+                normalizedUserId,
                 filePK: actualPK, 
                 creatorId: fileData.creatorId,
                 creatorEmail: fileData.creatorEmail,
@@ -241,11 +320,41 @@ export default defineEventHandler(async (event) => {
                 SK: actualSK
             }
         }).promise();
-        
-        console.log(`✅ Deleted file from DynamoDB: PK=${actualPK}, SK=${actualSK}`);
+        console.log('[DELETE] deleted primary FILE', { actualPK, actualSK });
 
-        // CRITICAL: Remove ALL timeline entries (PUBLIC#, PRIVATE#, PREMIUM#) for this file across ALL users.
-        // Otherwise the video can reappear in any timeline after delete.
+        const shortId = (actualSK || '').replace(/^FILE#/, '').trim();
+        const normalizedDeleter = (userId || '').toLowerCase().trim();
+        const creatorEmailNorm = (fileData.creatorEmail || '').toLowerCase().trim();
+
+        // Remove any other FILE rows for the same stream (same streamKey, same user) so video cannot reappear
+        if (streamKey) {
+            const pksToCheck = [actualPK];
+            if (actualPK !== 'USER#dehyu.sinyan@gmail.com') pksToCheck.push('USER#dehyu.sinyan@gmail.com');
+            for (const pk of pksToCheck) {
+                const q = await dynamodb.query({
+                    TableName: 'Twilly',
+                    KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+                    FilterExpression: 'streamKey = :skey',
+                    ExpressionAttributeValues: { ':pk': pk, ':sk': 'FILE#', ':skey': streamKey }
+                }).promise();
+                for (const other of q.Items || []) {
+                    if (other.SK === actualSK) continue; // already deleted
+                    await dynamodb.delete({ TableName: 'Twilly', Key: { PK: other.PK, SK: other.SK } }).promise();
+                    console.log('[DELETE] deleted duplicate FILE for same stream', { PK: other.PK, SK: other.SK });
+                }
+            }
+        }
+        // 1) Targeted: always remove from deleter's timeline (so premium tab clears even if global scan fails)
+        try {
+            const { removeTimelineEntriesForFileForUser } = await import('../channels/timeline-utils.js');
+            await removeTimelineEntriesForFileForUser(normalizedDeleter, shortId);
+            if (creatorEmailNorm && creatorEmailNorm !== normalizedDeleter) {
+                await removeTimelineEntriesForFileForUser(creatorEmailNorm, shortId);
+            }
+        } catch (targetedErr) {
+            console.warn(`⚠️ [delete] Targeted timeline cleanup failed: ${targetedErr.message}`);
+        }
+        // 2) Global: remove ALL timeline entries for this file (all users' feeds)
         try {
             const { removeTimelineEntriesForFile } = await import('../channels/timeline-utils.js');
             await removeTimelineEntriesForFile(actualSK);
@@ -253,10 +362,23 @@ export default defineEventHandler(async (event) => {
             console.warn(`⚠️ [delete] Timeline cleanup failed (non-blocking): ${timelineErr.message}`);
         }
 
+        // 3) Mark as removed for this viewer so get-content never shows this clip again (safety net for any stray duplicate FILE)
+        try {
+            await dynamodb.put({
+                TableName: 'Twilly',
+                Item: {
+                    PK: `USER#${normalizedDeleter}`,
+                    SK: `REMOVED_FILE#${shortId}`,
+                    fileId: shortId,
+                    removedAt: new Date().toISOString()
+                }
+            }).promise();
+        } catch (putErr) {
+            console.warn(`⚠️ [delete] REMOVED_FILE write (non-fatal): ${putErr.message}`);
+        }
+
         // Delete from S3 - try multiple possible bucket/key combinations
-        // Extract owner email from actualPK (remove 'USER#' prefix)
         const ownerEmail = actualPK.replace('USER#', '');
-        const streamKey = fileData.streamKey || fileData.folderPath;
         
         const s3DeletionPromises = [];
         
@@ -349,14 +471,13 @@ export default defineEventHandler(async (event) => {
         // Execute all deletion attempts
         await Promise.allSettled(s3DeletionPromises);
 
-        console.log('File deleted successfully from DynamoDB and S3');
-        
+        console.log('[DELETE] success', { userId: normalizedDeleter, fileId: shortId, actualSK });
         return { 
             success: true,
             message: 'File deleted successfully'
         };
     } catch (error) {
-        console.error("Error deleting file:", error);
+        console.error('[DELETE] error', error.message, { userId: body?.userId, fileId: body?.fileId });
         console.error("Error stack:", error.stack);
         
         // Handle specific AWS errors
