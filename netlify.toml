@@ -3,3 +3,5 @@
   base = "twillybroadcaster/TwillyTV/twilly"
   command = "npm run build"
   publish = ".output/public"
+  [build.environment]
+  NITRO_PRESET = "netlify"
