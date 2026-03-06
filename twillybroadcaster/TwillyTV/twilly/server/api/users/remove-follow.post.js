@@ -13,7 +13,7 @@ const table = 'Twilly';
 export default defineEventHandler(async (event) => {
   try {
     const body = await readBody(event);
-    let { requesterEmail, requestedUserEmail, requestedUsername } = body; // Use 'let' instead of 'const' to allow reassignment
+    let { requesterEmail, requestedUserEmail, requestedUsername, visibility: requestedVisibility } = body; // Use 'let' instead of 'const' to allow reassignment
 
     if (!requesterEmail || !requestedUserEmail) {
       throw createError({
@@ -26,18 +26,21 @@ export default defineEventHandler(async (event) => {
     // This ensures we query the same PK/SK format that was used when creating entries
     requesterEmail = requesterEmail.toLowerCase();
     requestedUserEmail = requestedUserEmail.toLowerCase();
-    
-    console.log(`🗑️ [remove-follow] ${requesterEmail} removing ${requestedUserEmail} (username: ${requestedUsername || 'N/A'})`);
+    const visibilityToDelete = requestedVisibility ? String(requestedVisibility).toLowerCase() : null;
+
+    console.log(`🗑️ [remove-follow] ${requesterEmail} removing ${requestedUserEmail} (username: ${requestedUsername || 'N/A'})${visibilityToDelete ? ` visibility: ${visibilityToDelete}` : ''}`);
 
     let deletedSomething = false;
     let deletedType = null;
 
-    // CRITICAL: Handle both ADDED_USERNAME (public) and FOLLOW_REQUEST (private)
-    // These are COMPLETELY INDEPENDENT - removing one should NOT affect the other
-    
-    // 1. Try to delete ADDED_USERNAME entry (public, private, or premium)
-    // CRITICAL: SK format includes visibility: ADDED_USERNAME#ownerEmail#public | #private | #premium
-    for (const visibility of ['public', 'private', 'premium']) {
+    // CRITICAL: Handle both ADDED_USERNAME (public/private/premium) and FOLLOW_REQUEST (private)
+    // When visibility is provided, only delete that specific timeline so Public and Premium stay independent.
+    // SK format: ADDED_USERNAME#ownerEmail#public | #private | #premium
+    const visibilitiesToTry = visibilityToDelete && ['public', 'private', 'premium'].includes(visibilityToDelete)
+      ? [visibilityToDelete]
+      : ['public', 'private', 'premium'];
+
+    for (const visibility of visibilitiesToTry) {
       const addedParams = {
         TableName: table,
         Key: {
@@ -49,13 +52,31 @@ export default defineEventHandler(async (event) => {
         const item = await dynamodb.get(addedParams).promise();
         if (item.Item) {
           await dynamodb.delete(addedParams).promise();
-          await dynamodb.delete({
+          // CRITICAL: Only delete STREAMER_FOLLOWERS when this was the LAST added visibility for (requester, requestedUserEmail).
+          // Same (creator, viewer) can be added to public AND premium; they share one STREAMER_FOLLOWERS row (key has no visibility).
+          // Deleting it when removing only public would break premium. So: delete reverse index only if no other ADDED_USERNAME#email#* remains.
+          const otherAddedParams = {
             TableName: table,
-            Key: {
-              PK: `STREAMER_FOLLOWERS#${requestedUserEmail}`,
-              SK: `VIEWER#${requesterEmail}`
+            KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
+            ExpressionAttributeValues: {
+              ':pk': `USER#${requesterEmail}`,
+              ':skPrefix': `ADDED_USERNAME#${requestedUserEmail}#`
             }
-          }).promise().catch(() => {});
+          };
+          const otherResult = await dynamodb.query(otherAddedParams).promise();
+          const otherCount = (otherResult.Items || []).length;
+          if (otherCount === 0) {
+            await dynamodb.delete({
+              TableName: table,
+              Key: {
+                PK: `STREAMER_FOLLOWERS#${requestedUserEmail}`,
+                SK: `VIEWER#${requesterEmail}`
+              }
+            }).promise().catch(() => {});
+            console.log(`✅ [remove-follow] Deleted STREAMER_FOLLOWERS (no other visibilities left)`);
+          } else {
+            console.log(`ℹ️ [remove-follow] Kept STREAMER_FOLLOWERS (${otherCount} other visibility/ies still added)`);
+          }
           deletedSomething = true;
           deletedType = deletedType || 'ADDED_USERNAME';
           console.log(`✅ [remove-follow] Deleted ADDED_USERNAME entry (${visibility})`);

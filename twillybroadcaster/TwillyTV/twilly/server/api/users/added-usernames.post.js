@@ -116,14 +116,28 @@ export default defineEventHandler(async (event) => {
 
     console.log(`✅ [added-usernames] Found ${addedUsernames.length} added usernames (after filtering own username)`);
 
+    // CRITICAL: Derive streamerVisibility from SK when missing so Public and Premium stay separate
+    // SK format: ADDED_USERNAME#email#public | #private | #premium (visibility is last segment)
+    const visibilityFromSk = (sk) => {
+      if (!sk || typeof sk !== 'string') return 'public';
+      const parts = sk.split('#');
+      const last = parts[parts.length - 1]?.toLowerCase();
+      if (last === 'public' || last === 'private' || last === 'premium') return last;
+      return 'public';
+    };
+
     return {
       success: true,
-      addedUsernames: addedUsernames.map(item => ({
-        streamerEmail: item.streamerEmail,
-        streamerUsername: item.streamerUsername,
-        addedAt: item.addedAt,
-        streamerVisibility: item.streamerVisibility
-      })),
+      addedUsernames: addedUsernames.map(item => {
+        const sk = (item && item.SK) ? String(item.SK) : '';
+        const visibility = item.streamerVisibility || visibilityFromSk(sk);
+        return {
+          streamerEmail: item.streamerEmail,
+          streamerUsername: item.streamerUsername,
+          addedAt: item.addedAt,
+          streamerVisibility: visibility
+        };
+      }),
       count: addedUsernames.length
     };
 

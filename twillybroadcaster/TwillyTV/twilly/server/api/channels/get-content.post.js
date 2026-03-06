@@ -1,14 +1,11 @@
 /**
  * get-content: Channel/timeline content for Twilly TV and other channels.
- *
- * Contract: Only show videos that are ready to play (have thumbnail + hlsUrl). Exception: scheduled drops (HELD) show as "Airs [date]".
- * - Public: owner's public + public from users you added.
- * - Private: owner's private + private from users you added or who added you.
- * - Premium: owner's premium + premium from creators you added (same add model as public).
- * Short videos (< 6s) never appear: convert-to-post drops them; this handler also filters by durationSeconds.
+ * Twilly TV uses 3 separate DynamoDB tables (TwillyPublic, TwillyPrivate, TwillyPremium) so timelines never share state.
+ * - Public: query TwillyPublic only. Private: TwillyPrivate only. Premium: TwillyPremium only.
  */
 import AWS from 'aws-sdk';
 import { defineEventHandler, readBody, readRawBody, createError } from 'h3';
+import { TABLE_MAIN, TABLE_PUBLIC, TABLE_PRIVATE, TABLE_PREMIUM } from './timeline-tables.js';
 
 /** Robust body parse: readBody can be empty on Netlify (base64 body). Try readBody first, then readRawBody + JSON.parse. */
 async function getParsedBody(event) {
@@ -57,6 +54,7 @@ export default defineEventHandler(async (event) => {
     const nextToken = body?.nextToken;
     const showPrivateContent = body?.showPrivateContent ?? false;
     const returnBothViews = body?.returnBothViews ?? false;
+    const returnAllViews = body?.returnAllViews ?? false; // Twilly TV: return public + private + premium in one response (consistent behavior)
     const showPremiumContent = body?.showPremiumContent ?? false;
     const clientAddedUsernames = body?.clientAddedUsernames;
 
@@ -65,7 +63,7 @@ export default defineEventHandler(async (event) => {
     const creatorEmail = typeof creatorEmailRaw === 'string' ? String(creatorEmailRaw).trim().toLowerCase() : '';
     const viewerEmail = typeof viewerEmailRaw === 'string' ? viewerEmailRaw.trim().toLowerCase() : (viewerEmailRaw || null);
 
-    console.log(`🔍 [get-content] body: channelName="${channelName}", creatorEmail="${creatorEmail}", viewerEmail=${viewerEmail ? `"${viewerEmail}"` : 'MISSING'}, returnBothViews=${returnBothViews}`);
+    console.log(`🔍 [get-content] body: channelName="${channelName}", creatorEmail="${creatorEmail}", viewerEmail=${viewerEmail ? `"${viewerEmail}"` : 'MISSING'}, returnBothViews=${returnBothViews}, returnAllViews=${returnAllViews}`);
 
     if (!channelName || !creatorEmail) {
       throw createError({
@@ -85,10 +83,11 @@ export default defineEventHandler(async (event) => {
     };
 
     const isTwillyTV = channelName.toLowerCase().trim() === 'twilly tv';
-    // For Twilly TV + returnBothViews, need a viewer email for timeline query (PK = USER#viewerEmail). Use viewerEmail or creatorEmail.
-    let timelineViewerEmail = viewerEmail || (isTwillyTV && returnBothViews && creatorEmail ? creatorEmail : null);
+    // For Twilly TV + returnBothViews/returnAllViews, need a viewer email for timeline query (PK = USER#viewerEmail). Use viewerEmail or creatorEmail.
+    const useAllViews = returnAllViews || (returnBothViews && isTwillyTV);
+    let timelineViewerEmail = viewerEmail || (isTwillyTV && (returnBothViews || returnAllViews) && creatorEmail ? creatorEmail : null);
     // Fallback: if still missing for Twilly TV, try channel metadata or known owner so we never skip the timeline query
-    if (isTwillyTV && returnBothViews && !timelineViewerEmail) {
+    if (isTwillyTV && (returnBothViews || returnAllViews) && !timelineViewerEmail) {
       try {
         const channelMeta = await dynamodb.get({
           TableName: table,
@@ -105,7 +104,7 @@ export default defineEventHandler(async (event) => {
         console.log(`🔍 [get-content] Twilly TV: using fallback timeline viewer: ${timelineViewerEmail}`);
       }
     }
-    if (isTwillyTV && returnBothViews && !viewerEmail && timelineViewerEmail) {
+    if (isTwillyTV && (returnBothViews || returnAllViews) && !viewerEmail && timelineViewerEmail) {
       console.log(`🔍 [get-content] Twilly TV returnBothViews: viewerEmail missing, using creator/fallback as viewer: ${timelineViewerEmail}`);
     }
     const effectiveViewerEmail = viewerEmail || timelineViewerEmail || null;
@@ -114,6 +113,7 @@ export default defineEventHandler(async (event) => {
 
     let timelineDebugForResponse = null;
     let pipelineDebug = null; // Twilly TV returnBothViews: where 29 -> 0
+    let twillyDebug = null; // set in Step 5 block when Twilly TV so _debug is in scope for returns
 
     // Premium timeline: for non–Twilly TV use same add model (ADDED_USERNAME#premium); for Twilly TV use main flow and filter by isPremium (below)
     if (showPremiumContent && viewerEmail && !isTwillyTV) {
@@ -287,19 +287,28 @@ export default defineEventHandler(async (event) => {
         };
 
         const addedResult = await dynamodb.query(addedUsernamesParams).promise();
+        // Derive visibility from SK when item.streamerVisibility missing (Public/Private/Premium must stay separate)
+        const visibilityFromSk = (sk) => {
+          if (!sk || typeof sk !== 'string') return 'public';
+          const parts = sk.split('#');
+          const last = parts[parts.length - 1]?.toLowerCase();
+          if (last === 'public' || last === 'private' || last === 'premium') return last;
+          return 'public';
+        };
         if (addedResult.Items && addedResult.Items.length > 0) {
           console.log(`🔍 [get-content] DEBUG: Processing ${addedResult.Items.length} ADDED_USERNAME items from DynamoDB`);
           addedResult.Items.forEach((item, index) => {
-            console.log(`  [Item ${index + 1}] streamerUsername: "${item.streamerUsername || 'MISSING'}", streamerVisibility: "${item.streamerVisibility || 'public'}"`);
+            const sk = (item && item.SK) ? String(item.SK) : '';
+            const visibility = item.streamerVisibility || visibilityFromSk(sk);
+            console.log(`  [Item ${index + 1}] streamerUsername: "${item.streamerUsername || 'MISSING'}", streamerVisibility: "${visibility}" (from ${item.streamerVisibility ? 'item' : 'SK'})`);
             if (item.streamerUsername) {
               // CRITICAL FIX: Normalize username the SAME way as when comparing (trim + lowercase)
               // This ensures usernames with spaces (like "Twilly TV" or "POM-J ") match correctly
               const normalizedUsername = item.streamerUsername.trim().toLowerCase();
-              const visibility = item.streamerVisibility || 'public'; // Default to public if not set
-              
+
               console.log(`    → Normalized: "${normalizedUsername}" (original: "${item.streamerUsername}", visibility: ${visibility})`);
-              
-              // CRITICAL: Track visibility separately - users added for public should NEVER see private content
+
+              // CRITICAL: Track visibility separately - Public, Private, Premium are SEPARATE (same person can be in all three)
               if (visibility.toLowerCase() === 'private') {
                 addedUsernamesPrivate.add(normalizedUsername);
                 console.log(`    ✅ Added to PRIVATE set: "${normalizedUsername}"`);
@@ -313,7 +322,7 @@ export default defineEventHandler(async (event) => {
             }
             if (item.streamerEmail) {
               addedUserEmails.add(item.streamerEmail.toLowerCase());
-              if ((item.streamerVisibility || '').toLowerCase() === 'premium') {
+              if (visibility.toLowerCase() === 'premium') {
                 addedPremiumCreatorEmails.add(item.streamerEmail.toLowerCase());
               }
             }
@@ -833,12 +842,12 @@ export default defineEventHandler(async (event) => {
     let useTimeline = false;
     let usedTimelinePrefixes = []; // e.g. ['PUBLIC', 'PRIVATE'] for returnBothViews
 
-    // Last-known-good: only use timeline path when viewer has added users; owner with no added users uses FILE# fallback (same as when it worked)
+    // LKG: Twilly TV always uses FILE# query (no PUBLIC#/PRIVATE# timeline path). Stream-to-public/private comes from FILE.isPrivateUsername / FILE.isPremium.
     const isOwnerViewingOwnChannel = timelineViewerEmail && creatorEmail && timelineViewerEmail.toLowerCase() === creatorEmail.toLowerCase();
     const hasAddedUsers = addedUserEmails && addedUserEmails.size > 0;
-    const useTimelinePath = channelName.toLowerCase() === 'twilly tv' && timelineViewerEmail && (hasAddedUsers || !isOwnerViewingOwnChannel);
-    if (!useTimelinePath && isOwnerViewingOwnChannel && channelName.toLowerCase() === 'twilly tv') {
-      console.log(`📺 [get-content] Twilly TV owner with no added users - using FILE# fallback (last-known-good behavior)`);
+    const useTimelinePath = false; // Twilly TV: always FILE# fallback (last-known-good)
+    if (channelName.toLowerCase() === 'twilly tv') {
+      console.log(`📺 [get-content] Twilly TV - using FILE# path (LKG: no timeline path)`);
     }
 
     if (useTimelinePath) {
@@ -957,6 +966,7 @@ export default defineEventHandler(async (event) => {
               hlsUrl: base.hlsUrl ?? timelineEntry.hlsUrl,
               thumbnailUrl: base.thumbnailUrl ?? timelineEntry.thumbnailUrl,
               streamKey: base.streamKey ?? timelineEntry.streamKey,
+              isVisible: base.isVisible !== undefined ? base.isVisible : timelineEntry.isVisible,
               PK: actualPK,
               SK: actualSK
             };
@@ -1078,29 +1088,83 @@ export default defineEventHandler(async (event) => {
         console.log(`🔍 [get-content] Querying files from master account only (${creatorEmail}) to match web app behavior`);
       }
 
-      // Query files from ONLY legitimate collaborators + channel owner
+      // Twilly TV: use separate timeline tables so public/private/premium never share state
+      const isTwillyTVStep5 = channelName.toLowerCase() === 'twilly tv';
+      const tableToQuery = isTwillyTVStep5
+        ? (showPrivateContent ? TABLE_PRIVATE : TABLE_PUBLIC)
+        : table;
+
+      // Bounded read per (user, table) so load scales as items grow (max queryLimit items per partition)
+      const queryLimit = Math.min(100, Math.max(pageLimit * 2, 50));
       for (const userEmail of usersToQuery) {
         try {
-          const queryParams = {
-            TableName: table,
-            KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
-            ExpressionAttributeValues: {
-              ':pk': `USER#${userEmail}`,
-              ':skPrefix': 'FILE#'
+          if (isTwillyTVStep5 && (returnBothViews || returnAllViews)) {
+            const tablesToQuery = returnAllViews ? [TABLE_PUBLIC, TABLE_PRIVATE, TABLE_PREMIUM] : [TABLE_PUBLIC, TABLE_PRIVATE];
+            const timelineByTable = { [TABLE_PUBLIC]: 'public', [TABLE_PRIVATE]: 'private', [TABLE_PREMIUM]: 'premium' };
+            // Query ByCreatedAt GSI for scalable newest-first (bounded read); fallback to base table if GSI missing
+            const results = await Promise.all(tablesToQuery.map(async (tbl) => {
+              const params = {
+                TableName: tbl,
+                IndexName: 'ByCreatedAt',
+                KeyConditionExpression: 'PK = :pk',
+                ExpressionAttributeValues: { ':pk': `USER#${userEmail}` },
+                Limit: queryLimit,
+                ScanIndexForward: false
+              };
+              let res;
+              try {
+                res = await dynamodb.query(params).promise();
+              } catch (gsiErr) {
+                const useBase = gsiErr.code === 'ValidationException' || gsiErr.code === 'ResourceNotFoundException' || (String(gsiErr.message || '').toLowerCase().includes('index'));
+                if (useBase) {
+                  // Timeline tables: creator has FILE#, viewer has PUBLIC#/PRIVATE#/PREMIUM# from backfill/fan-out. Query full partition so we get both.
+                  const baseParams = {
+                    TableName: tbl,
+                    KeyConditionExpression: 'PK = :pk',
+                    ExpressionAttributeValues: { ':pk': `USER#${userEmail}` },
+                    Limit: queryLimit
+                  };
+                  res = await dynamodb.query(baseParams).promise();
+                } else {
+                  throw gsiErr;
+                }
+              }
+              const timelineTag = timelineByTable[tbl] || 'public';
+              return (res.Items || []).map(it => ({ ...it, __timeline: timelineTag }));
+            }));
+            for (let i = 0; i < tablesToQuery.length; i++) {
+              const items = results[i];
+              if (items.length > 0) {
+                const tbl = tablesToQuery[i];
+                const timelineTag = timelineByTable[tbl] || 'public';
+                console.log(`🔍 [get-content] Found ${items.length} files for user ${userEmail} in ${tbl} (${timelineTag})`);
+                allFiles.push(...items);
+              }
             }
-          };
-          
-          const userFilesResult = await dynamodb.query(queryParams).promise();
-          if (userFilesResult.Items && userFilesResult.Items.length > 0) {
-            console.log(`🔍 [get-content] Found ${userFilesResult.Items.length} files for user ${userEmail}`);
-            console.log(`   📋 Sample files: ${userFilesResult.Items.slice(0, 3).map(f => f.fileName || f.SK).join(', ')}`);
-            allFiles.push(...userFilesResult.Items);
           } else {
-            console.log(`⚠️ [get-content] No files found for user ${userEmail} - this user might not have any content yet`);
+            const res = await dynamodb.query({
+              TableName: tableToQuery,
+              KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
+              ExpressionAttributeValues: { ':pk': `USER#${userEmail}`, ':skPrefix': 'FILE#' },
+              Limit: queryLimit
+            }).promise();
+            const items = res.Items || [];
+            if (items.length > 0) {
+              console.log(`🔍 [get-content] Found ${items.length} files for user ${userEmail} (table: ${tableToQuery})`);
+              allFiles.push(...items);
+            }
           }
         } catch (error) {
           console.error(`Error querying files for user ${userEmail}:`, error);
         }
+      }
+      // E2E debug: set only here so usersToQuery/tableToQuery are in scope
+      if (channelName.toLowerCase() === 'twilly tv') {
+        twillyDebug = {
+          table: tableToQuery,
+          usersQueried: Array.from(usersToQuery),
+          rawFileCount: allFiles.length
+        };
       }
     }
 
@@ -1114,7 +1178,7 @@ export default defineEventHandler(async (event) => {
     
     // Use combined files from all users
     const result = { Items: allFiles };
-    
+
     try {
       console.log(`🔍 [get-content] Query returned ${result.Items ? result.Items.length : 0} total files from all users for channel "${channelName}"`);
       
@@ -1446,38 +1510,20 @@ export default defineEventHandler(async (event) => {
         item.createdAt = item.timestamp;
       }
       
-      // CRITICAL: Normalize isPrivateUsername EARLY (before any filtering logic uses it)
-      // This handles DynamoDB format { BOOL: true }, strings, numbers, and plain booleans
-      if (item.isPrivateUsername !== undefined && item.isPrivateUsername !== null) {
-        if (typeof item.isPrivateUsername === 'object' && item.isPrivateUsername.BOOL !== undefined) {
-          item.isPrivateUsername = item.isPrivateUsername.BOOL;
-        } else if (typeof item.isPrivateUsername === 'string') {
-          item.isPrivateUsername = item.isPrivateUsername === 'true' || item.isPrivateUsername === '1';
-        } else if (typeof item.isPrivateUsername === 'number') {
-          item.isPrivateUsername = item.isPrivateUsername === 1;
-        } else if (typeof item.isPrivateUsername !== 'boolean') {
-          item.isPrivateUsername = Boolean(item.isPrivateUsername);
-        }
-      } else {
-        // Default to false (public) if not set
-        item.isPrivateUsername = false;
-      }
-      
-      // CRITICAL: Normalize isPremium EARLY (same as isPrivateUsername)
-      // This handles DynamoDB format { BOOL: true }, strings, numbers, and plain booleans
-      if (item.isPremium !== undefined && item.isPremium !== null) {
-        if (typeof item.isPremium === 'object' && item.isPremium.BOOL !== undefined) {
-          item.isPremium = item.isPremium.BOOL;
-        } else if (typeof item.isPremium === 'string') {
-          item.isPremium = item.isPremium === 'true' || item.isPremium === '1';
-        } else if (typeof item.isPremium === 'number') {
-          item.isPremium = item.isPremium === 1;
-        } else if (typeof item.isPremium !== 'boolean') {
-          item.isPremium = Boolean(item.isPremium);
-        }
-      } else {
-        // Default to false (not premium) if not set
-        item.isPremium = false;
+      // Normalize three-path visibility: isPublicUsername, isPrivateUsername, isPremium (exactly one true per stream)
+      const toBool = (v) => {
+        if (v === undefined || v === null) return false;
+        if (typeof v === 'object' && v.BOOL !== undefined) return !!v.BOOL;
+        if (typeof v === 'string') return v === 'true' || v === '1';
+        if (typeof v === 'number') return v === 1;
+        return Boolean(v);
+      };
+      item.isPublicUsername = toBool(item.isPublicUsername);
+      item.isPrivateUsername = toBool(item.isPrivateUsername);
+      item.isPremium = toBool(item.isPremium);
+      // Backward compat: if none set, treat as public
+      if (!item.isPublicUsername && !item.isPrivateUsername && !item.isPremium) {
+        item.isPublicUsername = true;
       }
       
       // Normalize title and description - treat empty strings as null/undefined
@@ -1510,18 +1556,8 @@ export default defineEventHandler(async (event) => {
               hasCreatorId: !!streamKeyResult.Item.creatorId,
               hasUsername: !!streamKeyResult.Item.username
             });
-            // CRITICAL: Stream key mapping is the source of truth for this drop's privacy/premium (set at stream/convert time).
-            // Prefer stream mapping over POST so Premium tab shows only premium drops and public tab only public.
             const m = streamKeyResult.Item;
-            if (item.isPrivateUsername === undefined || item.isPrivateUsername === null) {
-              if (m.isPrivateUsername !== undefined && m.isPrivateUsername !== null) {
-                item.isPrivateUsername = m.isPrivateUsername === true || m.isPrivateUsername === 'true' || m.isPrivateUsername === 1;
-              }
-            }
-            // Always use stream key isPremium when available so premium tab never shows public items
-            if (m.isPremium !== undefined && m.isPremium !== null) {
-              item.isPremium = m.isPremium === true || m.isPremium === 'true' || m.isPremium === 1;
-            }
+            // Do NOT overwrite visibility from mapping — each FILE has its own visibility set at stream/convert time. Otherwise switching to private would flip all previous public videos to private.
             // For premium subscribe button on public items: include creator email when available
             if (m.collaboratorEmail || m.ownerEmail) {
               item.creatorEmail = m.collaboratorEmail || m.ownerEmail;
@@ -1995,10 +2031,10 @@ export default defineEventHandler(async (event) => {
         // SIMPLE APPROACH: Check if creatorUsername has 🔒 or isPrivateUsername (normalized)
         const isPrivateStream = isItemPrivate(item);
         
-        // When returnBothViews is true, we collect all items and split them later
-        // Owner videos should ALWAYS be included when returnBothViews is true (client will split them)
+        // When returnBothViews or returnAllViews is true, we collect all items and split them later
+        // Owner videos should ALWAYS be included (client will split them into public/private/premium)
         // Otherwise, apply the normal filtering based on showPrivateContent
-        if (!returnBothViews) {
+        if (!returnBothViews && !returnAllViews) {
           // CRITICAL PRIVACY FIX: Server-side filtering to NEVER return private videos in public view
           // This is a security measure - private videos must NEVER appear in public view
           // Exception: Viewer's own videos are returned (client will filter by public/private)
@@ -2029,10 +2065,10 @@ export default defineEventHandler(async (event) => {
             // Continue to return item (already filtered by showPrivateContent)
           }
         } else {
-          // When returnBothViews is true, owner videos should ALWAYS be included
-          // The client will split them into public/private arrays
+          // When returnBothViews or returnAllViews is true, owner videos should ALWAYS be included
+          // The client will split them into public/private/premium arrays
           if (isOwnVideo) {
-            console.log(`✅ [get-content] Twilly TV: Including own video for returnBothViews: ${item.fileName || item.SK} (${isPrivateStream ? 'private' : 'public'})`);
+            console.log(`✅ [get-content] Twilly TV: Including own video for ${returnAllViews ? 'returnAllViews' : 'returnBothViews'}: ${item.fileName || item.SK} (${isPrivateStream ? 'private' : item.isPremium ? 'premium' : 'public'})`);
             // Continue processing - don't return null, let it pass through to final filter
           }
         }
@@ -2328,8 +2364,13 @@ export default defineEventHandler(async (event) => {
             // Check if this is viewer's own video - COMPREHENSIVE CHECK (same as earlier in code)
             let isOwnVideo = false;
             const normalizedViewerEmailForCheck = effectiveViewerEmail ? effectiveViewerEmail.toLowerCase().trim() : null;
+          // FILE# records: PK = USER#ownerEmail — most reliable for Twilly TV own premium/public/private
+          if (normalizedViewerEmailForCheck && item.PK && String(item.PK).toLowerCase() === `USER#${normalizedViewerEmailForCheck}`) {
+            isOwnVideo = true;
+            console.log(`   ✅ Own video detected (PK owner match: ${item.PK})`);
+          }
           const itemCreatorNorm = (item.creatorEmail || item.timelineCreatorEmail || '').toLowerCase().trim();
-          if (normalizedViewerEmailForCheck && itemCreatorNorm && itemCreatorNorm === normalizedViewerEmailForCheck) {
+          if (!isOwnVideo && normalizedViewerEmailForCheck && itemCreatorNorm && itemCreatorNorm === normalizedViewerEmailForCheck) {
             isOwnVideo = true;
             console.log(`   ✅ Own video detected (creatorEmail match: "${itemCreatorNorm}" === "${normalizedViewerEmailForCheck}")`);
           }
@@ -2372,13 +2413,13 @@ export default defineEventHandler(async (event) => {
           const isPrivateStream = isItemPrivate(item);
           const isPremiumStream = item.isPremium === true || item.isPremium === 'true' || item.isPremium === 1;
 
-          // CRITICAL: For own videos, handle differently based on returnBothViews / showPremiumContent / showPrivateContent
-          // When returnBothViews is true, return ALL owner videos (client will split them)
+          // CRITICAL: For own videos, handle differently based on returnBothViews / returnAllViews / showPremiumContent / showPrivateContent
+          // When returnBothViews or returnAllViews is true, return ALL owner videos (client will split them)
           // When showPremiumContent is true, keep own premium videos in premium tab
           // When single view (public or private), filter by showPrivateContent
           if (isOwnVideo) {
-            if (returnBothViews) {
-              console.log(`   ✅ [get-content] Twilly TV FINAL FILTER: Keeping own video (returnBothViews=true): ${item.fileName || item.SK} (${isPrivateStream ? 'private' : 'public'})`);
+            if (returnBothViews || returnAllViews) {
+              console.log(`   ✅ [get-content] Twilly TV FINAL FILTER: Keeping own video (${returnAllViews ? 'returnAllViews' : 'returnBothViews'}=true): ${item.fileName || item.SK} (${isPrivateStream ? 'private' : isPremiumStream ? 'premium' : 'public'})`);
               return true;
             }
             if (showPremiumContent) {
@@ -2521,74 +2562,55 @@ export default defineEventHandler(async (event) => {
       return dateB - dateA; // Newest first (most recent posts at top)
     });
     
-    // Twilly TV premium-only: return ONLY premium timeline items (never public/private)
-    // CRITICAL: Exclude any item with timelineType PUBLIC or PRIVATE so tabs never mix
+    // Twilly TV premium-only: DEDICATED PREMIUM PIPELINE (same idea as public: owner + added premium users, filter to premium).
+    // Public = query owner + added public users → filter to public. Premium = query owner + added premium users → filter to isPremium.
     if (showPremiumContent && isTwillyTV && effectiveViewerEmail) {
-      const isPremiumItem = (item) => {
-        const type = (item.timelineType || '').toUpperCase();
-        if (type === 'PUBLIC' || type === 'PRIVATE') return false;
-        return type === 'PREMIUM' || item.isPremium === true || item.isPremium === 'true' || item.isPremium === 1;
-      };
-      let premiumOnly = filteredItems.filter(isPremiumItem);
-      const fromTimelineCount = premiumOnly.length;
       const normalizedViewer = (effectiveViewerEmail || '').toLowerCase().trim();
-      // Include premium content from creators the viewer has added for premium (ADDED_USERNAME#premium, same model as public)
-      const subscribedCreatorEmails = Array.from(addedPremiumCreatorEmails || []);
-      try {
-        console.log(`👑 [get-content] Twilly TV premium: viewer ${normalizedViewer} has ${fromTimelineCount} from PREMIUM# timeline, ${subscribedCreatorEmails.length} added premium creator(s)`);
-        if (subscribedCreatorEmails.length > 0) {
-          const seenSK = new Set(premiumOnly.map(i => i.SK));
-          let addedFromSubscribed = 0;
-          for (const creatorEmail of subscribedCreatorEmails) {
-            const crEmail = creatorEmail.toLowerCase();
-            const fileResult = await dynamodb.query({
-              TableName: table,
-              KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
-              ExpressionAttributeValues: {
-                ':pk': `USER#${crEmail}`,
-                ':skPrefix': 'FILE#'
-              },
-              Limit: 50
-            }).promise();
-            const items = (fileResult.Items || []).filter(file => {
-              const isPrem = file.isPremium === true || file.isPremium === 'true' || file.isPremium === 1;
-              const visible = file.isVisible === true;
-              const hasContent = file.hlsUrl || file.category === 'Videos';
-              if (!isPrem || !visible || !hasContent) return false;
-              if (file.category === 'Videos' && !file.thumbnailUrl) return false;
-              if (seenSK.has(file.SK)) return false;
-              seenSK.add(file.SK);
-              return true;
-            });
-            addedFromSubscribed += items.length;
-            for (const file of items) {
-              if (!file.creatorUsername && file.PK) {
-                try {
-                  const profile = await dynamodb.get({
-                    TableName: table,
-                    Key: { PK: file.PK, SK: 'PROFILE' }
-                  }).promise();
-                  if (profile.Item && profile.Item.username) file.creatorUsername = profile.Item.username;
-                } catch (_) {}
-              }
-              if (file.creatorEmail === undefined) file.creatorEmail = (file.PK || '').replace('USER#', '') || crEmail;
-              premiumOnly.push(file);
-            }
-          }
-          premiumOnly.sort((a, b) => {
-            const dateA = (a.createdAt ? new Date(a.createdAt).getTime() : 0) || (a.timestamp ? new Date(a.timestamp).getTime() : 0) || (a.airdate ? new Date(a.airdate).getTime() : 0);
-            const dateB = (b.createdAt ? new Date(b.createdAt).getTime() : 0) || (b.timestamp ? new Date(b.timestamp).getTime() : 0) || (b.airdate ? new Date(b.airdate).getTime() : 0);
-            return dateB - dateA;
-          });
-          console.log(`👑 [get-content] Twilly TV premium: merged +${addedFromSubscribed} from added premium creators, total ${premiumOnly.length} items`);
-        }
-        if (premiumOnly.length === 0) {
-          console.log(`👑 [get-content] Twilly TV premium: no content (0 from PREMIUM# timeline, ${subscribedCreatorEmails.length} added; add premium creators to see their premium content)`);
-        }
-      } catch (subErr) {
-        console.error('👑 [get-content] Subscribed creators premium merge error (non-fatal):', subErr.message);
+      const subscribedPremiumEmails = Array.from(addedPremiumCreatorEmails || []);
+
+      // Who to query: channel owner + viewer (for own content) + every creator the viewer added for premium
+      const usersToQueryPremium = new Set([creatorEmail]);
+      if (normalizedViewer && normalizedViewer !== creatorEmail.toLowerCase()) {
+        usersToQueryPremium.add(normalizedViewer);
       }
-      // Only show videos ready to play (thumbnail + hlsUrl). Exception: HELD/scheduled drops.
+      subscribedPremiumEmails.forEach(email => usersToQueryPremium.add(email.toLowerCase()));
+
+      const allPremiumFiles = [];
+      for (const userEmail of usersToQueryPremium) {
+        try {
+          // Query full partition: creator has FILE#, viewer has PREMIUM# from backfill/fan-out
+          const fileResult = await dynamodb.query({
+            TableName: TABLE_PREMIUM,
+            KeyConditionExpression: 'PK = :pk',
+            ExpressionAttributeValues: { ':pk': `USER#${userEmail}` },
+            Limit: 100
+          }).promise();
+          const items = (fileResult.Items || []).filter(file => file.isVisible !== false);
+          for (const file of items) {
+            if (!file.creatorEmail) file.creatorEmail = (file.PK || '').replace('USER#', '') || userEmail;
+            allPremiumFiles.push(file);
+          }
+        } catch (err) {
+          console.warn(`👑 [get-content] Premium pipeline (${TABLE_PREMIUM}): query for ${userEmail} failed (non-fatal):`, err.message);
+        }
+      }
+
+      let premiumOnly = allPremiumFiles;
+      console.log(`👑 [get-content] Twilly TV premium pipeline: queried ${usersToQueryPremium.size} users (owner + viewer + ${subscribedPremiumEmails.length} added premium), ${premiumOnly.length} premium FILE# items`);
+
+      // Enrich creatorUsername where missing (PROFILE lives in main table)
+      for (const file of premiumOnly) {
+        if (file.creatorUsername) continue;
+        try {
+          const profile = await dynamodb.get({
+            TableName: TABLE_MAIN,
+            Key: { PK: file.PK || `USER#${(file.creatorEmail || '').toLowerCase()}`, SK: 'PROFILE' }
+          }).promise();
+          if (profile.Item && profile.Item.username) file.creatorUsername = profile.Item.username;
+        } catch (_) {}
+      }
+
+      // Only show videos ready to play (thumbnail + hlsUrl). Exception: HELD/scheduled drops only.
       const isPremiumReady = (item) => {
         if (item.category !== 'Videos') return true;
         const isHeld = item.status === 'HELD' && item.scheduledDropDate;
@@ -2603,6 +2625,11 @@ export default defineEventHandler(async (event) => {
       if (beforeReady !== premiumOnly.length) {
         console.log(`👑 [get-content] Twilly TV premium: filtered to ready-only: ${premiumOnly.length} items (removed ${beforeReady - premiumOnly.length} not ready / no data)`);
       }
+      premiumOnly.sort((a, b) => {
+        const dateA = (a.createdAt ? new Date(a.createdAt).getTime() : 0) || (a.timestamp ? new Date(a.timestamp).getTime() : 0) || (a.airdate ? new Date(a.airdate).getTime() : 0);
+        const dateB = (b.createdAt ? new Date(b.createdAt).getTime() : 0) || (b.timestamp ? new Date(b.timestamp).getTime() : 0) || (b.airdate ? new Date(b.airdate).getTime() : 0);
+        return dateB - dateA;
+      });
       const paginatedPremium = premiumOnly.slice(0, pageLimit);
       // Same as public/private: normalize SK to FILE#fileId so delete uses correct id and behavior is identical across timelines
       const normalizeSK = (item) => {
@@ -2635,8 +2662,8 @@ export default defineEventHandler(async (event) => {
       };
     }
 
-    // If returnBothViews is true, split into public and private arrays (merged timelines, newest first)
-    if (returnBothViews) {
+    // If returnBothViews or returnAllViews (all views), split into public/private (and premium when all views) arrays (merged timelines, newest first)
+    if (returnBothViews || returnAllViews) {
       // LAST RESORT: Twilly TV with 0 items — query timeline + FILEs directly (handles Netlify/DynamoDB quirks)
       let filteredItemsForSplit = filteredItems;
       if (isTwillyTV && effectiveViewerEmail && filteredItems.length === 0) {
@@ -2689,6 +2716,7 @@ export default defineEventHandler(async (event) => {
               creatorUsername: item.creatorUsername || item.username || null,
               username: item.creatorUsername || item.username || null,
               creatorEmail: item.creatorEmail || item.timelineCreatorEmail || null,
+              isPublicUsername: !!item.isPublicUsername,
               isPrivateUsername: !!item.isPrivateUsername,
               isPremium: !!(item.isPremium === true || item.isPremium === 'true' || item.isPremium === 1),
               status: item.status || null,
@@ -2734,34 +2762,53 @@ export default defineEventHandler(async (event) => {
         return true;
       });
 
+      // Ensure every item has timelineType so PUBLIC/PRIVATE/PREMIUM split works (FILE# fallback items may lack it)
+      const validTypes = ['PUBLIC', 'PRIVATE', 'PREMIUM'];
+      const normalizedForSplit = deduplicatedItems.map(item => {
+        const t = (item.timelineType || '').toUpperCase();
+        if (t && validTypes.includes(t)) return item;
+        const pub = item.isPublicUsername === true || item.isPublicUsername === 'true' || item.isPublicUsername === 1;
+        const prem = item.isPremium === true || item.isPremium === 'true' || item.isPremium === 1;
+        const priv = item.isPrivateUsername === true || item.isPrivateUsername === 'true' || item.isPrivateUsername === 1;
+        const timelineType = prem ? 'PREMIUM' : (priv ? 'PRIVATE' : (pub ? 'PUBLIC' : 'PUBLIC'));
+        return { ...item, timelineType };
+      });
+
       const ts = (item) => (item.createdAt || item.timestamp || item.timelineCreatedAt || '').replace('Z', '');
       const sortByNewest = (a, b) => (ts(b) || '').localeCompare(ts(a) || '');
 
       const publicItems = [];
       const privateItems = [];
-      const isPremiumItemForSplit = (item) => {
-        const t = (item.timelineType || '').toUpperCase();
-        if (t === 'PREMIUM') return true;
-        const prem = item.isPremium;
-        return prem === true || prem === 'true' || prem === 1 || prem === '1';
-      };
-      deduplicatedItems.forEach(item => {
-        const type = (item.timelineType || '').toUpperCase();
-        if (type === 'PREMIUM') return;
-        if (isPremiumItemForSplit(item)) return;
-        const isPrivateStream = type === 'PRIVATE' || isItemPrivate(item);
-        if (isPrivateStream) {
-          privateItems.push({ ...item, isPremium: false });
+      const premiumItems = [];
+      // When using 3-table mode (Twilly TV) with returnAllViews, __timeline is 'public'|'private'|'premium'; otherwise use flags
+      const pub = (item) => item.__timeline === 'public' || item.isPublicUsername === true || item.isPublicUsername === 'true' || item.isPublicUsername === 1;
+      const priv = (item) => item.__timeline === 'private' || item.isPrivateUsername === true || item.isPrivateUsername === 'true' || item.isPrivateUsername === 1;
+      const prem = (item) => item.__timeline === 'premium' || item.isPremium === true || item.isPremium === 'true' || item.isPremium === 1 || (item.timelineType || '').toUpperCase() === 'PREMIUM';
+      normalizedForSplit.forEach(item => {
+        const isPub = pub(item);
+        const isPriv = priv(item);
+        const isPrem = prem(item);
+        const clean = (it) => { const o = { ...it }; delete o.__timeline; return o; };
+        const enriched = (flags) => clean({ ...item, isPublicUsername: !!flags.pub, isPrivateUsername: !!flags.priv, isPremium: !!flags.prem });
+        if (returnAllViews && item.__timeline === 'premium') {
+          premiumItems.push(enriched({ pub: false, priv: false, prem: true }));
+        } else if (returnAllViews && item.__timeline === 'private') {
+          privateItems.push(enriched({ pub: false, priv: true, prem: false }));
+        } else if (returnAllViews && item.__timeline === 'public') {
+          publicItems.push(enriched({ pub: true, priv: false, prem: false }));
         } else {
-          publicItems.push({ ...item, isPremium: false });
+          if (isPub) publicItems.push(enriched({ pub: true, priv: !!isPriv, prem: !!isPrem }));
+          if (isPriv || isPrem) privateItems.push(enriched({ pub: !!isPub, priv: !!isPriv, prem: !!isPrem }));
         }
       });
       publicItems.sort(sortByNewest);
       privateItems.sort(sortByNewest);
+      premiumItems.sort(sortByNewest);
       if (pipelineDebug) {
         pipelineDebug.beforeSplit = deduplicatedItems.length;
         pipelineDebug.publicCount = publicItems.length;
         pipelineDebug.privateCount = privateItems.length;
+        if (returnAllViews) pipelineDebug.premiumCount = premiumItems.length;
       }
 
       // Normalize items to the exact shape mobile expects (ChannelContent / both-views contract)
@@ -2782,19 +2829,23 @@ export default defineEventHandler(async (event) => {
         creatorUsername: item.creatorUsername || item.username || null,
         username: item.creatorUsername || item.username || null,
         creatorEmail: item.creatorEmail || item.timelineCreatorEmail || null,
+        isPublicUsername: !!item.isPublicUsername,
         isPrivateUsername: !!item.isPrivateUsername,
         isPremium: !!(item.isPremium === true || item.isPremium === 'true' || item.isPremium === 1),
         status: item.status || null,
         scheduledDropDate: item.scheduledDropDate || null,
-        streamKey: item.streamKey || null
+        streamKey: item.streamKey || null,
+        durationSeconds: item.durationSeconds != null ? Number(item.durationSeconds) : null
       });
 
       const paginatedPublic = publicItems.slice(0, pageLimit).map(toMobileItem);
       const paginatedPrivate = privateItems.slice(0, pageLimit).map(toMobileItem);
+      const paginatedPremium = returnAllViews ? premiumItems.slice(0, pageLimit).map(toMobileItem) : [];
       
-      // Generate nextTokens for both
+      // Generate nextTokens for both (and premium when all views)
       let publicNextToken = null;
       let privateNextToken = null;
+      let premiumNextTokenAllViews = null;
       
       if (publicItems.length > pageLimit && queryResult && queryResult.LastEvaluatedKey) {
         publicNextToken = Buffer.from(JSON.stringify(queryResult.LastEvaluatedKey)).toString('base64');
@@ -2810,7 +2861,7 @@ export default defineEventHandler(async (event) => {
       
       if (privateItems.length > pageLimit && queryResult && queryResult.LastEvaluatedKey) {
         privateNextToken = Buffer.from(JSON.stringify(queryResult.LastEvaluatedKey)).toString('base64');
-      } else if (privateItems.length > pageLimit && paginatedPrivate.length > 0) {
+      } else       if (privateItems.length > pageLimit && paginatedPrivate.length > 0) {
         const lastItem = paginatedPrivate[paginatedPrivate.length - 1];
         if (lastItem) {
           privateNextToken = Buffer.from(JSON.stringify({
@@ -2820,7 +2871,17 @@ export default defineEventHandler(async (event) => {
         }
       }
       
-      console.log(`✅ [get-content] Returning both views - public: ${paginatedPublic.length}, private: ${paginatedPrivate.length}`);
+      if (returnAllViews && premiumItems.length > pageLimit && paginatedPremium.length > 0) {
+        const lastPremium = paginatedPremium[paginatedPremium.length - 1];
+        if (lastPremium) {
+          premiumNextTokenAllViews = Buffer.from(JSON.stringify({
+            PK: `USER#${creatorEmail}`,
+            SK: lastPremium.SK
+          })).toString('base64');
+        }
+      }
+      
+      console.log(`✅ [get-content] Returning ${returnAllViews ? 'all views' : 'both views'} - public: ${paginatedPublic.length}, private: ${paginatedPrivate.length}${returnAllViews ? `, premium: ${paginatedPremium.length}` : ''}`);
       
       return {
         success: true,
@@ -2832,8 +2893,15 @@ export default defineEventHandler(async (event) => {
         privateNextToken: privateNextToken,
         publicHasMore: publicNextToken !== null,
         privateHasMore: privateNextToken !== null,
+        ...(returnAllViews ? {
+          premiumContent: paginatedPremium,
+          premiumCount: paginatedPremium.length,
+          premiumNextToken: premiumNextTokenAllViews,
+          premiumHasMore: premiumNextTokenAllViews !== null
+        } : {}),
         ...(timelineDebugForResponse ? { _timelineDebug: JSON.stringify(timelineDebugForResponse) } : {}),
-        ...(pipelineDebug ? { _pipelineDebug: JSON.stringify(pipelineDebug) } : {})
+        ...(pipelineDebug ? { _pipelineDebug: JSON.stringify(pipelineDebug) } : {}),
+        ...(twillyDebug ? { _debug: { ...twillyDebug, tables: returnAllViews ? 'TwillyPublic+TwillyPrivate+TwillyPremium' : 'TwillyPublic+TwillyPrivate' } } : {})
       };
     }
     
@@ -2907,7 +2975,8 @@ export default defineEventHandler(async (event) => {
       content: paginatedContent, // Return paginated content (already filtered and sorted)
       count: paginatedContent.length,
       nextToken: nextTokenResult,
-      hasMore: nextTokenResult !== null
+      hasMore: nextTokenResult !== null,
+      ...(twillyDebug ? { _debug: twillyDebug } : {})
     };
 
   } catch (error) {

@@ -5,13 +5,19 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TWILLY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Files to deploy
+# Files to deploy (get-content, timeline-utils, delete, user APIs for premium-add, remove-follow, added-usernames, search)
 FILES=(
   "server/api/channels/get-content.post.js"
   "server/api/channels/timeline-utils.js"
   "server/api/files/delete.post.js"
   "server/api/streams/convert-to-post.post.js"
   "server/api/streams/set-stream-username-type.post.js"
+  "server/api/users/create-premium-subscription.post.js"
+  "server/api/users/get-subscription-status.post.js"
+  "server/api/users/remove-follow.post.js"
+  "server/api/users/added-usernames.post.js"
+  "server/api/users/add-premium-creator.post.js"
+  "server/api/users/search-usernames.post.js"
 )
 
 # EC2 config (match setup-websocket-ec2.sh)
@@ -40,11 +46,11 @@ for rel in "${FILES[@]}"; do
 done
 
 echo "🚀 Deploying backend to EC2 ($INSTANCE_IP)..."
-echo "   Files: get-content, timeline-utils, delete.post, convert-to-post, set-stream-username-type"
+echo "   Files: get-content, timeline-utils, delete, convert-to-post, set-stream-username-type, user APIs (remove-follow, added-usernames), search-usernames"
 echo ""
 
 echo "📁 Ensuring remote directories exist..."
-ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${SSH_USER}@${INSTANCE_IP}" "mkdir -p ~/twilly/server/api/channels ~/twilly/server/api/files ~/twilly/server/api/streams" || true
+ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${SSH_USER}@${INSTANCE_IP}" "mkdir -p ~/twilly/server/api/channels ~/twilly/server/api/files ~/twilly/server/api/streams ~/twilly/server/api/users" || true
 
 for rel in "${FILES[@]}"; do
   LOCAL_FILE="$TWILLY_DIR/$rel"
@@ -60,4 +66,4 @@ echo "🔄 Restarting Nuxt (pm2 restart twilly)..."
 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "${SSH_USER}@${INSTANCE_IP}" "pm2 restart twilly || pm2 restart all || true"
 
 echo ""
-echo "✅ Deploy complete. Premium tab filter, delete timeline cleanup, and stream visibility fixes are live."
+echo "✅ Deploy complete. Premium add model, delete cleanup, and API fixes are live on EC2."
