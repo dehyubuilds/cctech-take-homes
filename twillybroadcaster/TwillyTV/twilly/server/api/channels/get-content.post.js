@@ -5,7 +5,12 @@
  */
 import AWS from 'aws-sdk';
 import { defineEventHandler, readBody, readRawBody, createError } from 'h3';
-import { TABLE_MAIN, TABLE_PUBLIC, TABLE_PRIVATE, TABLE_PREMIUM } from './timeline-tables.js';
+
+// Inlined so Nitro/Rollup resolves at build (same values as timeline-tables.js)
+const TABLE_MAIN = 'Twilly';
+const TABLE_PUBLIC = 'TwillyPublic';
+const TABLE_PRIVATE = 'TwillyPrivate';
+const TABLE_PREMIUM = 'TwillyPremium';
 
 /** Robust body parse: readBody can be empty on Netlify (base64 body). Try readBody first, then readRawBody + JSON.parse. */
 async function getParsedBody(event) {
