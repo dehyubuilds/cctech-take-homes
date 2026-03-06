@@ -2648,7 +2648,26 @@ export default defineEventHandler(async (event) => {
         }
       }
 
-      let premiumOnly = allPremiumFiles;
+      // Deduplicate by canonical file id: same video can appear as FILE#fileId (creator) and PREMIUM#ts#fileId#creator (viewer fan-out)
+      const normalizePremiumSK = (item) => {
+        const sk = item.SK || '';
+        if (sk.startsWith('FILE#')) return sk;
+        const fileId = item.fileId || (sk.includes('#') ? sk.split('#')[2] : sk.replace(/^PREMIUM#/, '').split('#')[0]) || sk;
+        return `FILE#${(fileId || '').replace(/^FILE#/, '')}`;
+      };
+      const seenByNormalizedSK = new Map();
+      for (const file of allPremiumFiles) {
+        const canonical = normalizePremiumSK(file);
+        const existing = seenByNormalizedSK.get(canonical);
+        // Prefer FILE# (creator's copy) over PREMIUM# (fan-out) so we keep the canonical item
+        if (!existing || (file.SK && file.SK.startsWith('FILE#'))) {
+          seenByNormalizedSK.set(canonical, file);
+        }
+      }
+      let premiumOnly = Array.from(seenByNormalizedSK.values());
+      if (allPremiumFiles.length !== premiumOnly.length) {
+        console.log(`👑 [get-content] Twilly TV premium pipeline: deduplicated ${allPremiumFiles.length} → ${premiumOnly.length} items by FILE#fileId`);
+      }
       console.log(`👑 [get-content] Twilly TV premium pipeline: queried ${usersToQueryPremium.size} users (owner + viewer + ${subscribedPremiumEmails.length} added premium), ${premiumOnly.length} premium FILE# items`);
 
       // Enrich creatorUsername where missing (PROFILE lives in main table)
