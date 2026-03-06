@@ -431,8 +431,9 @@ export default defineEventHandler(async (event) => {
         }
         
         // FALLBACK: If client sent addedUsernames but server doesn't have them (e.g., auth error prevented add)
-        // Look up emails for those usernames and add them to the query list
-        // This ensures content appears even if the ADDED_USERNAME entry wasn't created yet
+        // Look up emails for those usernames and add them to the query list.
+        // CRITICAL: Premium-only creators (in addedPremiumCreatorEmails) must NEVER be added to addedUsernamesPublic,
+        // or their content would incorrectly appear on the public timeline.
         if (clientAddedUsernames && Array.isArray(clientAddedUsernames) && clientAddedUsernames.length > 0) {
           console.log(`🔄 [get-content] Client sent ${clientAddedUsernames.length} added usernames - checking if any need to be added to public set...`);
           console.log(`   📋 Client usernames: [${clientAddedUsernames.map(u => `"${u}"`).join(', ')}]`);
@@ -498,10 +499,17 @@ export default defineEventHandler(async (event) => {
                 if (matchingProfile) {
                   const userEmail = matchingProfile.PK?.replace('USER#', '') || matchingProfile.email;
                   if (userEmail) {
-                    addedUserEmails.add(userEmail.toLowerCase());
-                    // Add to appropriate set based on visibility (default to public for fallback)
-                    addedUsernamesPublic.add(username);
-                    console.log(`   ✅ Found email for "${username}": ${userEmail} (original username: "${matchingProfile.username}") (added to query list)`);
+                    const emailLower = userEmail.toLowerCase();
+                    addedUserEmails.add(emailLower);
+                    // CRITICAL: Do NOT add to public set if this user is added for PREMIUM only.
+                    // Adding to public would make their content appear on the public timeline (major bug).
+                    const isPremiumOnly = addedPremiumCreatorEmails && addedPremiumCreatorEmails.has(emailLower);
+                    if (isPremiumOnly) {
+                      console.log(`   ⏭️ Skipped adding "${username}" to PUBLIC set (premium-only creator - must not appear on public timeline)`);
+                    } else {
+                      addedUsernamesPublic.add(username);
+                      console.log(`   ✅ Found email for "${username}": ${userEmail} (original username: "${matchingProfile.username}") (added to query list)`);
+                    }
                   } else {
                     console.log(`   ⚠️ Found profile for "${username}" but no email in PK or email field`);
                   }
@@ -857,6 +865,7 @@ export default defineEventHandler(async (event) => {
       } else if (returnBothViews) {
         prefixes.push('PUBLIC');
         prefixes.push('PRIVATE');
+        prefixes.push('PREMIUM');
       } else if (showPrivateContent) {
         prefixes.push('PRIVATE');
       } else {
@@ -864,12 +873,14 @@ export default defineEventHandler(async (event) => {
       }
       usedTimelinePrefixes = prefixes;
       const pk = `USER#${timelineViewerEmail.toLowerCase().trim()}`;
-      console.log(`📺 [get-content] Twilly TV isolated timelines - querying: ${prefixes.join(', ')} PK=${pk}`);
+      const prefixToTable = { PUBLIC: TABLE_PUBLIC, PRIVATE: TABLE_PRIVATE, PREMIUM: TABLE_PREMIUM };
+      console.log(`📺 [get-content] Twilly TV isolated timelines - querying: ${prefixes.join(', ')} PK=${pk} (3 tables)`);
       try {
         const allEntries = [];
         for (const prefix of prefixes) {
+          const tbl = prefixToTable[prefix];
           const timelineQueryParams = {
-            TableName: table,
+            TableName: tbl,
             KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
             ExpressionAttributeValues: {
               ':pk': pk,
@@ -880,10 +891,11 @@ export default defineEventHandler(async (event) => {
           };
           const res = await dynamodb.query(timelineQueryParams).promise();
           if (res.Items && res.Items.length > 0) {
+            res.Items.forEach(it => { it.__timelineTable = tbl; it.__timeline = prefix.toLowerCase(); });
             allEntries.push(...res.Items);
           }
         }
-        timelineDebugForResponse = { pk, rawEntries: allEntries.length, table };
+        timelineDebugForResponse = { pk, rawEntries: allEntries.length, tables: [TABLE_PUBLIC, TABLE_PRIVATE, TABLE_PREMIUM] };
         pipelineDebug = { rawEntries: allEntries.length, afterTimelineResolution: allEntries.length };
         // When querying a specific timeline (including PREMIUM), always use timeline path - never fall back to mixed FILE query
         if (allEntries.length > 0 || prefixes.length > 0) {
@@ -903,29 +915,48 @@ export default defineEventHandler(async (event) => {
             entryMeta.push({ timelineEntry, fileId, creatorEmailForFile });
           }
           const fileByKey = new Map();
-          for (let i = 0; i < keysToGet.length; i += 100) {
-            const chunk = keysToGet.slice(i, i + 100);
-            const uniq = Array.from(new Map(chunk.map(k => [`${k.PK}|${k.SK}`, k]).entries()).values());
-            const result = await dynamodb.batchGet({ RequestItems: { [table]: { Keys: uniq } } }).promise();
-            const items = result.Responses?.[table] || [];
-            for (const item of items) {
-              if (item.PK && item.SK) fileByKey.set(`${item.PK}|${item.SK}`, item);
+          const keysByTable = { [TABLE_PUBLIC]: [], [TABLE_PRIVATE]: [], [TABLE_PREMIUM]: [] };
+          for (const timelineEntry of allEntries) {
+            const skParts = timelineEntry.SK.split('#');
+            const fileId = skParts.length > 2 ? skParts[2] : timelineEntry.fileId;
+            const entryCreatorEmail = (skParts.length > 3 ? skParts[3] : timelineEntry.creatorEmail) || creatorEmail;
+            const creatorEmailForFile = (entryCreatorEmail || '').toLowerCase().trim();
+            const tbl = timelineEntry.__timelineTable || TABLE_PUBLIC;
+            const key = { PK: `USER#${creatorEmailForFile}`, SK: `FILE#${fileId}` };
+            if (!keysByTable[tbl].some(k => k.PK === key.PK && k.SK === key.SK)) keysByTable[tbl].push(key);
+            if (creatorEmailForFile !== adminEmail) {
+              const adminKey = { PK: `USER#${adminEmail}`, SK: `FILE#${fileId}` };
+              if (!keysByTable[tbl].some(k => k.PK === adminKey.PK && k.SK === adminKey.SK)) keysByTable[tbl].push(adminKey);
+            }
+          }
+          const requestItems = {};
+          for (const tbl of [TABLE_PUBLIC, TABLE_PRIVATE, TABLE_PREMIUM]) {
+            const uniq = Array.from(new Map(keysByTable[tbl].map(k => [`${k.PK}|${k.SK}`, k]).entries()).values()).slice(0, 100);
+            if (uniq.length) requestItems[tbl] = { Keys: uniq };
+          }
+          if (Object.keys(requestItems).length > 0) {
+            const result = await dynamodb.batchGet({ RequestItems: requestItems }).promise();
+            for (const tbl of [TABLE_PUBLIC, TABLE_PRIVATE, TABLE_PREMIUM]) {
+              const items = result.Responses?.[tbl] || [];
+              for (const item of items) {
+                if (item.PK && item.SK) fileByKey.set(`${item.PK}|${item.SK}`, item);
+              }
             }
           }
           const resolvedByIndex = entryMeta.map((_, m) => {
             const { creatorEmailForFile, fileId } = entryMeta[m];
             return fileByKey.get(`USER#${creatorEmailForFile}|FILE#${fileId}`) || fileByKey.get(`USER#${adminEmail}|FILE#${fileId}`) || null;
           });
-          // For entries unresolved or resolved to a FILE without hlsUrl, try streamKey and prefer FILE with hlsUrl (ready to play)
           for (let m = 0; m < entryMeta.length; m++) {
             const existing = resolvedByIndex[m];
             if (existing && existing.hlsUrl && String(existing.hlsUrl).trim()) continue;
             const { timelineEntry, creatorEmailForFile } = entryMeta[m];
             const streamKey = timelineEntry.streamKey || timelineEntry.folderPath;
             if (!streamKey) continue;
+            const tbl = timelineEntry.__timelineTable || TABLE_PUBLIC;
             for (const pk of [`USER#${creatorEmailForFile}`, `USER#${adminEmail}`]) {
               const q = await dynamodb.query({
-                TableName: table,
+                TableName: tbl,
                 KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
                 FilterExpression: 'streamKey = :skey',
                 ExpressionAttributeValues: { ':pk': pk, ':sk': 'FILE#', ':skey': streamKey },
@@ -2568,30 +2599,47 @@ export default defineEventHandler(async (event) => {
       const normalizedViewer = (effectiveViewerEmail || '').toLowerCase().trim();
       const subscribedPremiumEmails = Array.from(addedPremiumCreatorEmails || []);
 
-      // Who to query: channel owner + viewer (for own content) + every creator the viewer added for premium
-      const usersToQueryPremium = new Set([creatorEmail]);
-      if (normalizedViewer && normalizedViewer !== creatorEmail.toLowerCase()) {
+      // Resolve channel owner: request creatorEmail may be wrong for Twilly TV (e.g. "Twilly" when METADATA has no creatorEmail).
+      // Query CHANNEL#Twilly TV METADATA so we always hit the partition where premium items live (USER#ownerEmail).
+      let channelOwnerEmail = (creatorEmail && String(creatorEmail).includes('@')) ? creatorEmail.trim().toLowerCase() : null;
+      if (!channelOwnerEmail) {
+        try {
+          const channelMeta = await dynamodb.get({
+            TableName: table,
+            Key: { PK: `CHANNEL#${channelName.trim()}`, SK: 'METADATA' }
+          }).promise();
+          const metaCreator = (channelMeta.Item?.creatorEmail || '').trim().toLowerCase();
+          if (metaCreator && String(metaCreator).includes('@')) channelOwnerEmail = metaCreator;
+        } catch (_) {}
+      }
+      if (!channelOwnerEmail) channelOwnerEmail = 'dehyu.sinyan@gmail.com';
+      console.log(`👑 [get-content] Twilly TV premium pipeline: channel owner resolved to ${channelOwnerEmail} (request creatorEmail: ${creatorEmail})`);
+
+      // Who to query: channel owner + viewer (for own content) + every creator the viewer added for premium. All lowercased for DynamoDB PK.
+      const usersToQueryPremium = new Set([channelOwnerEmail]);
+      if (normalizedViewer && normalizedViewer !== channelOwnerEmail) {
         usersToQueryPremium.add(normalizedViewer);
       }
-      subscribedPremiumEmails.forEach(email => usersToQueryPremium.add(email.toLowerCase()));
+      subscribedPremiumEmails.forEach(email => usersToQueryPremium.add(String(email).toLowerCase().trim()));
 
       const allPremiumFiles = [];
       for (const userEmail of usersToQueryPremium) {
+        const pkEmail = String(userEmail).toLowerCase().trim();
         try {
-          // Query full partition: creator has FILE#, viewer has PREMIUM# from backfill/fan-out
+          // Query full partition: creator has FILE#, viewer has PREMIUM# from backfill/fan-out (PK must match stored case)
           const fileResult = await dynamodb.query({
             TableName: TABLE_PREMIUM,
             KeyConditionExpression: 'PK = :pk',
-            ExpressionAttributeValues: { ':pk': `USER#${userEmail}` },
+            ExpressionAttributeValues: { ':pk': `USER#${pkEmail}` },
             Limit: 100
           }).promise();
           const items = (fileResult.Items || []).filter(file => file.isVisible !== false);
           for (const file of items) {
-            if (!file.creatorEmail) file.creatorEmail = (file.PK || '').replace('USER#', '') || userEmail;
+            if (!file.creatorEmail) file.creatorEmail = (file.PK || '').replace('USER#', '') || pkEmail;
             allPremiumFiles.push(file);
           }
         } catch (err) {
-          console.warn(`👑 [get-content] Premium pipeline (${TABLE_PREMIUM}): query for ${userEmail} failed (non-fatal):`, err.message);
+          console.warn(`👑 [get-content] Premium pipeline (${TABLE_PREMIUM}): query for ${pkEmail} failed (non-fatal):`, err.message);
         }
       }
 
@@ -2648,7 +2696,7 @@ export default defineEventHandler(async (event) => {
         const lastItem = paginatedPremium[paginatedPremium.length - 1];
         if (lastItem) {
           premiumNextToken = Buffer.from(JSON.stringify({
-            PK: lastItem.PK || `USER#${creatorEmail}`,
+            PK: lastItem.PK || `USER#${channelOwnerEmail}`,
             SK: lastItem.SK
           })).toString('base64');
         }
@@ -2664,21 +2712,26 @@ export default defineEventHandler(async (event) => {
 
     // If returnBothViews or returnAllViews (all views), split into public/private (and premium when all views) arrays (merged timelines, newest first)
     if (returnBothViews || returnAllViews) {
-      // LAST RESORT: Twilly TV with 0 items — query timeline + FILEs directly (handles Netlify/DynamoDB quirks)
+      // LAST RESORT: Twilly TV with 0 items — query timeline + FILEs from the THREE TABLES (TwillyPublic, TwillyPrivate, TwillyPremium)
       let filteredItemsForSplit = filteredItems;
       if (isTwillyTV && effectiveViewerEmail && filteredItems.length === 0) {
         try {
           const pk = `USER#${effectiveViewerEmail.toLowerCase()}`;
+          const prefixToTable = { PUBLIC: TABLE_PUBLIC, PRIVATE: TABLE_PRIVATE, PREMIUM: TABLE_PREMIUM };
           const directEntries = [];
-          for (const prefix of ['PUBLIC', 'PRIVATE']) {
+          for (const prefix of ['PUBLIC', 'PRIVATE', 'PREMIUM']) {
+            const tbl = prefixToTable[prefix];
             const res = await dynamodb.query({
-              TableName: table,
+              TableName: tbl,
               KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
               ExpressionAttributeValues: { ':pk': pk, ':sk': `${prefix}#` },
               ScanIndexForward: false,
               Limit: pageLimit * 2
             }).promise();
-            if (res.Items && res.Items.length) directEntries.push(...res.Items);
+            if (res.Items && res.Items.length) {
+              res.Items.forEach(it => { it.__timelineTable = tbl; });
+              directEntries.push(...res.Items);
+            }
           }
           if (directEntries.length > 0) {
             const adminEmail = 'dehyu.sinyan@gmail.com';
@@ -2686,18 +2739,31 @@ export default defineEventHandler(async (event) => {
               const parts = (e.SK || '').split('#');
               const fileId = parts[2] || e.fileId;
               const creatorEmailForFile = (parts[3] || e.creatorEmail || creatorEmail || '').toLowerCase().trim();
-              return { timelineEntry: e, fileId, creatorEmailForFile };
+              const tbl = e.__timelineTable || TABLE_PUBLIC;
+              return { timelineEntry: e, fileId, creatorEmailForFile, fileTable: tbl };
             });
-            const keysToGet = [];
-            for (const { creatorEmailForFile, fileId } of entryMeta) {
-              keysToGet.push({ PK: `USER#${creatorEmailForFile}`, SK: `FILE#${fileId}` });
-              if (creatorEmailForFile !== adminEmail) keysToGet.push({ PK: `USER#${adminEmail}`, SK: `FILE#${fileId}` });
-            }
-            const uniqKeys = Array.from(new Map(keysToGet.map(k => [`${k.PK}|${k.SK}`, k]).entries()).values());
-            const batch = await dynamodb.batchGet({ RequestItems: { [table]: { Keys: uniqKeys.slice(0, 100) } } }).promise();
             const fileByKey = new Map();
-            for (const item of (batch.Responses && batch.Responses[table]) || []) {
-              if (item.PK && item.SK) fileByKey.set(`${item.PK}|${item.SK}`, item);
+            const keysByTable = { [TABLE_PUBLIC]: [], [TABLE_PRIVATE]: [], [TABLE_PREMIUM]: [] };
+            for (const { creatorEmailForFile, fileId, fileTable } of entryMeta) {
+              const key = { PK: `USER#${creatorEmailForFile}`, SK: `FILE#${fileId}` };
+              if (!keysByTable[fileTable].some(k => k.PK === key.PK && k.SK === key.SK)) keysByTable[fileTable].push(key);
+              if (creatorEmailForFile !== adminEmail) {
+                const adminKey = { PK: `USER#${adminEmail}`, SK: `FILE#${fileId}` };
+                if (!keysByTable[fileTable].some(k => k.PK === adminKey.PK && k.SK === adminKey.SK)) keysByTable[fileTable].push(adminKey);
+              }
+            }
+            const requestItems = {};
+            for (const tbl of [TABLE_PUBLIC, TABLE_PRIVATE, TABLE_PREMIUM]) {
+              const uniq = Array.from(new Map(keysByTable[tbl].map(k => [`${k.PK}|${k.SK}`, k]).entries()).values()).slice(0, 100);
+              if (uniq.length) requestItems[tbl] = { Keys: uniq };
+            }
+            if (Object.keys(requestItems).length > 0) {
+              const batch = await dynamodb.batchGet({ RequestItems: requestItems }).promise();
+              for (const tbl of [TABLE_PUBLIC, TABLE_PRIVATE, TABLE_PREMIUM]) {
+                for (const item of (batch.Responses && batch.Responses[tbl]) || []) {
+                  if (item.PK && item.SK) fileByKey.set(`${item.PK}|${item.SK}`, item);
+                }
+              }
             }
             const toMobileItem = (item) => ({
               SK: item.SK || `FILE#${item.fileId || 'unknown'}`,
@@ -2739,6 +2805,7 @@ export default defineEventHandler(async (event) => {
                 creatorEmail: creatorEmailForFile,
                 timelineCreatorEmail: creatorEmailForFile,
                 timelineType: type,
+                __timeline: type.toLowerCase(),
                 isTimelineEntry: true
               };
               return item;

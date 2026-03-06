@@ -106,12 +106,29 @@ export default defineEventHandler(async (event) => {
 
     // Transform the data to include necessary information
     const transformedChannels = await Promise.all(channels.map(async (channel) => {
-      // Extract channelId from PK (format: "CHANNEL#email-channelName")
+      // Extract channelId from PK (format: "CHANNEL#email-channelName" or "CHANNEL#Twilly TV")
       const channelId = channel.PK.replace('CHANNEL#', '');
       const channelIdParts = channelId.split('-');
-      const creatorEmail = channelIdParts[0];
       const channelName = channel.channelName || channel.series || channelId;
-      
+      // creatorEmail: prefer METADATA.creatorEmail; if PK is "CHANNEL#Twilly TV" then channelId has no @, so fetch from METADATA
+      let creatorEmail = (channel.creatorEmail && String(channel.creatorEmail).includes('@')) ? channel.creatorEmail : null;
+      if (!creatorEmail && channelId.includes('@')) creatorEmail = channelIdParts[0];
+      if (!creatorEmail && channelName) {
+        try {
+          const meta = await dynamodb.get({
+            TableName: table,
+            Key: { PK: `CHANNEL#${channelName}`, SK: 'METADATA' }
+          }).promise();
+          creatorEmail = (meta.Item?.creatorEmail && String(meta.Item.creatorEmail).includes('@')) ? meta.Item.creatorEmail.trim().toLowerCase() : null;
+        } catch (_) {}
+      }
+      if (!creatorEmail) creatorEmail = channelIdParts[0];
+      // Twilly TV: ensure creatorEmail is a valid email so get-content premium/public queries hit the right partition (USER#email)
+      if (channelName && String(channelName).toLowerCase().trim() === 'twilly tv' && (!creatorEmail || !String(creatorEmail).includes('@'))) {
+        creatorEmail = 'dehyu.sinyan@gmail.com';
+        console.log('✅ [get-public-channels] Twilly TV: using fallback creatorEmail for timeline queries');
+      }
+
       // Check channel visibility (private, searchable, or public)
       // Channels are private by default unless explicitly marked as searchable or public
       let visibility = 'private';
