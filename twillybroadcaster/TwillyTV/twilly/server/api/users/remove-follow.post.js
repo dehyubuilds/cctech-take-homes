@@ -86,9 +86,12 @@ export default defineEventHandler(async (event) => {
         console.log(`ℹ️ [remove-follow] ADDED_USERNAME #${visibility} not found or error: ${error.message}`);
       }
     }
-    
-    // Also try old format (for backward compatibility during migration)
-    if (!deletedSomething) {
+
+    // CRITICAL: Only try old format when client did NOT send a specific visibility (legacy clients).
+    // When visibility is "premium", we must ONLY delete ADDED_USERNAME#email#premium. If that doesn't exist,
+    // we must NOT delete the old-format ADDED_USERNAME#email (that could be their public add) — otherwise
+    // "remove from premium" would incorrectly remove the same user from public.
+    if (!deletedSomething && !visibilityToDelete) {
       const addedUsernameOldParams = {
         TableName: table,
         Key: {
@@ -96,15 +99,13 @@ export default defineEventHandler(async (event) => {
           SK: `ADDED_USERNAME#${requestedUserEmail}`
         }
       };
-      
+
       try {
         const addedUsernameItem = await dynamodb.get(addedUsernameOldParams).promise();
         if (addedUsernameItem.Item) {
           // Migrate to new format before deleting
           const visibility = addedUsernameItem.Item.streamerVisibility || 'public';
           const newSK = `ADDED_USERNAME#${requestedUserEmail}#${visibility}`;
-          
-          // Create new entry with correct SK
           const newItem = {
             ...addedUsernameItem.Item,
             PK: `USER#${requesterEmail}`,
@@ -112,7 +113,7 @@ export default defineEventHandler(async (event) => {
           };
           delete newItem.PK;
           delete newItem.SK;
-          
+
           await dynamodb.put({
             TableName: table,
             Item: {
@@ -121,8 +122,7 @@ export default defineEventHandler(async (event) => {
               ...newItem
             }
           }).promise();
-          
-          // Delete old entry
+
           await dynamodb.delete(addedUsernameOldParams).promise();
           await dynamodb.delete({
             TableName: table,
