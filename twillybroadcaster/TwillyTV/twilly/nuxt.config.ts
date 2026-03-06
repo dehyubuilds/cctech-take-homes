@@ -71,9 +71,9 @@ export default defineNuxtConfig({
 
     ssr: true,
 
-    // Add nitro configuration for server routes (netlify preset on Netlify so .output/public exists for deploy)
+    // Add nitro configuration for server routes (netlify preset so deploy creates .output/public; last working deploy was main@10552f0)
       nitro: {
-    preset: process.env.NITRO_PRESET || (process.env.NETLIFY ? 'netlify' : 'node-server'),
+    preset: 'netlify',
     routeRules: {
       '/api/**': { cors: true }
     },
