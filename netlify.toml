@@ -3,3 +3,5 @@
   base = "twillybroadcaster/TwillyTV/twilly"
   command = "npm run build"
   publish = ".output/public"
+  # Force build every time (exit 1 = do not skip). Stops Netlify from skipping build and then failing deploy.
+  ignore = "exit 1"
