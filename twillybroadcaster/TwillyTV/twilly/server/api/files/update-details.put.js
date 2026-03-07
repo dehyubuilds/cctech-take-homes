@@ -142,11 +142,13 @@ export default defineEventHandler(async (event) => {
       skToUse = `FILE#${fileId}`;
     }
     
+    // User/FILE data lives in TwillyPublic (3-table model)
+    const TABLE_MAIN = 'TwillyPublic';
     console.log(`💾 [update-details] Updating item: PK=${PK}, SK=${skToUse}, title=${title !== undefined ? (title || 'null') : 'not provided'}`);
     
     const setClause = updateExpressions.length > 0 ? `SET ${updateExpressions.join(', ')}` : '';
     const params = {
-      TableName: 'Twilly',
+      TableName: TABLE_MAIN,
       Key: {
         PK: PK,
         SK: skToUse

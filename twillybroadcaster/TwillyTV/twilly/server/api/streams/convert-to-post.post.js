@@ -9,7 +9,7 @@ AWS.config.update({
 })
 
 const dynamodb = new AWS.DynamoDB.DocumentClient()
-const TABLE_NAME = 'Twilly'
+const TABLE_NAME = 'TwillyPublic'
 /** Short clips must never exist in DynamoDB. Videos shorter than this are never written; convert-to-post drops them and Lambda skips writing. */
 const MIN_DURATION_SECONDS = 6
 

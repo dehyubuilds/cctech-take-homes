@@ -8,7 +8,11 @@ AWS.config.update({
 });
 
 const dynamodb = new AWS.DynamoDB.DocumentClient();
-const table = 'Twilly';
+const TABLE_PUBLIC = 'TwillyPublic';
+const TABLE_PRIVATE = 'TwillyPrivate';
+const TABLE_PREMIUM = 'TwillyPremium';
+const TABLE_USER = TABLE_PUBLIC;
+const table = TABLE_USER;
 
 /** Timeline types: each has its own DynamoDB SK prefix so timelines are isolated. */
 export const TIMELINE_TYPES = Object.freeze({ PUBLIC: 'PUBLIC', PRIVATE: 'PRIVATE', PREMIUM: 'PREMIUM' });
@@ -56,8 +60,9 @@ export async function createTimelineEntry(viewerEmail, fileData, creatorEmail, t
       isTimelineEntry: true
     };
 
+    const tableForType = timelineTypeUpper === 'PREMIUM' ? TABLE_PREMIUM : (timelineTypeUpper === 'PRIVATE' ? TABLE_PRIVATE : TABLE_PUBLIC);
     await dynamodb.put({
-      TableName: table,
+      TableName: tableForType,
       Item: timelineEntry,
       ConditionExpression: 'attribute_not_exists(PK) AND attribute_not_exists(SK)'
     }).promise();
@@ -239,45 +244,42 @@ export async function removeTimelineEntriesForFile(fileId) {
   const shortId = fileId.replace(/^FILE#/, '').trim();
   if (!shortId) return;
   try {
-    console.log(`🗑️ [timeline-utils] Removing all timeline entries for file: ${shortId}`);
-    const tableName = table;
-    let entriesToRemove = [];
-    let lastKey = null;
-    do {
-      const scanParams = {
-        TableName: tableName,
-        FilterExpression: 'begins_with(PK, :userPrefix) AND contains(SK, :fileId)',
-        ExpressionAttributeValues: {
-          ':userPrefix': 'USER#',
-          ':fileId': shortId
-        },
-        ExclusiveStartKey: lastKey || undefined
-      };
-      const result = await dynamodb.scan(scanParams).promise();
-      const items = result.Items || [];
-      // Only include items where SK segment (e.g. PREMIUM#ts#fileId#email) has exact fileId match
-      const matched = items.filter(entry => skReferencesFile(entry.SK, shortId));
-      entriesToRemove = entriesToRemove.concat(matched);
-      lastKey = result.LastEvaluatedKey || null;
-    } while (lastKey);
+    console.log(`🗑️ [timeline-utils] Removing all timeline entries for file: ${shortId} (3 tables)`);
+    for (const tableName of [TABLE_PUBLIC, TABLE_PRIVATE, TABLE_PREMIUM]) {
+      let entriesToRemove = [];
+      let lastKey = null;
+      do {
+        const scanParams = {
+          TableName: tableName,
+          FilterExpression: 'begins_with(PK, :userPrefix) AND contains(SK, :fileId)',
+          ExpressionAttributeValues: {
+            ':userPrefix': 'USER#',
+            ':fileId': shortId
+          },
+          ExclusiveStartKey: lastKey || undefined
+        };
+        const result = await dynamodb.scan(scanParams).promise();
+        const items = result.Items || [];
+        const matched = items.filter(entry => skReferencesFile(entry.SK, shortId));
+        entriesToRemove = entriesToRemove.concat(matched);
+        lastKey = result.LastEvaluatedKey || null;
+      } while (lastKey);
 
-    if (entriesToRemove.length === 0) {
-      console.log(`🗑️ [timeline-utils] No timeline entries found for file: ${shortId}`);
-      return true;
+      if (entriesToRemove.length === 0) continue;
+      const count = entriesToRemove.length;
+      const BATCH = 25;
+      for (let i = 0; i < entriesToRemove.length; i += BATCH) {
+        const chunk = entriesToRemove.slice(i, i + BATCH);
+        await dynamodb.batchWrite({
+          RequestItems: {
+            [tableName]: chunk.map(entry => ({
+              DeleteRequest: { Key: { PK: entry.PK, SK: entry.SK } }
+            }))
+          }
+        }).promise();
+      }
+      console.log(`✅ [timeline-utils] Removed ${count} timeline entries for file ${shortId} from ${tableName}`);
     }
-    console.log(`🗑️ [timeline-utils] Found ${entriesToRemove.length} timeline entries to remove for file: ${shortId}`);
-    const BATCH = 25;
-    for (let i = 0; i < entriesToRemove.length; i += BATCH) {
-      const chunk = entriesToRemove.slice(i, i + BATCH);
-      await dynamodb.batchWrite({
-        RequestItems: {
-          [tableName]: chunk.map(entry => ({
-            DeleteRequest: { Key: { PK: entry.PK, SK: entry.SK } }
-          }))
-        }
-      }).promise();
-    }
-    console.log(`✅ [timeline-utils] Removed ${entriesToRemove.length} timeline entries for file: ${shortId}`);
     return true;
   } catch (error) {
     console.error(`❌ [timeline-utils] Error removing timeline entries for file: ${error.message}`);
@@ -294,12 +296,12 @@ export async function removeTimelineEntriesForFileForUser(userEmail, fileId) {
   const shortId = fileId.replace(/^FILE#/, '').trim();
   if (!shortId) return;
   const pk = `USER#${String(userEmail).toLowerCase().trim()}`;
-  const prefixes = ['PREMIUM#', 'PUBLIC#', 'PRIVATE#'];
+  const prefixToTable = [['PUBLIC#', TABLE_PUBLIC], ['PRIVATE#', TABLE_PRIVATE], ['PREMIUM#', TABLE_PREMIUM]];
   let removed = 0;
   try {
-    for (const prefix of prefixes) {
+    for (const [prefix, tableName] of prefixToTable) {
       const res = await dynamodb.query({
-        TableName: table,
+        TableName: tableName,
         KeyConditionExpression: 'PK = :pk AND begins_with(SK, :prefix)',
         ExpressionAttributeValues: { ':pk': pk, ':prefix': prefix }
       }).promise();
@@ -310,7 +312,7 @@ export async function removeTimelineEntriesForFileForUser(userEmail, fileId) {
         const chunk = items.slice(i, i + BATCH);
         await dynamodb.batchWrite({
           RequestItems: {
-            [table]: chunk.map(entry => ({ DeleteRequest: { Key: { PK: entry.PK, SK: entry.SK } } }))
+            [tableName]: chunk.map(entry => ({ DeleteRequest: { Key: { PK: entry.PK, SK: entry.SK } } }))
           }
         }).promise();
         removed += chunk.length;
@@ -322,6 +324,62 @@ export async function removeTimelineEntriesForFileForUser(userEmail, fileId) {
     return true;
   } catch (err) {
     console.error(`❌ [timeline-utils] removeTimelineEntriesForFileForUser: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Remove ALL timeline entries (and FILE#) for a file from a specific timeline table (TwillyPublic, TwillyPrivate, TwillyPremium).
+ * Use when deleting so the item is permanently removed from that timeline table.
+ * @param {string} tableName - DynamoDB table name (TwillyPublic, TwillyPrivate, TwillyPremium)
+ * @param {string} fileId - short file id (e.g. "file-123" without FILE# prefix)
+ */
+export async function removeTimelineEntriesForFileFromTable(tableName, fileId) {
+  if (!tableName || !fileId || typeof fileId !== 'string') return;
+  const shortId = fileId.replace(/^FILE#/, '').trim();
+  if (!shortId) return;
+  try {
+    console.log(`🗑️ [timeline-utils] Removing timeline entries for file ${shortId} from table ${tableName}`);
+    let entriesToRemove = [];
+    let lastKey = null;
+    do {
+      const scanParams = {
+        TableName: tableName,
+        FilterExpression: 'begins_with(PK, :userPrefix) AND contains(SK, :fileId)',
+        ExpressionAttributeValues: {
+          ':userPrefix': 'USER#',
+          ':fileId': shortId
+        },
+        ExclusiveStartKey: lastKey || undefined
+      };
+      const result = await dynamodb.scan(scanParams).promise();
+      const fileSK = `FILE#${shortId}`;
+      const items = (result.Items || []).filter(entry =>
+        skReferencesFile(entry.SK, shortId) || (entry.SK === fileSK)
+      );
+      entriesToRemove = entriesToRemove.concat(items);
+      lastKey = result.LastEvaluatedKey || null;
+    } while (lastKey);
+
+    if (entriesToRemove.length === 0) {
+      console.log(`🗑️ [timeline-utils] No timeline entries for file ${shortId} in ${tableName}`);
+      return true;
+    }
+    const BATCH = 25;
+    for (let i = 0; i < entriesToRemove.length; i += BATCH) {
+      const chunk = entriesToRemove.slice(i, i + BATCH);
+      await dynamodb.batchWrite({
+        RequestItems: {
+          [tableName]: chunk.map(entry => ({
+            DeleteRequest: { Key: { PK: entry.PK, SK: entry.SK } }
+          }))
+        }
+      }).promise();
+    }
+    console.log(`✅ [timeline-utils] Removed ${entriesToRemove.length} entries for file ${shortId} from ${tableName}`);
+    return true;
+  } catch (error) {
+    console.error(`❌ [timeline-utils] removeTimelineEntriesForFileFromTable(${tableName}): ${error.message}`);
     return false;
   }
 }
