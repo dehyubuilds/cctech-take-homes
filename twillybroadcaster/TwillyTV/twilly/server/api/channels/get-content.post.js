@@ -6,8 +6,8 @@
 import AWS from 'aws-sdk';
 import { defineEventHandler, readBody, readRawBody, createError } from 'h3';
 
-// Inlined so Nitro/Rollup resolves at build (same values as timeline-tables.js)
-const TABLE_MAIN = 'Twilly';
+// Inlined so Nitro/Rollup resolves at build. User/main data (USER#, PROFILE, REMOVED_*) lives in TwillyPublic; 3 tables for timelines.
+const TABLE_MAIN = 'TwillyPublic';
 const TABLE_PUBLIC = 'TwillyPublic';
 const TABLE_PRIVATE = 'TwillyPrivate';
 const TABLE_PREMIUM = 'TwillyPremium';
@@ -47,7 +47,7 @@ export default defineEventHandler(async (event) => {
   });
 
   const dynamodb = new AWS.DynamoDB.DocumentClient();
-  const table = 'Twilly';
+  const table = TABLE_MAIN;
 
   try {
     const body = await getParsedBody(event);
@@ -1015,22 +1015,24 @@ export default defineEventHandler(async (event) => {
         // Merge viewer's own FILEs (HELD/scheduled) that match current view - they may not be in timeline yet.
         // If a timeline entry already exists for the same SK, refresh it from the FILE so hlsUrl/thumbnailUrl
         // are up to date (timeline entries are created at convert time and not updated when processing completes).
-        // Exclude any FILE the viewer has deleted (REMOVED_FILE#) so deleted clips never reappear.
+        // Exclude any FILE the viewer has deleted (REMOVED_FILE# and REMOVED_PREMIUM#) so deletes work across all timelines.
         if (effectiveViewerEmail) {
           try {
             const removedFileIds = new Set();
-            const removedRes = await dynamodb.query({
-              TableName: table,
-              KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
-              ExpressionAttributeValues: {
-                ':pk': `USER#${effectiveViewerEmail.toLowerCase()}`,
-                ':sk': 'REMOVED_FILE#'
-              },
-              Limit: 500
-            }).promise();
-            for (const it of removedRes.Items || []) {
-              const id = (it.fileId || (it.SK || '').replace(/^REMOVED_FILE#/, '')).trim();
-              if (id) removedFileIds.add(id);
+            for (const prefix of ['REMOVED_FILE#', 'REMOVED_PREMIUM#']) {
+              const removedRes = await dynamodb.query({
+                TableName: table,
+                KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+                ExpressionAttributeValues: {
+                  ':pk': `USER#${effectiveViewerEmail.toLowerCase()}`,
+                  ':sk': prefix
+                },
+                Limit: 500
+              }).promise();
+              for (const it of removedRes.Items || []) {
+                const id = (it.fileId || (it.SK || '').replace(/^REMOVED_FILE#/, '').replace(/^REMOVED_PREMIUM#/, '')).trim();
+                if (id) removedFileIds.add(id);
+              }
             }
             const viewerFilesParams = {
               TableName: table,
@@ -2176,15 +2178,11 @@ export default defineEventHandler(async (event) => {
           } else {
             // CRITICAL FIX: Only show public content if user was added FOR PUBLIC visibility
             // Users added for PRIVATE should only see private content, not public
-            // CRITICAL FIX: Don't filter out items immediately if username is missing
-            // Username is set earlier in this function (line 1034-1118), so if it's still missing here,
-            // it means lookup failed. But we'll do a final check after all items are processed.
-            // For now, let items without username pass through - they'll be filtered in final pass
+            // SECURITY: If username is missing after lookup, filter out - never show on public timeline
+            // (Username is set earlier; missing here = lookup failed. Fail closed.)
             if (!itemUsername || itemUsername.trim() === '') {
-              console.log(`⚠️ [get-content] Twilly TV: Item has no username after lookup: ${item.fileName || item.SK} (will filter in final pass if still missing)`);
-              // Don't return null here - let it pass through to final filter
-              // This prevents items from appearing then disappearing
-              return item; // Return item as-is, final filter will handle it
+              console.log(`🚫 [get-content] Twilly TV: Filtering out item with no username after lookup: ${item.fileName || item.SK}`);
+              return null;
             }
             
             // CRITICAL: Normalize both sides for comparison (case-insensitive, trimmed)
@@ -2549,24 +2547,28 @@ export default defineEventHandler(async (event) => {
             return true;
           }
         } catch (filterError) {
-          // CRITICAL: If filter throws an error, log it but don't filter out the item
-          // This prevents errors from causing all items to be filtered out
+          // CRITICAL: If filter throws an error, fail CLOSED so we never show non-added users' posts on public timeline
           console.error(`❌ [get-content] Twilly TV FINAL FILTER ERROR for item ${item.SK || item.fileName}: ${filterError.message}`);
           console.error(`   Stack: ${filterError.stack}`);
-          // Return true to keep the item (fail open) - better to show an item than to hide everything
-          return true;
+          return false;
         }
       });
       
       // Wait for all async filter operations to complete
-      // CRITICAL: Use Promise.allSettled to prevent one error from breaking all filtering
+      // CRITICAL: Use Promise.allSettled so one item's error doesn't reject the whole batch
+      // SECURITY: Fail CLOSED - any rejection or missing result = filter out that item (never show non-added users' posts)
       let filterResults;
       try {
-        filterResults = await Promise.all(filterPromises);
+        const settled = await Promise.allSettled(filterPromises);
+        filterResults = settled.map((outcome, idx) => {
+          if (outcome.status === 'fulfilled') return outcome.value === true;
+          console.error(`❌ [get-content] Twilly TV FINAL FILTER: item ${idx} (${filteredItems[idx]?.SK || filteredItems[idx]?.fileName}) failed: ${outcome.reason?.message || outcome.reason}`);
+          return false; // reject = don't show
+        });
       } catch (promiseError) {
-        console.error(`❌ [get-content] Twilly TV FINAL FILTER: Promise.all failed: ${promiseError.message}`);
-        // If Promise.all fails, keep all items (fail open) to prevent total content loss
-        filterResults = filteredItems.map(() => true);
+        console.error(`❌ [get-content] Twilly TV FINAL FILTER: Promise.allSettled failed: ${promiseError.message}`);
+        // SECURITY: Fail CLOSED so we never show non-added users' posts on public timeline
+        filterResults = filteredItems.map(() => false);
       }
       // Combine items with their filter results
       filteredItems = filteredItems.filter((item, index) => {
@@ -2669,6 +2671,45 @@ export default defineEventHandler(async (event) => {
         console.log(`👑 [get-content] Twilly TV premium pipeline: deduplicated ${allPremiumFiles.length} → ${premiumOnly.length} items by FILE#fileId`);
       }
       console.log(`👑 [get-content] Twilly TV premium pipeline: queried ${usersToQueryPremium.size} users (owner + viewer + ${subscribedPremiumEmails.length} added premium), ${premiumOnly.length} premium FILE# items`);
+
+      // CRITICAL: Exclude items the viewer has deleted (same as public/private) so premium deletes stick permanently
+      if (normalizedViewer) {
+        const removedPremiumIds = new Set();
+        const premiumCountBeforeRemoved = premiumOnly.length;
+        try {
+          for (const prefix of ['REMOVED_FILE#', 'REMOVED_PREMIUM#']) {
+            const res = await dynamodb.query({
+              TableName: TABLE_MAIN,
+              KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+              ExpressionAttributeValues: {
+                ':pk': `USER#${normalizedViewer}`,
+                ':sk': prefix
+              },
+              Limit: 500
+            }).promise();
+            for (const it of res.Items || []) {
+              const id = (it.fileId || (it.SK || '').replace(/^REMOVED_FILE#/, '').replace(/^REMOVED_PREMIUM#/, '')).trim();
+              if (id) removedPremiumIds.add(id);
+            }
+          }
+          if (removedPremiumIds.size > 0) {
+            const beforeRemoved = premiumOnly.length;
+            const getShortId = (item) => {
+              const sk = item.SK || '';
+              if (sk.startsWith('FILE#')) return sk.replace(/^FILE#/, '').trim();
+              return (item.fileId || (sk.includes('#') ? sk.split('#')[2] : '')).trim().replace(/^FILE#/, '');
+            };
+            premiumOnly = premiumOnly.filter(item => !removedPremiumIds.has(getShortId(item)));
+            console.log(`👑 [get-content] Twilly TV premium: excluded ${beforeRemoved - premiumOnly.length} deleted items (REMOVED_FILE/REMOVED_PREMIUM) for viewer ${normalizedViewer}`);
+          } else {
+            console.log(`👑 [get-content] Twilly TV premium: REMOVED query for viewer ${normalizedViewer} returned 0 items (premium count: ${premiumCountBeforeRemoved})`);
+          }
+        } catch (remErr) {
+          console.warn(`👑 [get-content] Premium REMOVED check failed (non-fatal): ${remErr.message}`);
+        }
+      } else {
+        console.log(`👑 [get-content] Twilly TV premium: skipping REMOVED filter (no viewer email)`);
+      }
 
       // Enrich creatorUsername where missing (PROFILE lives in main table)
       for (const file of premiumOnly) {
@@ -2853,9 +2894,47 @@ export default defineEventHandler(async (event) => {
         return true;
       });
 
+      // CRITICAL: Exclude items the viewer has deleted (REMOVED_FILE# / REMOVED_PREMIUM#) so deletes reflect on mobile for public/private/premium
+      // Twilly TV uses FILE# fallback (useTimelinePath=false), so this path does not get the REMOVED filter from the timeline merge — apply it here.
+      let itemsForSplit = deduplicatedItems;
+      if (effectiveViewerEmail && (returnBothViews || returnAllViews)) {
+        const removedIds = new Set();
+        try {
+          for (const prefix of ['REMOVED_FILE#', 'REMOVED_PREMIUM#']) {
+            const res = await dynamodb.query({
+              TableName: table,
+              KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+              ExpressionAttributeValues: {
+                ':pk': `USER#${effectiveViewerEmail.toLowerCase()}`,
+                ':sk': prefix
+              },
+              Limit: 500
+            }).promise();
+            for (const it of res.Items || []) {
+              const id = (it.fileId || (it.SK || '').replace(/^REMOVED_FILE#/, '').replace(/^REMOVED_PREMIUM#/, '')).trim();
+              if (id) removedIds.add(id);
+            }
+          }
+          if (removedIds.size > 0) {
+            const getShortId = (item) => {
+              const sk = item.SK || '';
+              if (sk.startsWith('FILE#')) return sk.replace(/^FILE#/, '').trim();
+              return (item.fileId || (sk.includes('#') ? sk.split('#')[2] : '')).trim().replace(/^FILE#/, '');
+            };
+            const before = itemsForSplit.length;
+            itemsForSplit = itemsForSplit.filter(item => !removedIds.has(getShortId(item)));
+            if (before !== itemsForSplit.length) {
+              console.log(`[get-content] returnAllViews: excluded ${before - itemsForSplit.length} deleted items (REMOVED_FILE/REMOVED_PREMIUM) so deletes reflect on mobile`);
+            }
+          }
+        } catch (remErr) {
+          console.warn('[get-content] returnAllViews REMOVED check failed (non-fatal):', remErr?.message || remErr);
+        }
+      }
+
       // Ensure every item has timelineType so PUBLIC/PRIVATE/PREMIUM split works (FILE# fallback items may lack it)
       const validTypes = ['PUBLIC', 'PRIVATE', 'PREMIUM'];
-      const normalizedForSplit = deduplicatedItems.map(item => {
+      const normalizedForSplit = itemsForSplit.map(item => {
         const t = (item.timelineType || '').toUpperCase();
         if (t && validTypes.includes(t)) return item;
         const pub = item.isPublicUsername === true || item.isPublicUsername === 'true' || item.isPublicUsername === 1;
@@ -3001,7 +3080,39 @@ export default defineEventHandler(async (event) => {
       const isPremium = (item) => (item.timelineType || '').toUpperCase() === 'PREMIUM' || item.isPremium === true || item.isPremium === 'true' || item.isPremium === 1;
       filteredItems = filteredItems.filter(item => !isPremium(item));
     }
-    
+
+    // CRITICAL: Exclude viewer-deleted items (REMOVED_FILE# / REMOVED_PREMIUM#) so delete persists across all timelines and updates in real time on mobile
+    if (effectiveViewerEmail && filteredItems.length > 0) {
+      try {
+        const removedIds = new Set();
+        for (const prefix of ['REMOVED_FILE#', 'REMOVED_PREMIUM#']) {
+          const res = await dynamodb.query({
+            TableName: TABLE_MAIN,
+            KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+            ExpressionAttributeValues: {
+              ':pk': `USER#${effectiveViewerEmail.toLowerCase()}`,
+              ':sk': prefix
+            },
+            Limit: 500
+          }).promise();
+          for (const it of res.Items || []) {
+            const id = (it.fileId || (it.SK || '').replace(/^REMOVED_FILE#/, '').replace(/^REMOVED_PREMIUM#/, '')).trim();
+            if (id) removedIds.add(id);
+          }
+        }
+        if (removedIds.size > 0) {
+          const getShortId = (item) => (item.fileId || (item.SK || '').replace(/^FILE#/, '')).trim();
+          const before = filteredItems.length;
+          filteredItems = filteredItems.filter(item => !removedIds.has(getShortId(item)));
+          if (before !== filteredItems.length) {
+            console.log(`[get-content] single-view: excluded ${before - filteredItems.length} deleted items (REMOVED) so deletes reflect on mobile`);
+          }
+        }
+      } catch (remErr) {
+        console.warn('[get-content] single-view REMOVED check failed (non-fatal):', remErr?.message || remErr);
+      }
+    }
+
     // Apply pagination limit AFTER filtering and sorting (normal mode)
     const paginatedContent = filteredItems.slice(0, pageLimit);
     
