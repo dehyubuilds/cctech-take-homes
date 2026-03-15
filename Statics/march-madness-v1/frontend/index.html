@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>March Madness Picks – Admin</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>March Madness Picks</h1>
+      <p class="subtitle">Daily picks admin</p>
+      <p class="api-hint" id="api-hint"></p>
+    </header>
+
+    <section id="today-picks">
+      <h2>Today's picks</h2>
+      <div id="picks-content">Loading…</div>
+      <button type="button" id="refresh-picks">Refresh</button>
+    </section>
+
+    <section id="allowed-numbers">
+      <h2>Allowed phone numbers</h2>
+      <p class="hint">From Statics product "March Madness". Read-only.</p>
+      <div id="numbers-content">Loading…</div>
+    </section>
+
+    <section id="actions">
+      <h2>Actions</h2>
+      <div class="actions-grid">
+        <button type="button" id="run-daily">Run daily picks</button>
+        <button type="button" id="send-sample">Send sample to subscribers</button>
+        <div class="test-send">
+          <input type="tel" id="test-phone" placeholder="+15551234567" />
+          <button type="button" id="send-test">Send test SMS</button>
+        </div>
+      </div>
+      <div id="action-status"></div>
+    </section>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

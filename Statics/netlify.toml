@@ -1,0 +1,13 @@
+# Statics – Next.js on Netlify
+# https://docs.netlify.com/frameworks/next-js/overview/
+# Publish directory is set by Netlify's Next.js plugin.
+
+[build]
+  command = "npm run build"
+
+[build.environment]
+  NODE_VERSION = "18"
+
+[dev]
+  command = "npm run dev"
+  port = 3000
