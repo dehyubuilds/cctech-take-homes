@@ -2,7 +2,13 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { config } from "@/lib/config";
 
-const client = new DynamoDBClient({ region: config.dynamo.region });
+const client = new DynamoDBClient({
+  region: config.dynamo.region,
+  credentials: {
+    accessKeyId: config.aws.accessKeyId,
+    secretAccessKey: config.aws.secretAccessKey,
+  },
+});
 export const docClient = DynamoDBDocumentClient.from(client);
 
 export function getTable(name: keyof typeof config.dynamo.tables): string {

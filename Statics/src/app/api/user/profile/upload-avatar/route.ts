@@ -1,16 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthService } from "@/lib/services";
+import { config } from "@/lib/config";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { S3Client } from "@aws-sdk/client-s3";
 
-const bucket = process.env.AWS_S3_AVATAR_BUCKET;
-const region = process.env.AWS_REGION || "us-east-1";
-const avatarBaseUrl = process.env.NEXT_PUBLIC_AVATAR_BASE_URL || "";
-
 /** Let the client know if S3 avatar upload is available (no auth required for check). */
 export async function GET() {
-  return Response.json({ configured: !!bucket });
+  return Response.json({ configured: config.avatar.useReal });
 }
 
 export async function POST(request: NextRequest) {
@@ -22,12 +19,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  if (!bucket) {
+  if (!config.avatar.useReal) {
     return NextResponse.json(
-      { error: "Avatar upload not configured (AWS_S3_AVATAR_BUCKET)" },
+      { error: "Avatar upload not configured." },
       { status: 503 }
     );
   }
+
+  const bucket = config.avatar.bucket;
+  const region = config.dynamo.region;
+  const avatarBaseUrl = config.avatar.baseUrl;
 
   try {
     const body = await request.json().catch(() => ({}));
@@ -35,7 +36,13 @@ export async function POST(request: NextRequest) {
     const ext = contentType.includes("png") ? "png" : "jpg";
     const key = `avatars/${session.userId}/${Date.now()}.${ext}`;
 
-    const client = new S3Client({ region });
+    const client = new S3Client({
+      region,
+      credentials: {
+        accessKeyId: config.aws.accessKeyId,
+        secretAccessKey: config.aws.secretAccessKey,
+      },
+    });
     const command = new PutObjectCommand({
       Bucket: bucket,
       Key: key,
@@ -44,7 +51,7 @@ export async function POST(request: NextRequest) {
     const uploadUrl = await getSignedUrl(client, command, { expiresIn: 300 });
 
     const avatarUrl = avatarBaseUrl
-      ? `${avatarBaseUrl.replace(/\/$/, "")}/${key}`
+      ? `${avatarBaseUrl}/${key}`
       : `https://${bucket}.s3.${region}.amazonaws.com/${key}`;
 
     return NextResponse.json({ uploadUrl, avatarUrl, key });
