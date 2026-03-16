@@ -1,0 +1,5 @@
+{
+  "DefaultEmailOption": "CONFIRM_WITH_CODE",
+  "EmailSubject": "Your Statics verification code",
+  "EmailMessage": "Your Statics confirmation code is {####}."
+}

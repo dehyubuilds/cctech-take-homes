@@ -15,6 +15,8 @@ export default function SignUpPage() {
     e.preventDefault();
     setError("");
     setLoading(true);
+    const payload = { email: email.trim().toLowerCase(), password: "[redacted]" };
+    console.log("[Statics Auth] signup request", payload);
     try {
       const res = await fetch("/api/auth/signup", {
         method: "POST",
@@ -22,13 +24,15 @@ export default function SignUpPage() {
         body: JSON.stringify({ email, password }),
       });
       const data = await res.json();
+      console.log("[Statics Auth] signup response", { status: res.status, ok: res.ok, data });
       if (!res.ok) {
         setError(data.error || "Sign up failed");
         return;
       }
-      router.push("/login?registered=1");
+      router.push(`/confirm-email?email=${encodeURIComponent(email.trim().toLowerCase())}`);
       router.refresh();
-    } catch {
+    } catch (err) {
+      console.error("[Statics Auth] signup error", err);
       setError("Something went wrong");
     } finally {
       setLoading(false);

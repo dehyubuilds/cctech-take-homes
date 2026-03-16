@@ -51,6 +51,20 @@ export function getDynamoUserRepository() {
       return (Items?.[0] as User) ?? null;
     },
 
+    /** All users with this phone (for duplicate-verified check). */
+    async listByPhone(phone: string): Promise<User[]> {
+      const normalized = normalizePhone(phone);
+      const { Items } = await docClient.send(
+        new QueryCommand({
+          TableName: USERS_TABLE(),
+          IndexName: "phone-index",
+          KeyConditionExpression: "phoneNormalized = :p",
+          ExpressionAttributeValues: { ":p": normalized },
+        })
+      );
+      return (Items as User[]) ?? [];
+    },
+
     async list(): Promise<User[]> {
       const { Items } = await docClient.send(
         new ScanCommand({ TableName: USERS_TABLE() })
@@ -65,6 +79,11 @@ export function getDynamoUserRepository() {
       const values: Record<string, unknown> = { ":now": now };
       const removeKeys: string[] = [];
 
+      if (patch.phoneNumber !== undefined && patch.phoneNumber) {
+        names["#phoneNormalized"] = "phoneNormalized";
+        values[":phoneNormalized"] = normalizePhone(patch.phoneNumber);
+        setUpdates.push("#phoneNormalized = :phoneNormalized");
+      }
       const allowed = [
         "email",
         "phoneNumber",

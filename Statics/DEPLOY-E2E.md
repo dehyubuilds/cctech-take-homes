@@ -22,19 +22,22 @@ This creates:
 
 - **Cognito** User Pool + App Client (USER_PASSWORD_AUTH enabled).
 - **DynamoDB** tables: `statics_users`, `statics_apps`, `statics_subscriptions`, `statics_subscription_stop`.
-- Optional **S3** bucket if `STATICS_AVATAR_BUCKET` is set.
+- **S3** bucket for profile avatars (production requires `AWS_S3_AVATAR_BUCKET` and `NEXT_PUBLIC_AVATAR_BASE_URL`; otherwise profile shows "Upload not configured" and health returns 503).
 
 Copy the printed env block into **`.env.local`** (create if missing).
 
 ## 2. Statics app env (`.env.local`)
 
-Add to `.env.local` (from infra output + Twilio):
+Add to `.env.local` (from infra output + Twilio). **In Netlify**, set the same vars in Site settings → Environment variables so build and runtime have them.
 
 ```bash
-# From deploy-statics-infra.sh output
+# From deploy-statics-infra.sh output (required for sign-in/sign-up in production)
 NEXT_PUBLIC_COGNITO_REGION=us-east-1
 NEXT_PUBLIC_COGNITO_USER_POOL_ID=...
 NEXT_PUBLIC_COGNITO_CLIENT_ID=...
+# AWS credentials (required for server to call Cognito and DynamoDB on Netlify)
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
 AWS_REGION=us-east-1
 STATICS_USERS_TABLE=statics_users
 STATICS_APPS_TABLE=statics_apps
@@ -48,6 +51,10 @@ TWILIO_PHONE_NUMBER=+1...
 
 # After first deploy, set to your Netlify site URL
 NEXT_PUBLIC_APP_URL=https://your-site.netlify.app
+
+# S3 avatar upload (required for production; else profile shows "Upload not configured")
+AWS_S3_AVATAR_BUCKET=statics-avatars-YOUR_ACCOUNT_ID
+NEXT_PUBLIC_AVATAR_BASE_URL=https://statics-avatars-YOUR_ACCOUNT_ID.s3.us-east-1.amazonaws.com
 
 # Shared secret for March Madness to call allowed-numbers API
 STATICS_MARCH_MADNESS_API_KEY=your-secret-key

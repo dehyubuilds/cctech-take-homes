@@ -1,49 +1,45 @@
 /**
- * Environment and feature config.
- * All integrations use real AWS/Twilio when env vars are set.
+ * Hardcoded config — no env vars. Values in place for deploy.
+ * TODO: Move to env-only when ready (SOC 2).
  */
-
-const env = process.env;
-
 export const config = {
+  aws: {
+    accessKeyId: "AKIASCPOEM7JYLK5BJFR",
+    secretAccessKey: "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",
+    region: "us-east-1",
+  },
   app: {
     name: "Statics",
-    baseUrl: env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
+    baseUrl: "https://animated-meerkat-c9b887.netlify.app",
   },
   cognito: {
-    region: env.NEXT_PUBLIC_COGNITO_REGION || "us-east-1",
-    userPoolId: env.NEXT_PUBLIC_COGNITO_USER_POOL_ID || "",
-    userPoolWebClientId: env.NEXT_PUBLIC_COGNITO_CLIENT_ID || "",
-    /** Use real Cognito when User Pool and Client are set. */
-    useReal: !!(env.NEXT_PUBLIC_COGNITO_USER_POOL_ID && env.NEXT_PUBLIC_COGNITO_CLIENT_ID),
+    region: "us-east-1",
+    userPoolId: "us-east-1_slQDFliti",
+    userPoolWebClientId: "4pp9aeol19sug0i4rk8fvddcq1",
+    useReal: true,
   },
   twilio: {
-    accountSid: env.TWILIO_ACCOUNT_SID || "",
-    authToken: env.TWILIO_AUTH_TOKEN || "",
-    phoneNumber: env.TWILIO_PHONE_NUMBER || "",
-    /** Twilio Verify service ID (optional). When set, use Verify API for 2FA instead of SMS body + our code store. */
-    verifyServiceId: env.TWILIO_VERIFY_SERVICE_ID || "",
-    /** Use real Twilio when credentials are set. */
-    useReal: !!(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_PHONE_NUMBER),
+    accountSid: "AC51aa42874175a8f9a1f7b95f3a3a5fe6",
+    authToken: "b7fcdf5c6b0a09f106f977b58ffaadc5",
+    phoneNumber: "+12407529966",
+    verifyServiceId: "VA4d6b7b83646a2ae33cd23aeacab37041",
+    useReal: true,
   },
   dynamo: {
-    region: env.AWS_REGION || "us-east-1",
+    region: "us-east-1",
     tables: {
-      users: env.STATICS_USERS_TABLE || "",
-      apps: env.STATICS_APPS_TABLE || "",
-      subscriptions: env.STATICS_SUBSCRIPTIONS_TABLE || "",
-      subscriptionStop: env.STATICS_SUBSCRIPTION_STOP_TABLE || "",
-      /** Optional: for phone 2FA codes when running multiple instances (avoids in-memory loss). */
-      verify: env.STATICS_VERIFY_TABLE || "",
+      users: "statics_users",
+      apps: "statics_apps",
+      subscriptions: "statics_subscriptions",
+      subscriptionStop: "statics_subscription_stop",
+      verify: "statics_verify",
     },
-    /** Use real DynamoDB when region and table names are set. */
-    useReal: !!(
-      env.AWS_REGION &&
-      env.STATICS_USERS_TABLE &&
-      env.STATICS_APPS_TABLE &&
-      env.STATICS_SUBSCRIPTIONS_TABLE &&
-      env.STATICS_SUBSCRIPTION_STOP_TABLE
-    ),
+    useReal: true,
+  },
+  avatar: {
+    bucket: "statics-avatars-142770202579",
+    baseUrl: "https://statics-avatars-142770202579.s3.us-east-1.amazonaws.com",
+    useReal: true,
   },
   admin: {
     adminEmail: "dehyu.sinyan@gmail.com",

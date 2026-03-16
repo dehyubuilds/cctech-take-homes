@@ -3,6 +3,8 @@ import { getAuthService } from "@/lib/services";
 import { getUserRepository } from "@/lib/repositories";
 import type { User, SmsStatus } from "@/lib/domain";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(request: NextRequest) {
   const auth = request.headers.get("Authorization");
   const token = auth?.replace("Bearer ", "") ?? null;
@@ -35,7 +37,20 @@ export async function PATCH(request: NextRequest) {
     updates.avatarUrl = avatarUrl === "" ? undefined : avatarUrl;
   }
   if (phoneNumber !== undefined) {
-    updates.phoneNumber = phoneNumber.trim() || undefined;
+    const trimmed = phoneNumber.trim() || undefined;
+    if (trimmed) {
+      const withPhone = await userRepo.listByPhone(trimmed);
+      const otherVerified = withPhone.find(
+        (u) => u.userId !== session.userId && u.phoneVerified
+      );
+      if (otherVerified) {
+        return NextResponse.json(
+          { error: "This phone number is already registered to another account." },
+          { status: 409 }
+        );
+      }
+    }
+    updates.phoneNumber = trimmed;
     updates.phoneVerified = false; // require re-verification when number changes
   }
   const updated = await userRepo.update(session.userId, updates);

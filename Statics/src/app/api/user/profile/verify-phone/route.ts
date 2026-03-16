@@ -36,6 +36,16 @@ export async function POST(request: NextRequest) {
     if (!user?.phoneNumber?.trim()) {
       return NextResponse.json({ error: "No phone number on profile" }, { status: 400 });
     }
+    const withPhone = await userRepo.listByPhone(user.phoneNumber);
+    const otherVerified = withPhone.find(
+      (u) => u.userId !== session.userId && u.phoneVerified
+    );
+    if (otherVerified) {
+      return NextResponse.json(
+        { error: "This phone number is already verified on another account." },
+        { status: 409 }
+      );
+    }
     const twilio = getTwilioAdapter();
     const check = await twilio.checkVerification(toE164(user.phoneNumber), code);
     if (!check.success) {
@@ -80,6 +90,18 @@ export async function POST(request: NextRequest) {
   }
   const userRepo = getUserRepository();
   const user = await userRepo.getById(session.userId);
+  if (user?.phoneNumber?.trim()) {
+    const withPhone = await userRepo.listByPhone(user.phoneNumber);
+    const otherVerified = withPhone.find(
+      (u) => u.userId !== session.userId && u.phoneVerified
+    );
+    if (otherVerified) {
+      return NextResponse.json(
+        { error: "This phone number is already verified on another account." },
+        { status: 409 }
+      );
+    }
+  }
   const updates: Partial<import("@/lib/domain").User> = {
     phoneVerified: true,
     verifyCode: undefined,

@@ -48,9 +48,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     fetch("/api/auth/session", { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => (r.ok ? r.json() : null))
+      .then((r) => {
+        if (r.ok) return r.json();
+        if (r.status === 401 && typeof window !== "undefined") {
+          localStorage.removeItem(SESSION_KEY);
+        }
+        return null;
+      })
       .then((data) => {
         if (data?.user) setSessionState(data);
+        else setSessionState(null);
         setLoading(false);
       })
       .catch(() => setLoading(false));

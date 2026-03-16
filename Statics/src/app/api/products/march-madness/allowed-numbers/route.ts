@@ -13,10 +13,11 @@ function toE164(phone: string): string {
   return phone.trim().startsWith("+") ? phone.trim() : `+${digits}`;
 }
 
+const MARCH_MADNESS_API_KEY = "";
+
 export async function GET(request: NextRequest) {
   const auth = request.headers.get("Authorization") || request.nextUrl.searchParams.get("api_key");
-  const apiKey = process.env.STATICS_MARCH_MADNESS_API_KEY;
-  if (apiKey && auth !== `Bearer ${apiKey}` && auth !== apiKey) {
+  if (MARCH_MADNESS_API_KEY && auth !== `Bearer ${MARCH_MADNESS_API_KEY}` && auth !== MARCH_MADNESS_API_KEY) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

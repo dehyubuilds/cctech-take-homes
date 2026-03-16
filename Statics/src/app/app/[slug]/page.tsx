@@ -8,7 +8,7 @@ import { getStoredToken } from "@/components/AuthProvider";
 
 export default function ProtectedAppPage() {
   const params = useParams();
-  const slug = params.slug as string;
+  const slug = (params?.slug ?? "") as string;
   const { session, loading } = useAuth();
   const router = useRouter();
   const [app, setApp] = useState<{
@@ -20,6 +20,7 @@ export default function ProtectedAppPage() {
   } | null>(null);
   const [subscribed, setSubscribed] = useState(false);
   const [subscriptionError, setSubscriptionError] = useState(false);
+  const [appFetched, setAppFetched] = useState(false);
 
   useEffect(() => {
     if (loading) return;
@@ -27,6 +28,7 @@ export default function ProtectedAppPage() {
       router.replace(`/login?redirect=/app/${slug}`);
       return;
     }
+    setAppFetched(false);
     const token = getStoredToken();
     setSubscriptionError(false);
     Promise.all([
@@ -48,13 +50,26 @@ export default function ProtectedAppPage() {
       const appId = appData?.appId;
       const sub = appId ? subs.find((s: { appId: string; status: string }) => s.appId === appId && s.status === "active") : undefined;
       setSubscribed(!!sub);
-    }).catch(() => setApp(null));
+      setAppFetched(true);
+    }).catch(() => {
+      setApp(null);
+      setAppFetched(true);
+    });
   }, [session, loading, router, slug]);
 
   if (loading || !session) {
     return (
       <div className="flex min-h-[40vh] items-center justify-center">
         <p className="text-gray-400">Loading…</p>
+      </div>
+    );
+  }
+
+  if (!appFetched) {
+    return (
+      <div className="flex min-h-[40vh] flex-col items-center justify-center gap-4">
+        <div className="h-10 w-10 animate-spin rounded-full border-2 border-brand border-t-transparent" aria-hidden />
+        <p className="text-sm text-gray-400">Loading…</p>
       </div>
     );
   }

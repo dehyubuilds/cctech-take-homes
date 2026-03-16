@@ -1,12 +1,13 @@
-# Statics – Next.js on Netlify
-# https://docs.netlify.com/frameworks/next-js/overview/
-# Publish directory is set by Netlify's Next.js plugin.
+# Statics – Next.js on Netlify (OpenNext adapter; API routes deploy as serverless functions)
+# https://docs.netlify.com/build/frameworks/framework-setup-guides/nextjs/overview/
 
 [build]
   command = "npm run build"
 
 [build.environment]
   NODE_VERSION = "18"
+  # Skip DynamoDB requirement during build so build completes; runtime still requires env vars.
+  STATICS_SKIP_DYNAMO_CHECK = "1"
 
 [dev]
   command = "npm run dev"

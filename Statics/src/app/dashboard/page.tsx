@@ -16,6 +16,9 @@ export default function DashboardPage() {
   const [persistence, setPersistence] = useState<"mock" | "dynamodb" | null>(null);
   const [mockBannerDismissed, setMockBannerDismissed] = useState(false);
   const [canSubscribe, setCanSubscribe] = useState(true);
+  const [dataLoading, setDataLoading] = useState(true);
+  const [hasFetched, setHasFetched] = useState(false);
+  const [profileLoaded, setProfileLoaded] = useState<{ phoneNumber?: string; phoneVerified?: boolean } | null>(null);
 
   useEffect(() => {
     if (loading) return;
@@ -23,11 +26,13 @@ export default function DashboardPage() {
       router.replace("/login");
       return;
     }
+    setDataLoading(true);
+    setHasFetched(false);
     const token = getStoredToken();
     Promise.all([
       fetch("/api/apps").then((r) => r.json()),
       fetch("/api/user/subscriptions", { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json()),
-      fetch("/api/user/profile", { headers: { Authorization: `Bearer ${token}` } }).then((r) => (r.ok ? r.json() : null)),
+      fetch("/api/user/profile", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" }).then((r) => (r.ok ? r.json() : null)),
       fetch("/api/health").then((r) => r.json()).catch(() => ({ persistence: null })),
     ]).then(([appsRes, subsRes, profile, health]) => {
       setApps(appsRes.apps || []);
@@ -35,9 +40,16 @@ export default function DashboardPage() {
         (subsRes.subscriptions || []).filter((s: { status: string }) => s.status === "active").map((s: { appId: string }) => s.appId)
       );
       setSubIds(ids);
-      setCanSubscribe(!!(profile?.phoneNumber?.trim() && profile?.phoneVerified));
+      const verified = !!(profile?.phoneNumber?.trim() && profile?.phoneVerified);
+      setCanSubscribe(verified);
+      setProfileLoaded(profile ?? null);
       setPersistence(health.persistence ?? null);
-    }).catch(() => {});
+      setDataLoading(false);
+      setHasFetched(true);
+    }).catch(() => {
+      setDataLoading(false);
+      setHasFetched(true);
+    });
   }, [session, loading, router]);
 
   async function subscribe(appId: string) {
@@ -98,7 +110,7 @@ export default function DashboardPage() {
       <p className="mt-1 text-gray-400">
         Browse and subscribe to curated apps. Messages are sent to your verified phone number.
       </p>
-      {!canSubscribe && (
+      {hasFetched && profileLoaded && !(profileLoaded.phoneNumber?.trim() && profileLoaded.phoneVerified) && (
         <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-200">
           Add and verify your phone number in <a href="/profile" className="underline hover:text-white">Profile</a> before you can subscribe.
         </p>
@@ -111,7 +123,7 @@ export default function DashboardPage() {
       {persistence === "mock" && !mockBannerDismissed && (
         <div className="mt-4 flex items-start justify-between gap-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
           <p>
-            <strong>Local / in-memory mode.</strong> Subscriptions and data are not saved to a database and will be lost when the server restarts. For persistent subscriptions, set up DynamoDB (see <code className="rounded bg-white/10 px-1">.env.example</code> and <code className="rounded bg-white/10 px-1">DEPLOY-E2E.md</code>).
+            <strong>Local / in-memory mode.</strong> Subscriptions and data are not persisted and will be lost on restart.
           </p>
           <button
             type="button"
@@ -124,22 +136,31 @@ export default function DashboardPage() {
         </div>
       )}
       <div className="mt-8">
-        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {apps.map((app) => (
-            <AppCard
-              key={app.appId}
-              app={app}
-              isSubscribed={canSubscribe && subIds.has(app.appId)}
-              canSubscribe={canSubscribe}
-              onSubscribe={() => subscribe(app.appId)}
-              onUnsubscribe={() => unsubscribe(app.appId)}
-            />
-          ))}
-        </div>
-        {apps.length === 0 && (
-          <p className="rounded-lg border border-white/10 bg-surface-elevated p-8 text-center text-gray-400">
-            No apps yet. Check back soon or visit a shared app link.
-          </p>
+        {!hasFetched || dataLoading ? (
+          <div className="flex min-h-[200px] flex-col items-center justify-center gap-4 rounded-lg border border-white/10 bg-surface-elevated py-16">
+            <div className="h-10 w-10 animate-spin rounded-full border-2 border-brand border-t-transparent" aria-hidden />
+            <p className="text-sm text-gray-400">Loading dashboard…</p>
+          </div>
+        ) : (
+          <>
+            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+              {apps.map((app) => (
+                <AppCard
+                  key={app.appId}
+                  app={app}
+                  isSubscribed={canSubscribe && subIds.has(app.appId)}
+                  canSubscribe={canSubscribe}
+                  onSubscribe={() => subscribe(app.appId)}
+                  onUnsubscribe={() => unsubscribe(app.appId)}
+                />
+              ))}
+            </div>
+            {apps.length === 0 && (
+              <p className="rounded-lg border border-white/10 bg-surface-elevated p-8 text-center text-gray-400">
+                No apps yet. Check back soon or visit a shared app link.
+              </p>
+            )}
+          </>
         )}
       </div>
     </div>

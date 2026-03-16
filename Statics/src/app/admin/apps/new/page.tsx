@@ -148,8 +148,9 @@ export default function AdminNewAppPage() {
             value={form.shareImageUrl}
             onChange={(e) => setForm((f) => ({ ...f, shareImageUrl: e.target.value }))}
             className="mt-1 w-full rounded-lg border border-white/10 bg-surface-elevated px-3 py-2 text-white placeholder-gray-500 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-            placeholder="Defaults to thumbnail if empty"
+            placeholder="https://… or leave blank to use thumbnail"
           />
+          <p className="mt-1 text-xs text-gray-500">Used when the app link is shared (e.g. in texts). Use a full URL (https://…) for reliable previews.</p>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-400">Price (cents, 0 = free)</label>

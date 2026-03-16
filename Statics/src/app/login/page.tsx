@@ -1,23 +1,28 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/AuthProvider";
 import { setStoredToken } from "@/components/AuthProvider";
 
-export default function LoginPage() {
+function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { setSession } = useAuth();
+  const confirmed = searchParams?.get("confirmed") === "1";
+  const registered = searchParams?.get("registered") === "1";
+  const reset = searchParams?.get("reset") === "1";
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
     setLoading(true);
+    console.log("[Statics Auth] signin request", { email: email.trim().toLowerCase() });
     try {
       const res = await fetch("/api/auth/signin", {
         method: "POST",
@@ -25,6 +30,7 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password }),
       });
       const data = await res.json();
+      console.log("[Statics Auth] signin response", { status: res.status, ok: res.ok, data: { ...data, token: data.token ? "[present]" : undefined } });
       if (!res.ok) {
         setError(data.error || "Sign in failed");
         return;
@@ -44,7 +50,8 @@ export default function LoginPage() {
         router.push("/dashboard");
         router.refresh();
       }
-    } catch {
+    } catch (err) {
+      console.error("[Statics Auth] signin error", err);
       setError("Something went wrong");
     } finally {
       setLoading(false);
@@ -60,6 +67,11 @@ export default function LoginPage() {
           Sign up
         </Link>
       </p>
+      {(confirmed || registered || reset) && (
+        <p className="mt-4 rounded-lg bg-green-500/10 px-3 py-2 text-sm text-green-400">
+          {reset ? "Password reset. You can sign in with your new password." : confirmed ? "Email confirmed. You can sign in now." : "Account created. Sign in below."}
+        </p>
+      )}
       <form onSubmit={handleSubmit} className="mt-8 space-y-4">
         <div>
           <label htmlFor="email" className="block text-sm font-medium text-gray-300">
@@ -87,9 +99,24 @@ export default function LoginPage() {
             required
             className="mt-1 w-full rounded-lg border border-white/10 bg-surface-elevated px-3 py-2 text-white placeholder-gray-500 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
           />
+          <p className="mt-1 text-right text-sm">
+            <Link href="/forgot-password" className="text-gray-400 hover:text-brand hover:underline">
+              Forgot password?
+            </Link>
+          </p>
         </div>
         {error && (
           <p className="text-sm text-red-400">{error}</p>
+        )}
+        {error && typeof error === "string" && error.includes("confirm your email") && (
+          <p className="text-sm">
+            <Link
+              href={`/confirm-email?email=${encodeURIComponent(email.trim() || "")}`}
+              className="text-brand hover:underline"
+            >
+              Enter your verification code →
+            </Link>
+          </p>
         )}
         <button
           type="submit"
@@ -100,5 +127,13 @@ export default function LoginPage() {
         </button>
       </form>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="mx-auto max-w-sm px-4 py-16 text-gray-400">Loading…</div>}>
+      <LoginForm />
+    </Suspense>
   );
 }

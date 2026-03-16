@@ -1,10 +1,28 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getAppRepository } from "@/lib/repositories";
+import { config } from "@/lib/config";
 import type { Metadata } from "next";
 
 interface PageProps {
   params: Promise<{ slug: string }>;
+}
+
+/** Default OG image when app has no share or thumbnail URL (absolute so link previews work). */
+const DEFAULT_OG_IMAGE =
+  "https://placehold.co/1200x630/1a1a1a/6366f1?text=Statics";
+
+const OG_IMAGE_WIDTH = 1200;
+const OG_IMAGE_HEIGHT = 630;
+
+/** Build absolute OG image URL. Prefer shareImageUrl, fallback to thumbnailUrl; always return an absolute URL. */
+function absoluteOgImage(base: string, shareImageUrl: string, thumbnailUrl: string): string {
+  const raw = (shareImageUrl || thumbnailUrl || "").trim();
+  if (!raw) return DEFAULT_OG_IMAGE;
+  if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
+  const path = raw.startsWith("/") ? raw : `/${raw}`;
+  const full = `${base.replace(/\/$/, "")}${path}`;
+  return full.replace(/([^:]\/)\/+/g, "$1");
 }
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
@@ -12,26 +30,34 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const repo = getAppRepository();
   const app = await repo.getBySlug(slug);
   if (!app) return { title: "App not found" };
-  const base = process.env.NEXT_PUBLIC_APP_URL || "https://statics.example.com";
-  const url = `${base}/apps/${app.slug}`;
-  const image = app.shareImageUrl.startsWith("http") ? app.shareImageUrl : `${base}${app.shareImageUrl}`;
+  const base = config.app.baseUrl.replace(/\/$/, "");
+  const pageUrl = `${base}/apps/${app.slug}`;
+  const imageUrl = absoluteOgImage(base, app.shareImageUrl ?? "", app.thumbnailUrl ?? "");
   return {
     title: app.shareTitle,
     description: app.shareDescription,
     openGraph: {
       title: app.shareTitle,
       description: app.shareDescription,
-      images: [{ url: image }],
-      url,
+      url: pageUrl,
       type: "website",
+      siteName: "Statics",
+      images: [
+        {
+          url: imageUrl,
+          width: OG_IMAGE_WIDTH,
+          height: OG_IMAGE_HEIGHT,
+          alt: app.shareTitle || app.name,
+        },
+      ],
     },
     twitter: {
       card: "summary_large_image",
       title: app.shareTitle,
       description: app.shareDescription,
-      images: [image],
+      images: [imageUrl],
     },
-    alternates: { canonical: app.canonicalUrl || url },
+    alternates: { canonical: app.canonicalUrl || pageUrl },
   };
 }
 

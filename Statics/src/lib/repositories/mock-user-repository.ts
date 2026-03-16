@@ -22,6 +22,12 @@ export function getMockUserRepository() {
         (u) => u.phoneNumber && u.phoneNumber.replace(/\D/g, "") === normalized
       ) ?? null;
     },
+    async listByPhone(phone: string): Promise<User[]> {
+      const normalized = phone.replace(/\D/g, "");
+      return Array.from(users.values()).filter(
+        (u) => u.phoneNumber && u.phoneNumber.replace(/\D/g, "") === normalized
+      );
+    },
     async list(): Promise<User[]> {
       return Array.from(users.values());
     },
