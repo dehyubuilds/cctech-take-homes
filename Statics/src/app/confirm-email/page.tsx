@@ -3,12 +3,16 @@
 import { useState, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useAuth } from "@/components/AuthProvider";
+import { setStoredToken } from "@/components/AuthProvider";
 
 function ConfirmEmailForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { setSession } = useAuth();
   const emailParam = searchParams?.get("email") ?? "";
   const [email, setEmail] = useState(emailParam);
+  const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -30,8 +34,34 @@ function ConfirmEmailForm() {
         setError(data.error || "Confirmation failed");
         return;
       }
-      router.push("/login?confirmed=1");
-      router.refresh();
+      const signInRes = await fetch("/api/auth/signin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
+      });
+      const signInData = await signInRes.json();
+      if (!signInRes.ok) {
+        setError(signInData.error || "Sign in failed");
+        return;
+      }
+      if (signInData.token && signInData.userId) {
+        setStoredToken(signInData.token);
+        setSession(
+          signInData.user
+            ? {
+                userId: signInData.user.userId,
+                email: signInData.user.email,
+                role: signInData.user.role,
+                user: signInData.user,
+              }
+            : null
+        );
+        router.push("/dashboard");
+        router.refresh();
+      } else {
+        router.push("/login?confirmed=1");
+        router.refresh();
+      }
     } catch {
       setError("Something went wrong");
     } finally {
@@ -106,6 +136,21 @@ function ConfirmEmailForm() {
             className="mt-1 w-full rounded-lg border border-white/10 bg-surface-elevated px-3 py-2 text-white placeholder-gray-500 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand text-center text-lg tracking-widest"
             placeholder="000000"
           />
+        </div>
+        <div>
+          <label htmlFor="password" className="block text-sm font-medium text-gray-300">
+            Password
+          </label>
+          <input
+            id="password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            className="mt-1 w-full rounded-lg border border-white/10 bg-surface-elevated px-3 py-2 text-white placeholder-gray-500 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+            placeholder="Your signup password"
+          />
+          <p className="mt-1 text-xs text-gray-500">Enter your password so we can log you in after confirming.</p>
         </div>
         {error && <p className="text-sm text-red-400">{error}</p>}
         {resendSent && <p className="text-sm text-green-400">New code sent. Check your email.</p>}
