@@ -4,6 +4,10 @@ export const alt = "Statics - Apps that text you what matters.";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
+// Match home page: surface background, just Statics + tagline (no blurb or button)
+const background = "#0f0f0f";
+const brand = "#6366f1";
+
 export default async function Image() {
   return new ImageResponse(
     (
@@ -15,24 +19,25 @@ export default async function Image() {
           flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
-          backgroundColor: "#0f0f0f",
+          backgroundColor: background,
           fontFamily: "system-ui, sans-serif",
         }}
       >
         <div
           style={{
-            fontSize: 72,
+            fontSize: 96,
             fontWeight: 700,
             color: "white",
-            marginBottom: 16,
+            marginBottom: 28,
+            letterSpacing: "-0.02em",
           }}
         >
           Statics
         </div>
         <div
           style={{
-            fontSize: 36,
-            color: "#6366f1",
+            fontSize: 44,
+            color: brand,
             fontWeight: 600,
           }}
         >

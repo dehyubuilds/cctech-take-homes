@@ -59,10 +59,10 @@ export async function POST(request: NextRequest) {
     const app = await appRepo.getById(appId);
     const appName = app?.name ?? "this product";
     const twilio = getTwilioAdapter();
-    await twilio.sendSms(
-      toE164(user.phoneNumber),
-      `You're subscribed to ${appName}. You'll get daily picks via SMS. Reply STOP to opt out.`
-    );
+    // First-time subscriber: what to expect; lead with Statics so it's clear who it's from
+    const welcomeBody =
+      `Statics: You're subscribed to ${appName}. What to expect: one text per day with picks and analysis (spread/total, matchups, start times, short reasons). Your first message will be sent on the next run. Reply STOP to opt out.`;
+    await twilio.sendSms(toE164(user.phoneNumber), welcomeBody);
   }
 
   return NextResponse.json({ subscription: sub });

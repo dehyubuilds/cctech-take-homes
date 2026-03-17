@@ -52,7 +52,15 @@ export default async function handler(
   const to = toE164(user.phoneNumber);
   const client = twilio(accountSid, authToken);
 
+  const STATICS_FRIENDLY_NAME = "Statics";
+
   try {
+    // Ensure Verify service friendly name is "Statics" so SMS says "Your Statics verification code is: {code}"
+    const service = await client.verify.v2.services(verifyServiceId).fetch();
+    if (service.friendlyName !== STATICS_FRIENDLY_NAME) {
+      await client.verify.v2.services(verifyServiceId).update({ friendlyName: STATICS_FRIENDLY_NAME });
+    }
+
     const verification = await client.verify.v2
       .services(verifyServiceId)
       .verifications.create({ to, channel: "sms" });

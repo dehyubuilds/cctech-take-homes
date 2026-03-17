@@ -14,7 +14,7 @@ const navLinks = [
 
 export function Nav() {
   const pathname = usePathname();
-  const { session, signOut, isAdmin } = useAuth();
+  const { session, loading, signOut, isAdmin } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -32,8 +32,14 @@ export function Nav() {
   const visibleLinks = navLinks.filter((link) => {
     if (link.protected && !session) return false;
     if (link.admin && !isAdmin()) return false;
+    // When on dashboard show Profile (not Dashboard); when on profile show Dashboard (not Profile)
+    if (pathname === "/dashboard" && link.href === "/dashboard") return false;
+    if (pathname === "/profile" && link.href === "/profile") return false;
     return true;
   });
+
+  // While auth is loading, treat as logged-in for nav so we never flash Sign up / Log in
+  const showLoggedOutAuth = !loading && !session;
 
   return (
     <nav ref={panelRef} className="sticky top-0 z-50 border-b border-white/10 bg-surface/95 backdrop-blur-md safe-top">
@@ -58,7 +64,7 @@ export function Nav() {
             </Link>
           ))}
           <span className="w-px h-5 bg-white/10 mx-1" aria-hidden />
-          {session ? (
+          {loading ? null : session ? (
             <button
               type="button"
               onClick={() => signOut()}
@@ -66,6 +72,36 @@ export function Nav() {
             >
               Sign out
             </button>
+          ) : showLoggedOutAuth ? pathname === "/signup" ? (
+            <>
+              <Link
+                href="/login"
+                className="rounded-lg bg-brand px-4 py-2.5 min-h-[40px] flex items-center text-sm font-medium text-white hover:bg-brand-hover transition-colors"
+              >
+                Log in
+              </Link>
+              <Link
+                href="/"
+                className="text-sm text-gray-400 hover:text-white min-touch flex items-center px-3 py-2 rounded-md hover:bg-white/5 transition-colors"
+              >
+                Home
+              </Link>
+            </>
+          ) : pathname === "/login" ? (
+            <>
+              <Link
+                href="/signup"
+                className="rounded-lg bg-brand px-4 py-2.5 min-h-[40px] flex items-center text-sm font-medium text-white hover:bg-brand-hover transition-colors"
+              >
+                Sign up
+              </Link>
+              <Link
+                href="/"
+                className="text-sm text-gray-400 hover:text-white min-touch flex items-center px-3 py-2 rounded-md hover:bg-white/5 transition-colors"
+              >
+                Home
+              </Link>
+            </>
           ) : (
             <>
               <Link
@@ -81,17 +117,33 @@ export function Nav() {
                 Sign up
               </Link>
             </>
-          )}
+          ) : null}
         </div>
 
         {/* Mobile: hamburger + slide-out */}
         <div className="flex md:hidden items-center gap-2">
-          {session ? (
+          {loading ? null : session ? (
+            pathname === "/dashboard" ? (
+              <Link
+                href="/profile"
+                className="text-sm text-gray-400 hover:text-white min-touch flex items-center px-2"
+              >
+                Profile
+              </Link>
+            ) : (
+              <Link
+                href="/dashboard"
+                className="text-sm text-gray-400 hover:text-white min-touch flex items-center px-2"
+              >
+                Dashboard
+              </Link>
+            )
+          ) : showLoggedOutAuth ? pathname === "/signup" ? (
             <Link
-              href="/dashboard"
-              className="text-sm text-gray-400 hover:text-white min-touch flex items-center px-2"
+              href="/login"
+              className="rounded-lg bg-brand px-3 py-2 min-h-[40px] flex items-center text-sm font-medium text-white"
             >
-              Dashboard
+              Log in
             </Link>
           ) : (
             <Link
@@ -100,7 +152,7 @@ export function Nav() {
             >
               Sign up
             </Link>
-          )}
+          ) : null}
           <button
             type="button"
             onClick={() => setMobileOpen((o) => !o)}
@@ -118,7 +170,7 @@ export function Nav() {
       {/* Mobile menu panel */}
       {mobileOpen && (
         <div className="md:hidden border-t border-white/10 bg-surface-elevated/98 backdrop-blur-md px-4 py-3 flex flex-col gap-1">
-          {visibleLinks.filter((l) => l.href !== "/").map((link) => (
+          {visibleLinks.map((link) => (
             <Link
               key={link.href}
               href={link.href}
@@ -130,7 +182,7 @@ export function Nav() {
               {link.label}
             </Link>
           ))}
-          {!session && (
+          {showLoggedOutAuth && pathname !== "/login" && (
             <Link
               href="/login"
               onClick={() => setMobileOpen(false)}
@@ -139,7 +191,16 @@ export function Nav() {
               Log in
             </Link>
           )}
-          {session && (
+          {showLoggedOutAuth && pathname !== "/signup" && (
+            <Link
+              href="/signup"
+              onClick={() => setMobileOpen(false)}
+              className="text-sm text-gray-400 hover:text-white min-touch flex items-center px-3 py-2.5 rounded-lg hover:bg-white/5"
+            >
+              Sign up
+            </Link>
+          )}
+          {!loading && session && (
             <button
               type="button"
               onClick={() => {

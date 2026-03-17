@@ -15,7 +15,7 @@ type SubWithApp = {
 };
 
 export default function ProfilePage() {
-  const { session, loading } = useAuth();
+  const { session, loading, setSession } = useAuth();
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [subs, setSubs] = useState<SubWithApp[]>([]);
@@ -30,6 +30,7 @@ export default function ProfilePage() {
   const [verifying, setVerifying] = useState(false);
   const [phoneMessage, setPhoneMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [showChangePhone, setShowChangePhone] = useState(false);
+  const [unsubscribingId, setUnsubscribingId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   /** Never show Netlify/CDN raw 404/502 text; use friendly message. */
@@ -45,8 +46,8 @@ export default function ProfilePage() {
     if (!token) return;
     setAvatarError(null);
     Promise.all([
-      fetch("/api/user/profile", { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json()),
-      fetch("/api/user/subscriptions", { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json()),
+      fetch("/api/user/profile", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" }).then((r) => r.json()),
+      fetch("/api/user/subscriptions", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" }).then((r) => r.json()),
     ]).then(([profile, subsRes]) => {
       setUser(profile);
       setSubs(subsRes.subscriptions || []);
@@ -66,8 +67,27 @@ export default function ProfilePage() {
       router.replace("/login");
       return;
     }
+    // Show profile pic and phone immediately from session (already loaded by auth)
+    const su = session.user;
+    setUser(su);
+    setAvatarUrl(su.avatarUrl ?? "");
+    setPhoneNumber(su.phoneNumber ?? "");
+    if (su.phoneVerified) setShowChangePhone(false);
     load();
   }, [session, loading, router]);
+
+  useEffect(() => {
+    if (!session) return;
+    const onVisible = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") load();
+    };
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [session]);
 
   const handleUploadAvatar = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -97,12 +117,13 @@ export default function ProfilePage() {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ avatarUrl: data.avatarUrl }),
       });
-      if (patchRes.ok) {
-        const updated = await patchRes.json();
-        setUser(updated);
-        setAvatarUrl(updated.avatarUrl ?? data.avatarUrl);
-      } else {
-        setAvatarUrl(data.avatarUrl);
+      const updated = patchRes.ok ? await patchRes.json() : null;
+      const newAvatarUrl = updated?.avatarUrl ?? data.avatarUrl;
+      if (updated) setUser(updated);
+      else setUser((prev) => (prev ? { ...prev, avatarUrl: newAvatarUrl } : null));
+      setAvatarUrl(newAvatarUrl);
+      if (session && newAvatarUrl) {
+        setSession({ ...session, user: { ...session.user, avatarUrl: newAvatarUrl } });
       }
     } catch (err) {
       setAvatarError("Upload failed");
@@ -213,12 +234,35 @@ export default function ProfilePage() {
   const handleUnsubscribe = async (appId: string) => {
     const token = getStoredToken();
     if (!token) return;
-    await fetch("/api/unsubscribe", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ appId }),
-    });
-    load();
+    setUnsubscribingId(appId);
+    // Optimistic: remove from list immediately; never show failure to user
+    setSubs((prev) => prev.map((s) => (s.appId === appId ? { ...s, status: "canceled" } : s)));
+
+    const tryUnsubscribe = async (): Promise<boolean> => {
+      try {
+        const res = await fetch("/api/unsubscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ appId }),
+        });
+        return res.ok;
+      } catch {
+        return false;
+      }
+    };
+
+    if (await tryUnsubscribe()) {
+      setUnsubscribingId(null);
+      return;
+    }
+    setUnsubscribingId(null);
+    // Retry in background so it eventually succeeds; no user-visible error
+    const retry = async (attempt: number) => {
+      await new Promise((r) => setTimeout(r, 2000));
+      if (await tryUnsubscribe()) return;
+      if (attempt < 2) retry(attempt + 1);
+    };
+    retry(1);
   };
 
   if (loading || !session) {
@@ -229,7 +273,11 @@ export default function ProfilePage() {
     );
   }
 
+  const displayUser = user ?? session.user;
   const activeSubs = subs.filter((s) => s.status === "active");
+  const activeSubsByApp = Array.from(
+    new Map(activeSubs.map((s) => [s.appId, s])).values()
+  );
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-10">
@@ -255,9 +303,9 @@ export default function ProfilePage() {
             title={avatarUploadConfigured ? "Change profile photo" : "Upload not available"}
             aria-label="Profile picture - click to change"
           >
-            {(user?.avatarUrl || avatarUrl) ? (
+            {(displayUser?.avatarUrl ?? avatarUrl) ? (
               <img
-                src={user?.avatarUrl || avatarUrl}
+                src={displayUser?.avatarUrl ?? avatarUrl}
                 alt=""
                 width={96}
                 height={96}
@@ -305,14 +353,14 @@ export default function ProfilePage() {
         <div className="mt-4 space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-400">Email</label>
-            <p className="mt-1 text-white">{user?.email ?? session.user.email}</p>
+            <p className="mt-1 text-white">{displayUser?.email ?? session.user.email}</p>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-400">Phone number (required to subscribe)</label>
-            {user?.phoneVerified && user?.phoneNumber && !showChangePhone ? (
+            {displayUser?.phoneVerified && displayUser?.phoneNumber && !showChangePhone ? (
               <div className="mt-2 flex flex-wrap gap-2 items-center">
                 <p className="text-white">
-                  <span className="font-medium">{user.phoneNumber}</span>
+                  <span className="font-medium">{displayUser.phoneNumber}</span>
                   <span className="ml-2 text-green-400 text-sm">✓ Verified</span>
                 </p>
                 <button
@@ -338,12 +386,12 @@ export default function ProfilePage() {
                   disabled={savingPhone}
                   className="rounded-lg bg-brand px-3 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-50"
                 >
-                  {savingPhone ? "Saving…" : user?.phoneVerified ? "Save new number" : "Save phone"}
+                  {savingPhone ? "Saving…" : displayUser?.phoneVerified ? "Save new number" : "Save phone"}
                 </button>
-                {user?.phoneVerified && showChangePhone && (
+                {displayUser?.phoneVerified && showChangePhone && (
                   <button
                     type="button"
-                    onClick={() => { setShowChangePhone(false); setPhoneNumber(user?.phoneNumber ?? ""); setPhoneMessage(null); }}
+                    onClick={() => { setShowChangePhone(false); setPhoneNumber(displayUser?.phoneNumber ?? ""); setPhoneMessage(null); }}
                     className="rounded-lg border border-white/20 px-3 py-2 text-sm text-gray-400 hover:bg-white/5"
                   >
                     Cancel
@@ -354,8 +402,8 @@ export default function ProfilePage() {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-400">Phone verified</label>
-            <p className="mt-1 text-white">{user?.phoneVerified ? "Yes" : "No — verify below to subscribe to apps"}</p>
-            {((user?.phoneNumber && !user?.phoneVerified) || (phoneNumber.trim() && !user?.phoneVerified)) && (
+            <p className="mt-1 text-white">{displayUser?.phoneVerified ? "Yes" : "No — verify below to subscribe to apps"}</p>
+            {((displayUser?.phoneNumber && !displayUser?.phoneVerified) || (phoneNumber.trim() && !displayUser?.phoneVerified)) && (
               <div className="mt-4 space-y-4 rounded-lg border border-white/10 bg-surface-muted/50 p-4">
                 <div>
                   <p className="text-sm font-medium text-gray-300">Step 1 — Get the code</p>
@@ -417,7 +465,7 @@ export default function ProfilePage() {
           )}
           <div>
             <label className="block text-sm font-medium text-gray-400">SMS status</label>
-            <p className="mt-1 text-white">{user?.smsStatus ?? "pending"}</p>
+            <p className="mt-1 text-white">{displayUser?.smsStatus ?? "pending"}</p>
             <p className="mt-1 text-xs text-gray-500">
               Reply <strong>STOP</strong> to any message to opt out of all SMS. Reply <strong>START</strong> to opt back in.
             </p>
@@ -429,11 +477,11 @@ export default function ProfilePage() {
       <section className="mt-6 rounded-xl border border-white/10 bg-surface-elevated p-6">
         <h2 className="text-lg font-medium text-white">Managed products</h2>
         <p className="mt-1 text-sm text-gray-400">Your subscriptions. Unsubscribe to stop receiving texts for that product.</p>
-        {activeSubs.length === 0 ? (
+        {activeSubsByApp.length === 0 ? (
           <p className="mt-4 text-sm text-gray-500">No active subscriptions.</p>
         ) : (
           <ul className="mt-4 space-y-3">
-            {activeSubs.map((sub) => (
+            {activeSubsByApp.map((sub) => (
               <li
                 key={sub.subscriptionId}
                 className="flex items-center justify-between rounded-lg border border-white/5 bg-surface-muted/50 px-4 py-3"
@@ -442,9 +490,10 @@ export default function ProfilePage() {
                 <button
                   type="button"
                   onClick={() => handleUnsubscribe(sub.appId)}
-                  className="rounded border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-sm text-red-400 hover:bg-red-500/20"
+                  disabled={unsubscribingId === sub.appId}
+                  className="rounded border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-sm text-red-400 hover:bg-red-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Unsubscribe
+                  {unsubscribingId === sub.appId ? "Unsubscribing…" : "Unsubscribe"}
                 </button>
               </li>
             ))}

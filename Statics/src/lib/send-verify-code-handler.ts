@@ -48,17 +48,7 @@ export async function handleSendVerifyCode(request: NextRequest): Promise<NextRe
     const to = toE164(user.phoneNumber);
     const twilio = getTwilioAdapter();
 
-    if (config.twilio.verifyServiceId) {
-      const sent = await twilio.sendVerification(to);
-      if (!sent.success) {
-        return NextResponse.json(
-          { error: sent.error || "Failed to send verification code" },
-          { status: 500 }
-        );
-      }
-      return NextResponse.json({ ok: true, message: "Verification code sent." });
-    }
-
+    // Always send our own SMS with Statics branding (not Twilio Verify template which may say "Twilly")
     const code = randomCode();
     const expiresAt = Date.now() + 10 * 60 * 1000; // 10 min
     if (isDynamoVerifyConfigured()) {
@@ -71,7 +61,7 @@ export async function handleSendVerifyCode(request: NextRequest): Promise<NextRe
     }
     const sent = await twilio.sendSms(
       to,
-      `Your Statics verification code is: ${code}. It expires in 10 minutes.`
+      `Statics verification code: ${code}. Valid for 10 minutes.`
     );
     if (!sent.success) {
       if (isDynamoVerifyConfigured()) {

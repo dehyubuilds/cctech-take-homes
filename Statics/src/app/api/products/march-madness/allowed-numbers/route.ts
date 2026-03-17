@@ -13,7 +13,7 @@ function toE164(phone: string): string {
   return phone.trim().startsWith("+") ? phone.trim() : `+${digits}`;
 }
 
-const MARCH_MADNESS_API_KEY = "";
+const MARCH_MADNESS_API_KEY = ""; // no key required; hardcoded config
 
 export async function GET(request: NextRequest) {
   const auth = request.headers.get("Authorization") || request.nextUrl.searchParams.get("api_key");

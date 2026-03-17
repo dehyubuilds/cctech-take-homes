@@ -31,7 +31,7 @@ export default function DashboardPage() {
     const token = getStoredToken();
     Promise.all([
       fetch("/api/apps").then((r) => r.json()),
-      fetch("/api/user/subscriptions", { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json()),
+      fetch("/api/user/subscriptions", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" }).then((r) => r.json()),
       fetch("/api/user/profile", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" }).then((r) => (r.ok ? r.json() : null)),
       fetch("/api/health").then((r) => r.json()).catch(() => ({ persistence: null })),
     ]).then(([appsRes, subsRes, profile, health]) => {
@@ -51,6 +51,33 @@ export default function DashboardPage() {
       setHasFetched(true);
     });
   }, [session, loading, router]);
+
+  const refetchSubs = () => {
+    const token = getStoredToken();
+    if (!token || !session) return;
+    fetch("/api/user/subscriptions", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        const ids = new Set<string>(
+          (data.subscriptions || []).filter((s: { status: string }) => s.status === "active").map((s: { appId: string }) => s.appId)
+        );
+        setSubIds(ids);
+      })
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    if (!session) return;
+    const onVisible = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") refetchSubs();
+    };
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [session]);
 
   async function subscribe(appId: string) {
     setMessage(null);
@@ -84,16 +111,28 @@ export default function DashboardPage() {
 
   async function unsubscribe(appId: string) {
     const token = getStoredToken();
-    await fetch("/api/unsubscribe", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ appId }),
-    });
-    setSubIds((prev) => {
-      const next = new Set(prev);
-      next.delete(appId);
-      return next;
-    });
+    if (!token) return;
+    try {
+      const res = await fetch("/api/unsubscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ appId }),
+      });
+      if (res.ok) {
+        setSubIds((prev) => {
+          const next = new Set(prev);
+          next.delete(appId);
+          return next;
+        });
+      } else if (res.status === 401) {
+        signOut();
+        setMessage({ type: "error", text: "Session expired. Please sign in again." });
+      } else {
+        setMessage({ type: "error", text: "Could not unsubscribe. Try again." });
+      }
+    } catch {
+      setMessage({ type: "error", text: "Request failed. Try again." });
+    }
   }
 
   if (loading || !session) {
