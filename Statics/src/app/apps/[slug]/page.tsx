@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getAppRepository } from "@/lib/repositories";
 import { config } from "@/lib/config";
+import { ShareAppLink } from "@/components/ShareAppLink";
 import type { Metadata } from "next";
 
 interface PageProps {
@@ -67,6 +68,9 @@ export default async function PublicAppSharePage({ params }: PageProps) {
   const app = await repo.getBySlug(slug);
   if (!app) notFound();
 
+  const base = config.app.baseUrl.replace(/\/$/, "");
+  const shareUrl = `${base}/apps/${app.slug}`;
+
   return (
     <div className="mx-auto max-w-2xl px-4 py-12">
       <div className="overflow-hidden rounded-2xl border border-white/10 bg-surface-elevated">
@@ -89,22 +93,23 @@ export default async function PublicAppSharePage({ params }: PageProps) {
           <p className="mt-4 text-brand">
             {app.priceCents === 0 ? "Free" : `$${(app.priceCents / 100).toFixed(2)}/mo`}
           </p>
-          <div className="mt-8 flex flex-wrap gap-4">
+          <div className="mt-8 flex flex-wrap gap-4 items-center">
             <Link
               href="/signup"
-              className="rounded-lg bg-brand px-6 py-3 font-medium text-white hover:bg-brand-hover"
+              className="rounded-lg bg-brand px-6 py-3 font-medium text-white hover:bg-brand-hover min-h-[44px] inline-flex items-center"
             >
               Sign up to subscribe
             </Link>
             <Link
               href="/login"
-              className="rounded-lg border border-white/20 px-6 py-3 text-white hover:bg-white/5"
+              className="rounded-lg border border-white/20 px-6 py-3 text-white hover:bg-white/5 min-h-[44px] inline-flex items-center"
             >
               Log in
             </Link>
+            <ShareAppLink shareUrl={shareUrl} appName={app.name} />
             <Link
               href="/dashboard"
-              className="rounded-lg bg-surface-muted px-6 py-3 text-gray-300 hover:bg-white/10"
+              className="rounded-lg bg-surface-muted px-6 py-3 text-gray-300 hover:bg-white/10 min-h-[44px] inline-flex items-center"
             >
               Dashboard
             </Link>

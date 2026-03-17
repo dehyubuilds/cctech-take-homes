@@ -1,0 +1,15 @@
+---
+description: How to deploy Statics — always use the sync script to dehyubuilds/statics, never push from Desktop repo
+alwaysApply: true
+---
+
+# Statics deployment
+
+- **Statics** lives under a parent repo (e.g. Desktop) but is **deployed to a separate GitHub repo**: `https://github.com/dehyubuilds/statics`.
+- **Do not** run `git push origin main` from the parent repo to deploy Statics; that repo may be blocked (e.g. secret scanning) and is the wrong target.
+- **To deploy Statics:** run the sync script from the **parent of the Statics folder** (e.g. from `Desktop`):
+  ```bash
+  ./Statics/scripts/deploy-to-github-repos.sh
+  ```
+  This script: clones `dehyubuilds/statics`, rsyncs the local `Statics/` tree (excluding march-madness-v1, .next, node_modules), commits with message "Deploy: sync from local Statics", and pushes to `dehyubuilds/statics` main. Netlify typically builds from that repo.
+- Redirect and other app code changes are in **Statics** (e.g. `Statics/src/...`). Deploy them using the script above.
