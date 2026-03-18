@@ -62,18 +62,25 @@ export default function ProfilePage() {
   };
 
   useEffect(() => {
-    if (loading) return;
-    if (!session) {
+    const token = getStoredToken();
+    if (!token) {
+      if (!loading) router.replace("/login");
+      return;
+    }
+    if (!loading && !session) {
       router.replace("/login");
       return;
     }
-    // Show profile pic and phone immediately from session (already loaded by auth)
-    const su = session.user;
-    setUser(su);
-    setAvatarUrl(su.avatarUrl ?? "");
-    setPhoneNumber(su.phoneNumber ?? "");
-    if (su.phoneVerified) setShowChangePhone(false);
-    load();
+    if (session) {
+      const su = session.user;
+      setUser(su);
+      setAvatarUrl(su.avatarUrl ?? "");
+      setPhoneNumber(su.phoneNumber ?? "");
+      if (su.phoneVerified) setShowChangePhone(false);
+      load();
+    } else if (loading) {
+      load();
+    }
   }, [session, loading, router]);
 
   useEffect(() => {
@@ -265,22 +272,37 @@ export default function ProfilePage() {
     retry(1);
   };
 
-  if (loading || !session) {
+  const profileToken = getStoredToken();
+  if (!profileToken) {
     return (
       <div className="flex min-h-[40vh] items-center justify-center">
-        <p className="text-gray-400">Loading…</p>
+        <p className="text-gray-400">{loading ? "Loading…" : "Redirecting…"}</p>
+      </div>
+    );
+  }
+  if (!loading && !session) {
+    return (
+      <div className="flex min-h-[40vh] items-center justify-center">
+        <p className="text-gray-400">Redirecting…</p>
+      </div>
+    );
+  }
+  if (loading && !session && !user) {
+    return (
+      <div className="flex min-h-[40vh] items-center justify-center">
+        <p className="text-gray-400">Loading profile…</p>
       </div>
     );
   }
 
-  const displayUser = user ?? session.user;
+  const displayUser = user ?? session!.user;
   const activeSubs = subs.filter((s) => s.status === "active");
   const activeSubsByApp = Array.from(
     new Map(activeSubs.map((s) => [s.appId, s])).values()
   );
 
   return (
-    <div className="mx-auto max-w-2xl px-4 py-10">
+    <div className="mx-auto max-w-2xl px-4 py-10 lg:max-w-4xl">
       <h1 className="text-2xl font-semibold text-white">Profile</h1>
 
       {/* Profile picture */}

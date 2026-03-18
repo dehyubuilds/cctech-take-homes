@@ -38,7 +38,7 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <div className="mx-auto max-w-sm px-4 py-16">
+    <div className="mx-auto max-w-sm px-4 py-16 md:max-w-md">
       <h1 className="text-2xl font-semibold text-white">Forgot password</h1>
       <p className="mt-1 text-sm text-gray-400">
         Enter your email and we&apos;ll send you a verification code to reset your password.

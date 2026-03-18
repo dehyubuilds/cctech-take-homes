@@ -42,6 +42,13 @@ export async function PATCH(
     ...(body.thumbnailUrl !== undefined && { thumbnailUrl: body.thumbnailUrl }),
     ...(body.siteUrl !== undefined && { siteUrl: body.siteUrl }),
     ...(body.status !== undefined && { status: body.status }),
+    ...(body.listed !== undefined && { listed: body.listed }),
+    ...(body.listVisibility !== undefined && { listVisibility: body.listVisibility }),
+    ...(body.allowedEmails !== undefined && {
+      allowedEmails: Array.isArray(body.allowedEmails)
+        ? (body.allowedEmails as string[]).map((e) => String(e).trim().toLowerCase()).filter(Boolean)
+        : [],
+    }),
     ...(body.priceCents !== undefined && { priceCents: body.priceCents }),
     ...(body.shareTitle !== undefined && { shareTitle: body.shareTitle }),
     ...(body.shareDescription !== undefined && { shareDescription: body.shareDescription }),

@@ -41,7 +41,7 @@ export default function AdminLayout({
   ];
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8">
+    <div className="mx-auto max-w-6xl px-4 py-8 xl:max-w-7xl">
       <div className="mb-8 flex items-center gap-6 border-b border-white/10 pb-4">
         {links.map((link) => (
           <Link

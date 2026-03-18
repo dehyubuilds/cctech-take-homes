@@ -97,7 +97,7 @@ function ConfirmEmailForm() {
   }
 
   return (
-    <div className="mx-auto max-w-sm px-4 py-16">
+    <div className="mx-auto max-w-sm px-4 py-16 md:max-w-md">
       <h1 className="text-2xl font-semibold text-white">Confirm your email</h1>
       <p className="mt-1 text-sm text-gray-400">
         We sent a verification code to your email. Enter it below to finish signing up.
@@ -187,7 +187,7 @@ function ConfirmEmailForm() {
 
 export default function ConfirmEmailPage() {
   return (
-    <Suspense fallback={<div className="mx-auto max-w-sm px-4 py-16 text-gray-400">Loading…</div>}>
+    <Suspense fallback={<div className="mx-auto max-w-sm px-4 py-16 text-gray-400 md:max-w-md">Loading…</div>}>
       <ConfirmEmailForm />
     </Suspense>
   );

@@ -9,21 +9,15 @@ interface PageProps {
   params: Promise<{ slug: string }>;
 }
 
-/** Default OG image when app has no share or thumbnail URL (absolute so link previews work). */
-const DEFAULT_OG_IMAGE =
-  "https://placehold.co/1200x630/1a1a1a/6366f1?text=Statics";
-
 const OG_IMAGE_WIDTH = 1200;
 const OG_IMAGE_HEIGHT = 630;
 
-/** Build absolute OG image URL. Prefer shareImageUrl, fallback to thumbnailUrl; always return an absolute URL. */
-function absoluteOgImage(base: string, shareImageUrl: string, thumbnailUrl: string): string {
-  const raw = (shareImageUrl || thumbnailUrl || "").trim();
-  if (!raw) return DEFAULT_OG_IMAGE;
-  if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
-  const path = raw.startsWith("/") ? raw : `/${raw}`;
-  const full = `${base.replace(/\/$/, "")}${path}`;
-  return full.replace(/([^:]\/)\/+/g, "$1");
+/**
+ * Use same-origin dynamic OG image so link previews (iMessage, SMS, social) always get
+ * a working image from our domain. Avoids 404s from external or relative image URLs.
+ */
+function appOgImageUrl(base: string, slug: string): string {
+  return `${base.replace(/\/$/, "")}/apps/${slug}/opengraph-image`;
 }
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
@@ -33,13 +27,15 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   if (!app) return { title: "App not found" };
   const base = config.app.baseUrl.replace(/\/$/, "");
   const pageUrl = `${base}/apps/${app.slug}`;
-  const imageUrl = absoluteOgImage(base, app.shareImageUrl ?? "", app.thumbnailUrl ?? "");
+  const imageUrl = appOgImageUrl(base, app.slug);
+  const title = app.shareTitle || app.name;
+  const description = app.shareDescription || app.description || "Subscribe via text on Statics.";
   return {
-    title: app.shareTitle,
-    description: app.shareDescription,
+    title,
+    description,
     openGraph: {
-      title: app.shareTitle,
-      description: app.shareDescription,
+      title,
+      description,
       url: pageUrl,
       type: "website",
       siteName: "Statics",
@@ -48,14 +44,14 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
           url: imageUrl,
           width: OG_IMAGE_WIDTH,
           height: OG_IMAGE_HEIGHT,
-          alt: app.shareTitle || app.name,
+          alt: title,
         },
       ],
     },
     twitter: {
       card: "summary_large_image",
-      title: app.shareTitle,
-      description: app.shareDescription,
+      title,
+      description,
       images: [imageUrl],
     },
     alternates: { canonical: app.canonicalUrl || pageUrl },
@@ -72,7 +68,7 @@ export default async function PublicAppSharePage({ params }: PageProps) {
   const shareUrl = `${base}/apps/${app.slug}`;
 
   return (
-    <div className="mx-auto max-w-2xl px-4 py-12">
+    <div className="mx-auto max-w-2xl px-4 py-12 lg:max-w-4xl">
       <div className="overflow-hidden rounded-2xl border border-white/10 bg-surface-elevated">
         {app.thumbnailUrl && (
           <div className="aspect-video bg-surface-muted">

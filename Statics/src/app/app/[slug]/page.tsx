@@ -49,8 +49,12 @@ export default function ProtectedAppPage() {
       const subs = subsRes?.subscriptions ?? [];
       const appId = appData?.appId;
       const sub = appId ? subs.find((s: { appId: string; status: string }) => s.appId === appId && s.status === "active") : undefined;
-      setSubscribed(!!sub);
+      const isSub = !!sub;
+      setSubscribed(isSub);
       setAppFetched(true);
+      if (slug === "dropflow" && isSub && appData?.status === "active") {
+        router.replace("/dropflow");
+      }
     }).catch(() => {
       setApp(null);
       setAppFetched(true);
@@ -76,7 +80,7 @@ export default function ProtectedAppPage() {
 
   if (!app) {
     return (
-      <div className="mx-auto max-w-lg px-4 py-16 text-center">
+      <div className="mx-auto max-w-lg px-4 py-16 text-center md:max-w-2xl lg:max-w-3xl">
         <p className="text-gray-400">App not found.</p>
         <Link href="/dashboard" className="mt-4 inline-block text-brand hover:underline">
           Back to dashboard
@@ -87,7 +91,7 @@ export default function ProtectedAppPage() {
 
   if (app.status !== "active") {
     return (
-      <div className="mx-auto max-w-lg px-4 py-16 text-center">
+      <div className="mx-auto max-w-lg px-4 py-16 text-center md:max-w-2xl lg:max-w-3xl">
         <h1 className="text-xl font-semibold text-white">{app.name}</h1>
         <p className="mt-4 text-gray-400">This app is currently unavailable.</p>
         <Link href="/dashboard" className="mt-6 inline-block text-brand hover:underline">
@@ -99,7 +103,7 @@ export default function ProtectedAppPage() {
 
   if (!subscribed) {
     return (
-      <div className="mx-auto max-w-lg px-4 py-16">
+      <div className="mx-auto max-w-lg px-4 py-16 md:max-w-2xl lg:max-w-4xl">
         <h1 className="text-2xl font-semibold text-white">{app.name}</h1>
         <p className="mt-2 text-gray-400">{app.description}</p>
         <div className="mt-8 rounded-xl border border-amber-500/30 bg-amber-500/10 p-6">
@@ -145,7 +149,7 @@ export default function ProtectedAppPage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl px-4 py-10">
+    <div className="mx-auto max-w-2xl px-4 py-10 lg:max-w-4xl">
       <h1 className="text-2xl font-semibold text-white">{app.name}</h1>
       <p className="mt-2 text-gray-400">{app.description}</p>
       <div className="mt-8 rounded-xl border border-white/10 bg-surface-elevated p-6">

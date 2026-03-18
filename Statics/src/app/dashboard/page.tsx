@@ -21,16 +21,19 @@ export default function DashboardPage() {
   const [profileLoaded, setProfileLoaded] = useState<{ phoneNumber?: string; phoneVerified?: boolean } | null>(null);
 
   useEffect(() => {
-    if (loading) return;
-    if (!session) {
+    const token = getStoredToken();
+    if (!token) {
+      if (!loading) router.replace("/login");
+      return;
+    }
+    if (!loading && !session) {
       router.replace("/login");
       return;
     }
     setDataLoading(true);
     setHasFetched(false);
-    const token = getStoredToken();
     Promise.all([
-      fetch("/api/apps").then((r) => r.json()),
+      fetch("/api/apps", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" }).then((r) => r.json()),
       fetch("/api/user/subscriptions", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" }).then((r) => r.json()),
       fetch("/api/user/profile", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" }).then((r) => (r.ok ? r.json() : null)),
       fetch("/api/health").then((r) => r.json()).catch(() => ({ persistence: null })),
@@ -135,16 +138,29 @@ export default function DashboardPage() {
     }
   }
 
-  if (loading || !session) {
+  const tokenNow = getStoredToken();
+  if (!tokenNow) {
     return (
       <div className="flex min-h-[40vh] items-center justify-center">
-        <p className="text-gray-400">Loading…</p>
+        <p className="text-gray-400">{loading ? "Loading…" : "Redirecting…"}</p>
+      </div>
+    );
+  }
+  if (!loading && !session) {
+    return (
+      <div className="flex min-h-[40vh] items-center justify-center">
+        <p className="text-gray-400">Redirecting…</p>
       </div>
     );
   }
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-10">
+    <div className="mx-auto max-w-6xl px-4 py-10 xl:max-w-7xl">
+      {loading && !session && (
+        <p className="mb-4 text-sm text-gray-500" role="status">
+          Restoring session…
+        </p>
+      )}
       <h1 className="text-2xl font-semibold text-white">Dashboard</h1>
       <p className="mt-1 text-gray-400">
         Browse and subscribe to curated apps. Messages are sent to your verified phone number.
@@ -189,6 +205,7 @@ export default function DashboardPage() {
                   app={app}
                   isSubscribed={canSubscribe && subIds.has(app.appId)}
                   canSubscribe={canSubscribe}
+                  canViewApp={canSubscribe}
                   onSubscribe={() => subscribe(app.appId)}
                   onUnsubscribe={() => unsubscribe(app.appId)}
                 />

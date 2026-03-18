@@ -52,7 +52,7 @@ function ResetPasswordForm() {
   }
 
   return (
-    <div className="mx-auto max-w-sm px-4 py-16">
+    <div className="mx-auto max-w-sm px-4 py-16 md:max-w-md">
       <h1 className="text-2xl font-semibold text-white">Reset password</h1>
       <p className="mt-1 text-sm text-gray-400">
         Enter the verification code from your email and choose a new password.
@@ -144,7 +144,7 @@ function ResetPasswordForm() {
 
 export default function ResetPasswordPage() {
   return (
-    <Suspense fallback={<div className="mx-auto max-w-sm px-4 py-16 text-gray-400">Loading…</div>}>
+    <Suspense fallback={<div className="mx-auto max-w-sm px-4 py-16 text-gray-400 md:max-w-md">Loading…</div>}>
       <ResetPasswordForm />
     </Suspense>
   );

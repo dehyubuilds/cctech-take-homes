@@ -59,9 +59,10 @@ export async function POST(request: NextRequest) {
     const app = await appRepo.getById(appId);
     const appName = app?.name ?? "this product";
     const twilio = getTwilioAdapter();
-    // First-time subscriber: what to expect; lead with Statics so it's clear who it's from
-    const welcomeBody =
-      `Statics: You're subscribed to ${appName}. What to expect: one text per day with picks and analysis (spread/total, matchups, start times, short reasons). Your first message will be sent on the next run. Reply STOP to opt out.`;
+    const isDropflow = app?.slug === "dropflow";
+    const welcomeBody = isDropflow
+      ? `Statics: You're subscribed to ${appName}. You'll get SMS about beats and songs you care about (e.g. when a sale completes). Reply STOP to opt out.`
+      : `Statics: You're subscribed to ${appName}. What to expect: one text per day with picks and analysis (spread/total, matchups, start times, short reasons). Your first message will be sent on the next run. Reply STOP to opt out.`;
     await twilio.sendSms(toE164(user.phoneNumber), welcomeBody);
   }
 

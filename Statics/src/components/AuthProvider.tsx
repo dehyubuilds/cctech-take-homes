@@ -47,7 +47,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
       return;
     }
-    fetch("/api/auth/session", { headers: { Authorization: `Bearer ${token}` } })
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 12_000);
+    fetch("/api/auth/session", {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: ac.signal,
+    })
       .then((r) => {
         if (r.ok) return r.json();
         if (r.status === 401 && typeof window !== "undefined") {
@@ -60,7 +65,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         else setSessionState(null);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch((e: Error & { name?: string }) => {
+        setSessionState(null);
+        setLoading(false);
+        if (e?.name === "AbortError" && typeof window !== "undefined") {
+          localStorage.removeItem(SESSION_KEY);
+        }
+      })
+      .finally(() => clearTimeout(t));
   }, []);
 
   return (

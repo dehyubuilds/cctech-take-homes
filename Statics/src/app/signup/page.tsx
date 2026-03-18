@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useAuth } from "@/components/AuthProvider";
 
 export default function SignUpPage() {
   const [email, setEmail] = useState("");
@@ -11,6 +12,13 @@ export default function SignUpPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const { session, loading: authLoading } = useAuth();
+
+  useEffect(() => {
+    if (!authLoading && session) {
+      router.replace("/dashboard");
+    }
+  }, [authLoading, session, router]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -41,15 +49,16 @@ export default function SignUpPage() {
   }
 
   return (
-    <div className="mx-auto max-w-sm px-4 py-16">
-      <h1 className="text-2xl font-semibold text-white">Sign up</h1>
-      <p className="mt-1 text-sm text-gray-400">
+    <div className="min-h-[calc(100vh-3.5rem)] md:min-h-[calc(100vh-4rem)] flex flex-col items-center justify-start md:justify-center px-4 py-10 md:py-16">
+      <div className="mx-auto w-full max-w-sm md:max-w-lg lg:max-w-xl text-center rounded-2xl border border-white/10 bg-surface-elevated/60 backdrop-blur-sm px-6 py-10 md:px-12 md:py-12 shadow-xl shadow-black/20">
+      <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-white">Sign up</h1>
+      <p className="mt-3 text-base text-gray-400">
         Already have an account?{" "}
-        <Link href="/login" className="text-brand hover:underline">
+        <Link href="/login" className="text-brand font-medium hover:underline">
           Log in
         </Link>
       </p>
-      <form onSubmit={handleSubmit} className="mt-8 space-y-4">
+      <form onSubmit={handleSubmit} className="mt-10 space-y-5 text-left">
         <div>
           <label htmlFor="email" className="block text-sm font-medium text-gray-300">
             Email
@@ -60,7 +69,7 @@ export default function SignUpPage() {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
-            className="mt-1 w-full rounded-lg border border-white/10 bg-surface-elevated px-3 py-2 text-white placeholder-gray-500 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+            className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3.5 md:text-lg text-white placeholder-gray-500 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
             placeholder="you@example.com"
           />
         </div>
@@ -68,7 +77,7 @@ export default function SignUpPage() {
           <label htmlFor="password" className="block text-sm font-medium text-gray-300">
             Password
           </label>
-          <div className="relative mt-1">
+          <div className="relative mt-2">
             <input
               id="password"
               type={showPassword ? "text" : "password"}
@@ -76,7 +85,7 @@ export default function SignUpPage() {
               onChange={(e) => setPassword(e.target.value)}
               required
               minLength={8}
-              className="w-full rounded-lg border border-white/10 bg-surface-elevated px-3 py-2 pr-10 text-white placeholder-gray-500 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+              className="w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3.5 md:text-lg pr-12 text-white placeholder-gray-500 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
             />
             <button
               type="button"
@@ -98,11 +107,12 @@ export default function SignUpPage() {
         <button
           type="submit"
           disabled={loading}
-          className="w-full rounded-lg bg-brand py-2.5 font-medium text-white hover:bg-brand-hover disabled:opacity-50"
+          className="w-full rounded-xl bg-brand py-4 text-base md:text-lg font-semibold text-white hover:bg-brand-hover disabled:opacity-50 min-h-[52px] transition-colors"
         >
           {loading ? "Creating account…" : "Sign up"}
         </button>
       </form>
+      </div>
     </div>
   );
 }

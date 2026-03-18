@@ -29,6 +29,9 @@ export interface User {
   updatedAt: string;
 }
 
+/** Who can see the app on the dashboard. */
+export type AppListVisibility = "everyone" | "unlisted" | "by_email";
+
 export interface App {
   appId: string;
   name: string;
@@ -37,6 +40,12 @@ export interface App {
   thumbnailUrl: string;
   siteUrl: string;
   status: AppStatus;
+  /** If false, hide from dashboard (unlisted). Default true. Legacy: used when listVisibility is unset. */
+  listed?: boolean;
+  /** How the app is listed: everyone = all users; unlisted = nobody; by_email = only allowedEmails. Overrides listed when set. */
+  listVisibility?: AppListVisibility;
+  /** When listVisibility === "by_email", only these emails (lowercased) see the app on their dashboard. */
+  allowedEmails?: string[];
   /** Price in cents; 0 = free */
   priceCents: number;
   shareTitle: string;

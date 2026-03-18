@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
 import { getStoredToken } from "@/components/AuthProvider";
-import type { App } from "@/lib/domain";
+import type { App, AppListVisibility } from "@/lib/domain";
 
 export default function AdminAppEditPage() {
   const params = useParams();
@@ -18,10 +18,13 @@ export default function AdminAppEditPage() {
     thumbnailUrl: "",
     priceCents: 0,
     status: "draft" as App["status"],
+    listVisibility: "everyone" as AppListVisibility,
+    allowedEmails: [] as string[],
     shareTitle: "",
     shareDescription: "",
     shareImageUrl: "",
   });
+  const [newEmail, setNewEmail] = useState("");
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
@@ -34,6 +37,8 @@ export default function AdminAppEditPage() {
       .then((data) => {
         if (data) {
           setApp(data);
+          const vis: AppListVisibility =
+            data.listVisibility ?? (data.listed === false ? "unlisted" : "everyone");
           setForm({
             name: data.name,
             slug: data.slug,
@@ -41,6 +46,8 @@ export default function AdminAppEditPage() {
             thumbnailUrl: data.thumbnailUrl,
             priceCents: data.priceCents ?? 0,
             status: data.status,
+            listVisibility: vis,
+            allowedEmails: Array.isArray(data.allowedEmails) ? [...data.allowedEmails] : [],
             shareTitle: data.shareTitle ?? data.name,
             shareDescription: data.shareDescription ?? data.description,
             shareImageUrl: data.shareImageUrl ?? data.thumbnailUrl,
@@ -73,6 +80,8 @@ export default function AdminAppEditPage() {
           thumbnailUrl: form.thumbnailUrl,
           priceCents: form.priceCents,
           status: form.status,
+          listVisibility: form.listVisibility,
+          allowedEmails: form.listVisibility === "by_email" ? form.allowedEmails : [],
           shareTitle: form.shareTitle,
           shareDescription: form.shareDescription,
           shareImageUrl: form.shareImageUrl,
@@ -92,6 +101,8 @@ export default function AdminAppEditPage() {
         slug: updated.slug,
         description: updated.description,
         thumbnailUrl: updated.thumbnailUrl,
+        listVisibility: updated.listVisibility ?? (updated.listed === false ? "unlisted" : "everyone"),
+        allowedEmails: Array.isArray(updated.allowedEmails) ? [...updated.allowedEmails] : [],
         shareTitle: updated.shareTitle,
         shareDescription: updated.shareDescription,
         shareImageUrl: updated.shareImageUrl,
@@ -246,6 +257,99 @@ export default function AdminAppEditPage() {
           <p className="mt-1 text-xs text-gray-500">
             Inactive: app is hidden from the carousel, subscriptions are paused, and a stop entry is written so the backend stops sending.
           </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-400 mb-2">List on dashboard</label>
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="listVisibility"
+                checked={form.listVisibility === "everyone"}
+                onChange={() => setForm((f) => ({ ...f, listVisibility: "everyone" }))}
+                className="h-4 w-4 border-white/20 bg-surface-elevated text-brand focus:ring-brand"
+              />
+              <span className="text-sm text-gray-300">Listed — show to everyone on dashboard</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="listVisibility"
+                checked={form.listVisibility === "unlisted"}
+                onChange={() => setForm((f) => ({ ...f, listVisibility: "unlisted" }))}
+                className="h-4 w-4 border-white/20 bg-surface-elevated text-brand focus:ring-brand"
+              />
+              <span className="text-sm text-gray-300">Unlisted — hide from dashboard (share link still works)</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="listVisibility"
+                checked={form.listVisibility === "by_email"}
+                onChange={() => setForm((f) => ({ ...f, listVisibility: "by_email" }))}
+                className="h-4 w-4 border-white/20 bg-surface-elevated text-brand focus:ring-brand"
+              />
+              <span className="text-sm text-gray-300">List by email — only these users see it on their dashboard (for testing share, etc.)</span>
+            </label>
+          </div>
+          {form.listVisibility === "by_email" && (
+            <div className="mt-3 rounded-lg border border-white/10 bg-surface-elevated p-3 space-y-2">
+              <p className="text-xs text-gray-500">Add email addresses (one per line or comma-separated). Only these users will see this app on their dashboard.</p>
+              <div className="flex gap-2">
+                <input
+                  type="email"
+                  placeholder="email@example.com"
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      const v = newEmail.trim().toLowerCase();
+                      if (v && !form.allowedEmails.includes(v)) {
+                        setForm((f) => ({ ...f, allowedEmails: [...f.allowedEmails, v] }));
+                        setNewEmail("");
+                      }
+                    }
+                  }}
+                  className="flex-1 rounded-lg border border-white/10 bg-surface px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-brand focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const v = newEmail.trim().toLowerCase();
+                    if (v && !form.allowedEmails.includes(v)) {
+                      setForm((f) => ({ ...f, allowedEmails: [...f.allowedEmails, v] }));
+                      setNewEmail("");
+                    }
+                  }}
+                  className="rounded-lg border border-white/20 px-3 py-2 text-sm text-gray-300 hover:bg-white/5"
+                >
+                  Add
+                </button>
+              </div>
+              {form.allowedEmails.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {form.allowedEmails.map((email) => (
+                    <li key={email} className="flex items-center justify-between gap-2 text-sm text-gray-300">
+                      <span>{email}</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setForm((f) => ({
+                            ...f,
+                            allowedEmails: f.allowedEmails.filter((e) => e !== email),
+                          }))
+                        }
+                        className="text-red-400 hover:text-red-300"
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </div>
         {error && <p className="text-sm text-red-400">{error}</p>}
         <div className="flex flex-wrap gap-3">
