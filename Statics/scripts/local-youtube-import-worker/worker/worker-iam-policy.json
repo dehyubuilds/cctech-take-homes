@@ -1,0 +1,41 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DynamoJobsTable",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:Scan",
+        "dynamodb:Query",
+        "dynamodb:DeleteItem"
+      ],
+      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT_ID:table/JOBS_TABLE_NAME"
+    },
+    {
+      "Sid": "DynamoAotqSources",
+      "Effect": "Allow",
+      "Action": ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT_ID:table/AOTQ_TABLE_NAME"
+    },
+    {
+      "Sid": "S3DropflowImportPrefixes",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": [
+        "arn:aws:s3:::MEDIA_BUCKET/youtube-import-jobs/*",
+        "arn:aws:s3:::MEDIA_BUCKET/tracks/*",
+        "arn:aws:s3:::MEDIA_BUCKET/thumbnails/*",
+        "arn:aws:s3:::MEDIA_BUCKET/private-collection/videos/*"
+      ]
+    },
+    {
+      "Sid": "ApiGatewayManageConnections",
+      "Effect": "Allow",
+      "Action": "execute-api:ManageConnections",
+      "Resource": "arn:aws:execute-api:REGION:ACCOUNT_ID:WEBSOCKET_API_ID/prod/POST/@connections/*"
+    }
+  ]
+}
